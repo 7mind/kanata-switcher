@@ -1,0 +1,17 @@
+[
+  {
+    "default": "default"
+  },
+  {
+    "class": "^firefox$",
+    "layer": "browser"
+  },
+  {
+    "class": "jetbrains|codium|code|dev.zed.Zed",
+    "layer": "code"
+  },
+  {
+    "class": "kitty|alacritty|com.mitchellh.ghostty|wezterm",
+    "layer": "terminal"
+  }
+]

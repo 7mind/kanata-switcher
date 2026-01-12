@@ -1,0 +1,15 @@
+.idea
+.vscode
+.DS_Store
+local
+
+# Nix
+.direnv/
+result
+result-*
+
+# Rust
+/target/
+
+# GNOME extension build artifacts
+*.shell-extension.zip

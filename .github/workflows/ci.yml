@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs: {}
+  push:
+    branches: ["main"]
+    tags: ["v**"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+#  id-token: write
+
+env:
+  CI_BRANCH_TAG: ${{ github.ref_name }}
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 7mind/github-env@minimal
+      - name: Check flake
+        run: nix flake check
+      - name: Run build
+        run: nix build . -L
