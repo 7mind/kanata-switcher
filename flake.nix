@@ -118,55 +118,100 @@
       );
 
     in perSystem // {
+      # Shared module options (used by both NixOS and Home Manager modules)
+      lib.moduleOptions = lib: packages: {
+        enable = lib.mkEnableOption "kanata-switcher daemon";
+
+        package = lib.mkOption {
+          type = lib.types.package;
+          default = packages.daemon;
+          description = "kanata-switcher daemon package";
+        };
+
+        kanataPort = lib.mkOption {
+          type = lib.types.port;
+          default = 10000;
+          description = "Kanata TCP port";
+        };
+
+        kanataHost = lib.mkOption {
+          type = lib.types.str;
+          default = "127.0.0.1";
+          description = "Kanata host address";
+        };
+
+        configFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          description = "Path to config file. Defaults to ~/.config/kanata/kanata-switcher.json";
+        };
+
+        gnomeExtension = {
+          enable = lib.mkEnableOption "GNOME Shell extension for kanata-switcher (Nix-managed)";
+
+          autoInstall = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Auto-install GNOME extension at runtime (for mutable config). When false, use gnomeExtension.enable for Nix-managed installation.";
+          };
+
+          package = lib.mkOption {
+            type = lib.types.package;
+            default = packages.gnome-extension;
+            description = "kanata-switcher GNOME extension package";
+          };
+        };
+      };
+
+      # Shared: build ExecStart args
+      lib.mkExecArgs = cfg: [
+        "${cfg.package}/bin/kanata-switcher"
+        "-p" (toString cfg.kanataPort)
+        "-H" cfg.kanataHost
+      ] ++ (if cfg.configFile != null then [ "-c" (toString cfg.configFile) ] else [])
+        ++ (if !cfg.gnomeExtension.autoInstall then [ "--no-install-gnome-extension" ] else []);
+
+      # NixOS module
+      nixosModules.default = { config, lib, pkgs, ... }:
+        let
+          cfg = config.services.kanata-switcher;
+          packages = self.packages.${pkgs.system};
+        in {
+          options.services.kanata-switcher = self.lib.moduleOptions lib packages;
+
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ cfg.package ]
+              ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
+
+            systemd.user.services.kanata-switcher = {
+              description = "Kanata layer switcher daemon";
+              after = [ "graphical-session.target" ];
+              partOf = [ "graphical-session.target" ];
+              wantedBy = [ "graphical-session.target" ];
+              serviceConfig = {
+                Type = "simple";
+                ExecStart = lib.concatStringsSep " " (self.lib.mkExecArgs cfg);
+                Restart = "on-failure";
+                RestartSec = 5;
+              };
+            };
+
+            programs.dconf = lib.mkIf cfg.gnomeExtension.enable {
+              enable = true;
+              profiles.user.databases = [{
+                settings."org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
+              }];
+            };
+          };
+        };
+
       # Home Manager module
       homeManagerModules.default = { config, lib, pkgs, ... }:
         let
           cfg = config.services.kanata-switcher;
           packages = self.packages.${pkgs.system};
         in {
-          options.services.kanata-switcher = {
-            enable = lib.mkEnableOption "kanata-switcher daemon";
-
-            package = lib.mkOption {
-              type = lib.types.package;
-              default = packages.daemon;
-              description = "kanata-switcher daemon package";
-            };
-
-            kanataPort = lib.mkOption {
-              type = lib.types.port;
-              default = 10000;
-              description = "Kanata TCP port";
-            };
-
-            kanataHost = lib.mkOption {
-              type = lib.types.str;
-              default = "127.0.0.1";
-              description = "Kanata host address";
-            };
-
-            configFile = lib.mkOption {
-              type = lib.types.nullOr lib.types.path;
-              default = null;
-              description = "Path to config file. Defaults to ~/.config/kanata/kanata-switcher.json";
-            };
-
-            gnomeExtension = {
-              enable = lib.mkEnableOption "GNOME Shell extension for kanata-switcher (Nix-managed)";
-
-              autoInstall = lib.mkOption {
-                type = lib.types.bool;
-                default = false;
-                description = "Auto-install GNOME extension at runtime (for mutable config). When false, use gnomeExtension.enable for Nix-managed installation.";
-              };
-
-              package = lib.mkOption {
-                type = lib.types.package;
-                default = packages.gnome-extension;
-                description = "kanata-switcher GNOME extension package";
-              };
-            };
-          };
+          options.services.kanata-switcher = self.lib.moduleOptions lib packages;
 
           config = lib.mkIf cfg.enable {
             home.packages = [ cfg.package ]
@@ -180,18 +225,7 @@
               };
               Service = {
                 Type = "simple";
-                ExecStart =
-                  let
-                    args = [
-                      "${cfg.package}/bin/kanata-switcher"
-                      "-p" (toString cfg.kanataPort)
-                      "-H" cfg.kanataHost
-                    ] ++ lib.optionals (cfg.configFile != null) [
-                      "-c" (toString cfg.configFile)
-                    ] ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [
-                      "--no-install-gnome-extension"
-                    ];
-                  in lib.concatStringsSep " " args;
+                ExecStart = lib.concatStringsSep " " (self.lib.mkExecArgs cfg);
                 Restart = "on-failure";
                 RestartSec = 5;
               };

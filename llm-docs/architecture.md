@@ -152,6 +152,20 @@ Packages:
 - `daemon` - Rust daemon built with crane, auto-install enabled
 - `gnome-extension` - stdenv derivation for Nix-managed install
 
+NixOS module (`nixosModules.default`) - system-wide install with user service:
+```nix
+services.kanata-switcher = {
+  enable = true;
+  kanataPort = 10000;
+  kanataHost = "127.0.0.1";
+  configFile = null;  # defaults to ~/.config/kanata/kanata-switcher.json
+  gnomeExtension.enable = false;  # installs + enables via dconf for all users
+  gnomeExtension.autoInstall = false;
+};
+```
+
+Creates `systemd.user.services.kanata-switcher` (starts for all users on graphical login).
+
 Home Manager module options:
 ```nix
 services.kanata-switcher = {

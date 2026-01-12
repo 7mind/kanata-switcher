@@ -87,7 +87,7 @@ cargo run --release -- -p 10000
 
 The extension is loaded from the filesystem (`<install-dir>/gnome/`) if available, otherwise falls back to the embedded copy (enabled by default via `embed-gnome-extension` cargo feature).
 
-### Installing for User
+### Installing
 
 #### Home Manager (NixOS / Nix)
 
@@ -125,6 +125,42 @@ Enable in your Home Manager config:
   };
 }
 ```
+
+#### NixOS Module
+
+For system-wide installation without Home Manager:
+
+```nix
+# flake.nix
+{
+  inputs.kanata-switcher.url = "github:7mind/kanata-switcher";
+
+  outputs = { nixpkgs, kanata-switcher, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        kanata-switcher.nixosModules.default
+        # ...
+      ];
+    };
+  };
+}
+```
+
+```nix
+# configuration.nix
+{
+  services.kanata-switcher = {
+    enable = true;
+    kanataPort = 10000;  # optional, default 10000
+    # configFile = /etc/kanata-switcher.json;  # optional, defaults to ~/.config/kanata/kanata-switcher.json
+
+    # For GNOME Shell:
+    gnomeExtension.enable = true;  # installs extension and enables via dconf for all users
+  };
+}
+```
+
+The NixOS module creates a systemd user service (`systemd.user.services`) that auto-starts for all users on graphical login. Config file still defaults to per-user `~/.config/kanata/kanata-switcher.json`.
 
 #### Manual Installation (non-Nix)
 
