@@ -113,10 +113,12 @@ Enable in your Home Manager config:
 
 ```nix
 # home.nix
+{ osConfig, ... }:  # if using home-manager as NixOS module
 {
   services.kanata-switcher = {
     enable = true;
     kanataPort = 10000;  # optional, default 10000
+    # kanataPort = osConfig.services.kanata.keyboards.default.port;  # if using programs.kanata from nixpkgs
     # configFile = ./kanata-switcher.json;  # optional, defaults to ~/.config/kanata/kanata-switcher.json
 
     # For GNOME Shell - choose one:
@@ -148,10 +150,12 @@ For system-wide installation without Home Manager:
 
 ```nix
 # configuration.nix
+{ config, ... }:
 {
   services.kanata-switcher = {
     enable = true;
     kanataPort = 10000;  # optional, default 10000
+    # kanataPort = config.services.kanata.keyboards.default.port;  # if using programs.kanata from nixpkgs
     # configFile = /etc/kanata-switcher.json;  # optional, defaults to ~/.config/kanata/kanata-switcher.json
 
     # For GNOME Shell:
