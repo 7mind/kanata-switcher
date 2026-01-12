@@ -18,7 +18,7 @@ This project is fully LLM-generated and has so far been tested manually on the f
 
 If you have tested it in other environments, and it did/didn't work, open a PR to change the README!
 
-# Machine summary
+## Machine summary
 
 ### Supported Environments
 
@@ -69,23 +69,23 @@ Example config:
 
 ### Running Without Installing
 
-#### Cargo
-
-```bash
-cargo run --release -- -p 10000
-```
-
 #### Nix
 
 ```bash
 nix run github:7mind/kanata-switcher -- -p 10000
 ```
 
+#### Cargo
+
+```bash
+cargo run --release -- -p 10000
+```
+
 **GNOME Shell note:** The daemon automatically installs and enables the required GNOME extension on first run. After installation, restart GNOME Shell:
 - **X11**: Press Alt+F2, type `r`, press Enter
 - **Wayland**: Log out and log back in
 
-The extension is loaded from the filesystem (`<exe-dir>/gnome/`) if available, otherwise falls back to the embedded copy (enabled by default via `embed-gnome-extension` cargo feature).
+The extension is loaded from the filesystem (`<install-dir>/gnome/`) if available, otherwise falls back to the embedded copy (enabled by default via `embed-gnome-extension` cargo feature).
 
 ### Installing for User
 
@@ -136,21 +136,19 @@ For non-Nix systems, install the binary and configure the systemd user service m
    # Binary installed to ~/.cargo/bin/kanata-switcher
    ```
 
-2. Copy the systemd unit file:
+2. Copy the systemd unit file [`kanata-switcher.service`](./systemd/kanata-switcher.service):
    ```bash
    mkdir -p ~/.config/systemd/user
    cp systemd/kanata-switcher.service ~/.config/systemd/user/
    ```
 
-3. The unit file works out of the box with default `cargo install` location and port 10000. Edit only if using non-default paths or port.
+3. The unit file works out of the box if `cargo install` installs to `~/.cargo/bin` (default) and with kanata port 10000. Edit it if using non-default paths or port.
 
 4. Enable and start the service:
    ```bash
    systemctl --user daemon-reload
    systemctl --user enable --now kanata-switcher
    ```
-
-The systemd unit template is in [`systemd/kanata-switcher.service`](./systemd/kanata-switcher.service).
 
 ### Daemon Options
 
@@ -169,8 +167,8 @@ Single daemon handles all environments:
 
 - **GNOME**: Daemon polls extension via DBus → extension returns focused window
 - **KDE**: Daemon injects KWin script → script calls daemon via DBus on focus change
-- **wlroots compositors**: Daemon connects to Wayland and uses `wlr-foreign-toplevel-management` protocol to receive focus events
 - **COSMIC**: Daemon connects to Wayland and uses `cosmic-toplevel-info` protocol (separate from wlroots, as COSMIC is not wlroots-based)
+- **wlroots compositors**: Daemon connects to Wayland and uses `wlr-foreign-toplevel-management` protocol to receive focus events
 
 ### Related Projects
 
