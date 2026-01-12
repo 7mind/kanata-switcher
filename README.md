@@ -1,8 +1,10 @@
+# kanata-switcher
+
 `kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers based on currently focused application windows for Linux Wayland desktop environments - GNOME Shell, KDE Plasma, COSMIC and wlroots-based compositors (Sway, Hyprland, Niri, etc.).
 
 As of the time when the project was started, the only active project for application-based layer switching for kanata for Linux was [hyprkan](https://github.com/haithium/hyperkan) - which supported only wlroots-based compositors. There was no project attempting support for GNOME Shell or KDE Plasma.
 
-This project aims to support all Wayland-based environments (and possibly X11 too, later, but not now) at once in a single application.
+This project aims to support all Wayland-based environments at once in a single application. And possibly X11 too, but later!
 
 This project is fully LLM-generated and has so far been tested manually on the following environments:
 
