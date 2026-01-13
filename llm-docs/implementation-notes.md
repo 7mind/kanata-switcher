@@ -43,6 +43,16 @@ Gio.DBusExportedObject.wrapJSObject(xml, this)
 this._dbus.export(Gio.DBus.session, '/path')
 ```
 
+## GNOME Extension Detection
+
+Detection flow (optimized for systemd services):
+1. **Quick probe** - Try D-Bus call to extension. If responds → extension is active, skip all checks
+2. **Fallback** - If not responding:
+   - Check **installed** via `gnome-extensions info` (requires `XDG_DATA_DIRS`)
+   - Check **enabled** via `gsettings get org.gnome.shell enabled-extensions` (works in systemd)
+
+NixOS/Home Manager modules set `XDG_DATA_DIRS` environment for systemd services to ensure `gnome-extensions` can find Nix-installed extensions.
+
 ## KDE KWin API
 
 ```javascript

@@ -201,6 +201,9 @@
                 Restart = "on-failure";
                 RestartSec = 5;
               };
+              environment = {
+                XDG_DATA_DIRS = "/run/current-system/sw/share";
+              };
             };
 
             programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
@@ -235,6 +238,7 @@
                 ExecStart = lib.concatStringsSep " " (self.lib.mkExecArgs cfg);
                 Restart = "on-failure";
                 RestartSec = 5;
+                Environment = [ "XDG_DATA_DIRS=%h/.nix-profile/share:/run/current-system/sw/share" ];
               };
               Install.WantedBy = [ "graphical-session.target" ];
             };

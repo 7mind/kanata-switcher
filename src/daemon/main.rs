@@ -970,24 +970,24 @@ struct GnomeExtensionStatus {
 }
 
 fn gnome_extension_status() -> GnomeExtensionStatus {
-    let output = Command::new("gnome-extensions")
+    // Check installed via gnome-extensions info (requires XDG_DATA_DIRS)
+    let installed = Command::new("gnome-extensions")
         .args(["info", GNOME_EXTENSION_UUID])
-        .output();
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let enabled = stdout.contains("State: ENABLED") || stdout.contains("State: ACTIVE");
-            GnomeExtensionStatus {
-                installed: true,
-                enabled,
-            }
-        }
-        _ => GnomeExtensionStatus {
-            installed: false,
-            enabled: false,
-        },
-    }
+    // Check enabled via gsettings (more reliable from systemd services)
+    let enabled = Command::new("gsettings")
+        .args(["get", "org.gnome.shell", "enabled-extensions"])
+        .output()
+        .map(|o| {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            stdout.contains(GNOME_EXTENSION_UUID)
+        })
+        .unwrap_or(false);
+
+    GnomeExtensionStatus { installed, enabled }
 }
 
 fn print_gnome_extension_install_instructions(reason: &str) {
@@ -1195,6 +1195,25 @@ pub struct GnomeContext {
 async fn setup_gnome_extension(
     auto_install: bool,
 ) -> Result<GnomeContext, Box<dyn std::error::Error + Send + Sync>> {
+    let connection = Connection::session().await?;
+
+    // Quick probe: try D-Bus call first - if extension is active, skip all checks
+    let probe = connection
+        .call_method(
+            Some("org.gnome.Shell"),
+            "/com/github/kanata/Switcher",
+            Some("com.github.kanata.Switcher"),
+            "GetFocusedWindow",
+            &(),
+        )
+        .await;
+
+    if probe.is_ok() {
+        println!("[GNOME] Extension active");
+        return Ok(GnomeContext { connection });
+    }
+
+    // Extension not responding - check status for diagnostics
     let status = gnome_extension_status();
     println!(
         "[GNOME] Extension status: {}, {}",
@@ -1203,7 +1222,6 @@ async fn setup_gnome_extension(
     );
 
     let needs_restart = ensure_gnome_extension(auto_install);
-    let connection = Connection::session().await?;
 
     if needs_restart {
         println!("[GNOME] Extension installed and enabled.");
