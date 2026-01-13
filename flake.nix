@@ -155,6 +155,12 @@
             description = "Auto-install GNOME extension at runtime (for mutable config). When false, use gnomeExtension.enable for Nix-managed installation.";
           };
 
+          manageDconf = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Whether to manage dconf/GNOME Shell enabled-extensions. Set to false when using external extension management (e.g., a centralized gnome-extensions module with locked dconf settings).";
+          };
+
           package = lib.mkOption {
             type = lib.types.package;
             default = packages.gnome-extension;
@@ -197,7 +203,7 @@
               };
             };
 
-            programs.dconf = lib.mkIf cfg.gnomeExtension.enable {
+            programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
               enable = true;
               profiles.user.databases = [{
                 settings."org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
@@ -233,7 +239,7 @@
               Install.WantedBy = [ "graphical-session.target" ];
             };
 
-            dconf.settings = lib.mkIf cfg.gnomeExtension.enable {
+            dconf.settings = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
               "org/gnome/shell" = {
                 enabled-extensions = [ "kanata-switcher@7mind.io" ];
               };

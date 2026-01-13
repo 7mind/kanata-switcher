@@ -124,6 +124,7 @@ Enable in your Home Manager config:
     # For GNOME Shell - choose one:
     gnomeExtension.enable = true;       # Nix-managed extension (recommended)
     # gnomeExtension.autoInstall = true; # Runtime auto-install (mutable)
+    # gnomeExtension.manageDconf = false; # Disable dconf management (see below)
   };
 }
 ```
@@ -160,11 +161,47 @@ For system-wide installation without Home Manager:
 
     # For GNOME Shell:
     gnomeExtension.enable = true;  # installs extension and enables via dconf for all users
+    # gnomeExtension.manageDconf = false; # Disable dconf management (see below)
   };
 }
 ```
 
 The NixOS module creates a systemd user service (`systemd.user.services`) that auto-starts for all users on graphical login. Config file still defaults to per-user `~/.config/kanata/kanata-switcher.json`.
+
+#### External GNOME Extension Management
+
+When using a centralized GNOME extensions module that manages all extensions via locked dconf settings, this module's dconf configuration will conflict - dconf databases don't merge, and locked settings take precedence.
+
+Set `gnomeExtension.manageDconf = false` to disable dconf management:
+
+```nix
+# configuration.nix
+{
+  services.kanata-switcher = {
+    enable = true;
+    gnomeExtension.enable = true;
+    gnomeExtension.manageDconf = false;  # Don't add dconf database entry
+  };
+}
+```
+
+Then include the extension UUID in your dconf enabled-extensions list. The extension package is already installed when `gnomeExtension.enable = true`:
+
+```nix
+# your gnome-extensions module
+{ config, ... }:
+let
+  kanataExtension = config.services.kanata-switcher.gnomeExtension.package;
+in {
+  programs.dconf.profiles.user.databases = [{
+    lockAll = true;
+    settings."org/gnome/shell".enabled-extensions = [
+      # ... your other extensions ...
+      kanataExtension.extensionUuid
+    ];
+  }];
+}
+```
 
 #### Manual Installation (non-Nix)
 
