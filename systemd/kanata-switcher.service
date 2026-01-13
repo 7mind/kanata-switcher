@@ -9,7 +9,7 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 # Adjust the path and port as needed:
-ExecStart=%h/.cargo/bin/kanata-switcher -p 10000
+ExecStart=%h/.cargo/bin/kanata-switcher --quiet -p 10000
 Restart=on-failure
 RestartSec=5
 

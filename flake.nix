@@ -166,6 +166,7 @@
       # Shared: build ExecStart args
       lib.mkExecArgs = cfg: [
         "${cfg.package}/bin/kanata-switcher"
+        "--quiet"
         "-p" (toString cfg.kanataPort)
         "-H" cfg.kanataHost
       ] ++ (if cfg.configFile != null then [ "-c" (toString cfg.configFile) ] else [])

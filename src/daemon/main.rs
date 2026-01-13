@@ -82,6 +82,10 @@ struct Args {
     #[arg(short = 'c', long)]
     config: Option<PathBuf>,
 
+    /// Quiet mode: suppress focus and layer-switch messages
+    #[arg(short = 'q', long)]
+    quiet: bool,
+
     /// Auto-install GNOME extension if missing (default behavior)
     #[arg(long)]
     install_gnome_extension: bool,
@@ -223,14 +227,16 @@ struct FocusHandler {
     rules: Vec<Rule>,
     last_class: String,
     last_title: String,
+    quiet: bool,
 }
 
 impl FocusHandler {
-    fn new(rules: Vec<Rule>) -> Self {
+    fn new(rules: Vec<Rule>, quiet: bool) -> Self {
         Self {
             rules,
             last_class: String::new(),
             last_title: String::new(),
+            quiet,
         }
     }
 
@@ -247,7 +253,9 @@ impl FocusHandler {
             return None;
         }
 
-        println!("[Focus] class=\"{}\" title=\"{}\"", win.class, win.title);
+        if !self.quiet {
+            println!("[Focus] class=\"{}\" title=\"{}\"", win.class, win.title);
+        }
 
         let layer = match_rule(&self.rules, win)
             .map(|r| r.layer.clone())
@@ -294,6 +302,7 @@ struct KanataClientInner {
     config_default_layer: Option<String>,
     pending_layer: Option<String>,
     connected: bool,
+    quiet: bool,
 }
 
 #[derive(Clone)]
@@ -308,7 +317,7 @@ impl std::fmt::Debug for KanataClient {
 }
 
 impl KanataClient {
-    pub fn new(host: &str, port: u16, config_default_layer: Option<String>) -> Self {
+    pub fn new(host: &str, port: u16, config_default_layer: Option<String>, quiet: bool) -> Self {
         if let Some(ref layer) = config_default_layer {
             println!("[Kanata] Using config-specified default layer: \"{}\"", layer);
         }
@@ -322,6 +331,7 @@ impl KanataClient {
                 config_default_layer,
                 pending_layer: None,
                 connected: false,
+                quiet,
             })),
         }
     }
@@ -411,7 +421,7 @@ impl KanataClient {
                                 let mut inner = self.inner.lock().await;
                                 let old_layer = inner.current_layer.clone();
                                 inner.current_layer = Some(lc.new.clone());
-                                if old_layer.as_ref() != Some(&lc.new) {
+                                if old_layer.as_ref() != Some(&lc.new) && !inner.quiet {
                                     println!(
                                         "[Kanata] Layer changed (external): {} -> {}",
                                         old_layer.as_deref().unwrap_or("(none)"),
@@ -502,11 +512,13 @@ impl KanataClient {
             let json = serde_json::to_string(&msg).unwrap() + "\n";
 
             if writer.write_all(json.as_bytes()).await.is_ok() {
-                println!(
-                    "[Kanata] Switching layer (daemon): {} -> {}",
-                    current.as_deref().unwrap_or("(none)"),
-                    layer_name
-                );
+                if !inner.quiet {
+                    println!(
+                        "[Kanata] Switching layer (daemon): {} -> {}",
+                        current.as_deref().unwrap_or("(none)"),
+                        layer_name
+                    );
+                }
                 inner.current_layer = Some(layer_name.to_string());
                 return true;
             }
@@ -872,6 +884,7 @@ enum WaylandProtocol {
 async fn run_wayland(
     kanata: KanataClient,
     rules: Vec<Rule>,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = WaylandConnection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
@@ -900,7 +913,7 @@ async fn run_wayland(
 
     println!("[Wayland] Listening for focus events...");
 
-    let mut handler = FocusHandler::new(rules);
+    let mut handler = FocusHandler::new(rules, quiet);
 
     loop {
         queue.roundtrip(&mut state)?;
@@ -1238,10 +1251,11 @@ async fn run_gnome(
     kanata: KanataClient,
     rules: Vec<Rule>,
     context: GnomeContext,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[GNOME] Starting focus polling...");
 
-    let mut handler = FocusHandler::new(rules);
+    let mut handler = FocusHandler::new(rules, quiet);
 
     loop {
         let result = context
@@ -1275,6 +1289,7 @@ async fn run_gnome(
 async fn run_kde(
     kanata: KanataClient,
     rules: Vec<Rule>,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
 
@@ -1314,7 +1329,7 @@ async fn run_kde(
 
     let switcher = KdeSwitcher {
         kanata,
-        handler: Arc::new(Mutex::new(FocusHandler::new(rules))),
+        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet))),
         runtime_handle: tokio::runtime::Handle::current(),
     };
 
@@ -1451,7 +1466,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         eprintln!("[Warning] No rules loaded");
     }
 
-    let kanata = KanataClient::new(&args.host, args.port, config.default_layer);
+    let kanata = KanataClient::new(&args.host, args.port, config.default_layer, args.quiet);
     kanata.connect_with_retry().await;
 
     // Create shutdown guard - will switch to default layer when dropped
@@ -1486,13 +1501,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match env {
         Environment::Gnome => {
-            run_gnome(kanata, config.rules, gnome_context.unwrap()).await?;
+            run_gnome(kanata, config.rules, gnome_context.unwrap(), args.quiet).await?;
         }
         Environment::Kde => {
-            run_kde(kanata, config.rules).await?;
+            run_kde(kanata, config.rules, args.quiet).await?;
         }
         Environment::Wayland => {
-            run_wayland(kanata, config.rules).await?;
+            run_wayland(kanata, config.rules, args.quiet).await?;
         }
         _ => {
             eprintln!("[Error] Unsupported environment: {}", env.as_str());

@@ -196,10 +196,13 @@ For non-Nix systems, install the binary and configure the systemd user service m
 -p, --port PORT              Kanata TCP port (default: 10000)
 -H, --host HOST              Kanata host (default: 127.0.0.1)
 -c, --config PATH            Config file path
+-q, --quiet                  Suppress focus/layer-switch messages
 --install-gnome-extension    Auto-install GNOME extension if missing (default)
 --no-install-gnome-extension Do not auto-install GNOME extension
 -h, --help                   Show help
 ```
+
+Systemd units use `--quiet` by default to reduce log noise.
 
 ### How It Works
 

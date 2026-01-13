@@ -188,9 +188,12 @@ HM module adds `--no-install-gnome-extension` by default. Use either:
 -p, --port PORT              Kanata TCP port (default: 10000)
 -H, --host HOST              Kanata host (default: 127.0.0.1)
 -c, --config PATH            Config file path
+-q, --quiet                  Suppress focus/layer-switch messages
 --install-gnome-extension    Auto-install GNOME extension (default)
 --no-install-gnome-extension Skip auto-install
 ```
+
+Systemd units use `--quiet` by default.
 
 ## Rust Dependencies
 
