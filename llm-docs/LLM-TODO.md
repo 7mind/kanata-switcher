@@ -15,7 +15,7 @@ The project daemon is located at `src/daemon/` (Rust).
 # Testing & Polish
 - [x] Test GNOME Shell extension on actual GNOME session
 - [x] Test KDE KWin script + daemon on actual KDE session
-- [ ] Test daemon on Sway/Hyprland/Niri
+- [x] Test daemon on Sway/Hyprland/Niri
 - [x] Test daemon on COSMIC
 - [x] Add proper error handling and reconnection logic
 - [ ] Add config file watching for hot-reload

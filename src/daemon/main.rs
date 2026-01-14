@@ -249,8 +249,15 @@ impl FocusHandler {
         self.last_class = win.class.clone();
         self.last_title = win.title.clone();
 
+        // Handle unfocused state (no window has focus) - switch to default layer
         if win.class.is_empty() && win.title.is_empty() {
-            return None;
+            if !self.quiet {
+                println!("[Focus] No window focused");
+            }
+            if default_layer.is_empty() {
+                return None;
+            }
+            return Some(default_layer.to_string());
         }
 
         if !self.quiet {
@@ -739,6 +746,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for WaylandState {
                 let activated = zwlr_foreign_toplevel_handle_v1::State::Activated as u8;
                 if handle_state.contains(&activated) {
                     state.active_window = Some(handle.id());
+                } else if state.active_window.as_ref() == Some(&handle.id()) {
+                    // Window lost activation - clear active_window
+                    state.active_window = None;
                 }
             }
             zwlr_foreign_toplevel_handle_v1::Event::Closed => {
@@ -802,6 +812,9 @@ impl Dispatch<ZcosmicToplevelHandleV1, ()> for WaylandState {
                     .any(|s| s == zcosmic_toplevel_handle_v1::State::Activated as u32);
                 if activated {
                     state.active_window = Some(handle.id());
+                } else if state.active_window.as_ref() == Some(&handle.id()) {
+                    // Window lost activation - clear active_window
+                    state.active_window = None;
                 }
             }
             zcosmic_toplevel_handle_v1::Event::Closed => {
@@ -1365,14 +1378,13 @@ async fn run_kde(
     let active_window = if is_kde6 { "activeWindow" } else { "activeClient" };
     let kwin_script = format!(
         r#"function notifyFocus(client) {{
-  if (!client) return;
   callDBus(
     "com.github.kanata.Switcher",
     "/com/github/kanata/Switcher",
     "com.github.kanata.Switcher",
     "WindowFocus",
-    client.resourceClass || "",
-    client.caption || ""
+    client ? (client.resourceClass || "") : "",
+    client ? (client.caption || "") : ""
   );
 }}
 workspace.{api}.connect(notifyFocus);

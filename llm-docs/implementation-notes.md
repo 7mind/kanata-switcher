@@ -86,6 +86,20 @@ KanataClient handles disconnects automatically:
 - Queues pending layer change during disconnect, applies on reconnect
 - Initial connection also retries with same backoff
 
+## Unfocus Handling
+
+When all windows are closed (no window focused), the daemon switches to the default layer:
+
+- **Wayland/COSMIC**: Protocol sets `active_window = None`, `get_active_window()` returns empty `WindowInfo`
+- **GNOME**: Extension returns `{class: "", title: ""}` when `global.display.focus_window` is null
+- **KDE**: KWin script calls with empty strings when `client` is null/undefined
+
+`FocusHandler::handle()` detects empty class+title and returns `Some(default_layer)` to trigger the switch.
+
 ## Testing
 
-Not yet tested on actual environments. See [LLM-TODO.md](./LLM-TODO.md) for testing checklist.
+Tested on all supported environments:
+- GNOME Shell (Wayland)
+- KDE Plasma
+- COSMIC
+- Sway, Hyprland, Niri (wlr-foreign-toplevel-management protocol)

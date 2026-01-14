@@ -11,10 +11,10 @@ This project is fully LLM-generated and has so far been tested manually on the f
 - [x] GNOME Shell
 - [x] KDE Plasma
 - [x] COSMIC
-- [ ] wlroots-based compositors
-    - [ ] Sway
-    - [ ] Hyprland
-    - [ ] Niri
+- [x] wlroots-based compositors
+    - [x] Sway
+    - [x] Hyprland
+    - [x] Niri
 
 If you have tested it in other environments, and it did/didn't work, open a PR to change the README!
 
