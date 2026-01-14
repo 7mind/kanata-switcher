@@ -1,6 +1,6 @@
 On start, read files in [llm-docs](./llm-docs).
 
-Reference file [LLM-TODO.md](./LLM-TODO.md) for current project TODO state.
+Reference file [LLM-TODO.md](./llm-docs/LLM-TODO.md) for current project TODO state.
 
 ### llm-docs
 These apply __ONLY__ to editing llm-docs:

@@ -8,7 +8,9 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Create KDE Plasma (KWin script) support
 - [x] Unified Wayland backend via `wlr-foreign-toplevel-management` (Sway, Hyprland, Niri, etc.)
 - [x] COSMIC support via `cosmic-toplevel-info` protocol (same unified backend)
-- [x] Remove deprecated Node.js daemon, migrate to Rust-only codebase
+- [ ] Support virtual key actions (`(vk ...)` in kanata config)
+- [ ] Support reload config actions (`(lrld)`, `(lrld-num N)`, `(lrpv)`, `(lrnx)`)
+- [ ] Support ReloadFile action (TCP exclusive, no kanata syntax equivalent)
 
 # Testing & Polish
 - [x] Test GNOME Shell extension on actual GNOME session

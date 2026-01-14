@@ -119,7 +119,15 @@ Enable in your Home Manager config:
     enable = true;
     kanataPort = 10000;  # optional, default 10000
     # kanataPort = osConfig.services.kanata.keyboards.default.port;  # if using programs.kanata from nixpkgs
-    # configFile = ./kanata-switcher.json;  # optional, defaults to ~/.config/kanata/kanata-switcher.json
+
+    # Config - choose one:
+    settings = [  # inline config (recommended)
+      { default = "default"; }
+      { class = "^firefox$"; layer = "browser"; }
+      { class = "jetbrains|codium|code"; layer = "code"; }
+    ];
+    # configFile = ./kanata-switcher.json;  # Nix path, or string like "~/.config/..."
+    # (neither) defaults to ~/.config/kanata/kanata-switcher.json
 
     # For GNOME Shell - choose one:
     gnomeExtension.enable = true;       # Nix-managed extension (recommended)
@@ -157,7 +165,15 @@ For system-wide installation without Home Manager:
     enable = true;
     kanataPort = 10000;  # optional, default 10000
     # kanataPort = config.services.kanata.keyboards.default.port;  # if using programs.kanata from nixpkgs
-    # configFile = /etc/kanata-switcher.json;  # optional, defaults to ~/.config/kanata/kanata-switcher.json
+
+    # Config - choose one:
+    settings = [  # inline config (recommended)
+      { default = "default"; }
+      { class = "^firefox$"; layer = "browser"; }
+      { class = "jetbrains|codium|code"; layer = "code"; }
+    ];
+    # configFile = ./kanata-switcher.json;  # Nix path, or string like "~/.config/..."
+    # (neither) defaults to ~/.config/kanata/kanata-switcher.json
 
     # For GNOME Shell:
     gnomeExtension.enable = true;  # installs extension and enables via dconf for all users

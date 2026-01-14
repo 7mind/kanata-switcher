@@ -88,4 +88,4 @@ KanataClient handles disconnects automatically:
 
 ## Testing
 
-Not yet tested on actual environments. See LLM-TODO.md for testing checklist.
+Not yet tested on actual environments. See [LLM-TODO.md](./LLM-TODO.md) for testing checklist.

@@ -117,9 +117,8 @@
         }
       );
 
-    in perSystem // {
-      # Shared module options (used by both NixOS and Home Manager modules)
-      lib.moduleOptions = lib: packages: {
+    in perSystem // (let
+      moduleOptions = lib: packages: {
         enable = lib.mkEnableOption "kanata-switcher daemon";
 
         package = lib.mkOption {
@@ -141,9 +140,24 @@
         };
 
         configFile = lib.mkOption {
-          type = lib.types.nullOr lib.types.path;
+          type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
           default = null;
-          description = "Path to config file. Defaults to ~/.config/kanata/kanata-switcher.json";
+          example = "~/.config/kanata/kanata-switcher.json";
+          description = "Path to config file. Mutually exclusive with 'settings'. Defaults to ~/.config/kanata/kanata-switcher.json when neither is set.";
+        };
+
+        settings = lib.mkOption {
+          type = lib.types.nullOr (lib.types.listOf lib.types.attrs);
+          default = null;
+          example = lib.literalExpression ''
+            [
+              { default = "default"; }
+              { class = "^firefox$"; layer = "browser"; }
+              { class = "jetbrains|codium|code"; layer = "code"; }
+              { class = "kitty|alacritty"; layer = "terminal"; }
+            ]
+          '';
+          description = "Config as a list of rule attrsets, serialized to JSON. Mutually exclusive with 'configFile'.";
         };
 
         gnomeExtension = {
@@ -169,86 +183,83 @@
         };
       };
 
-      # Shared: build ExecStart args
-      lib.mkExecArgs = cfg: [
-        "${cfg.package}/bin/kanata-switcher"
-        "--quiet"
-        "-p" (toString cfg.kanataPort)
-        "-H" cfg.kanataHost
-      ] ++ (if cfg.configFile != null then [ "-c" (toString cfg.configFile) ] else [])
-        ++ (if !cfg.gnomeExtension.autoInstall then [ "--no-install-gnome-extension" ] else []);
-
-      # NixOS module
-      nixosModules.default = { config, lib, pkgs, ... }:
+      mkModule = mkConfig: { config, lib, pkgs, ... }:
         let
           cfg = config.services.kanata-switcher;
           packages = self.packages.${pkgs.system};
+          configFile =
+            if cfg.configFile != null then cfg.configFile
+            else if cfg.settings != null then pkgs.writeText "kanata-switcher.json" (builtins.toJSON cfg.settings)
+            else null;
+          execArgs = [
+            "${cfg.package}/bin/kanata-switcher"
+            "--quiet"
+            "-p" (toString cfg.kanataPort)
+            "-H" cfg.kanataHost
+          ] ++ lib.optionals (configFile != null) [ "-c" (toString configFile) ]
+            ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [ "--no-install-gnome-extension" ];
         in {
-          options.services.kanata-switcher = self.lib.moduleOptions lib packages;
-
-          config = lib.mkIf cfg.enable {
-            environment.systemPackages = [ cfg.package ]
-              ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
-
-            systemd.user.services.kanata-switcher = {
-              description = "Kanata layer switcher daemon";
-              after = [ "graphical-session.target" ];
-              partOf = [ "graphical-session.target" ];
-              wantedBy = [ "graphical-session.target" ];
-              serviceConfig = {
-                Type = "simple";
-                ExecStart = lib.concatStringsSep " " (self.lib.mkExecArgs cfg);
-                Restart = "on-failure";
-                RestartSec = 5;
-              };
-              environment = {
-                XDG_DATA_DIRS = "/run/current-system/sw/share";
-              };
-            };
-
-            programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
-              enable = true;
-              profiles.user.databases = [{
-                settings."org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
-              }];
-            };
-          };
+          options.services.kanata-switcher = moduleOptions lib packages;
+          config = lib.mkIf cfg.enable ({
+            assertions = [{
+              assertion = cfg.configFile == null || cfg.settings == null;
+              message = "services.kanata-switcher: 'configFile' and 'settings' are mutually exclusive";
+            }];
+          } // mkConfig cfg lib execArgs);
         };
 
-      # Home Manager module
-      homeManagerModules.default = { config, lib, pkgs, ... }:
-        let
-          cfg = config.services.kanata-switcher;
-          packages = self.packages.${pkgs.system};
-        in {
-          options.services.kanata-switcher = self.lib.moduleOptions lib packages;
+    in {
+      lib.moduleOptions = moduleOptions;
 
-          config = lib.mkIf cfg.enable {
-            home.packages = [ cfg.package ]
-              ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
+      nixosModules.default = mkModule (cfg: lib: execArgs: {
+        environment.systemPackages = [ cfg.package ]
+          ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
 
-            systemd.user.services.kanata-switcher = {
-              Unit = {
-                Description = "Kanata layer switcher daemon";
-                After = [ "graphical-session.target" ];
-                PartOf = [ "graphical-session.target" ];
-              };
-              Service = {
-                Type = "simple";
-                ExecStart = lib.concatStringsSep " " (self.lib.mkExecArgs cfg);
-                Restart = "on-failure";
-                RestartSec = 5;
-                Environment = [ "XDG_DATA_DIRS=%h/.nix-profile/share:/run/current-system/sw/share" ];
-              };
-              Install.WantedBy = [ "graphical-session.target" ];
-            };
-
-            dconf.settings = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
-              "org/gnome/shell" = {
-                enabled-extensions = [ "kanata-switcher@7mind.io" ];
-              };
-            };
+        systemd.user.services.kanata-switcher = {
+          description = "Kanata layer switcher daemon";
+          after = [ "graphical-session.target" ];
+          partOf = [ "graphical-session.target" ];
+          wantedBy = [ "graphical-session.target" ];
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = lib.concatStringsSep " " execArgs;
+            Restart = "on-failure";
+            RestartSec = 5;
           };
+          environment.XDG_DATA_DIRS = "/run/current-system/sw/share";
         };
-    };
+
+        programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
+          enable = true;
+          profiles.user.databases = [{
+            settings."org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
+          }];
+        };
+      });
+
+      homeManagerModules.default = mkModule (cfg: lib: execArgs: {
+        home.packages = [ cfg.package ]
+          ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
+
+        systemd.user.services.kanata-switcher = {
+          Unit = {
+            Description = "Kanata layer switcher daemon";
+            After = [ "graphical-session.target" ];
+            PartOf = [ "graphical-session.target" ];
+          };
+          Service = {
+            Type = "simple";
+            ExecStart = lib.concatStringsSep " " execArgs;
+            Restart = "on-failure";
+            RestartSec = 5;
+            Environment = [ "XDG_DATA_DIRS=%h/.nix-profile/share:/run/current-system/sw/share" ];
+          };
+          Install.WantedBy = [ "graphical-session.target" ];
+        };
+
+        dconf.settings = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
+          "org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
+        };
+      });
+    });
 }
