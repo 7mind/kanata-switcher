@@ -24,7 +24,7 @@ These apply __ONLY__ to editing llm-docs:
 
 ### Git commits
 
-- Make a git commit after solid chunks of work are done
+- Make a git commit after a shippable chunk of work are done
 - Before commit, update llm-docs and LLM-TODO. Guidelines in [llm-docs](#llm-docs) section apply.
 - Test both Nix and Cargo builds before commit
 - Do not amend commits, make new commits for your changes

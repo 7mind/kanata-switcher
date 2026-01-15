@@ -157,8 +157,15 @@ fn load_config(config_path: Option<&Path>) -> Config {
         });
 
     if !path.exists() {
-        eprintln!("[Config] File not found: {}", path.display());
-        return Config { rules: Vec::new(), default_layer: None };
+        eprintln!("[Config] Error: Config file not found: {}", path.display());
+        eprintln!();
+        eprintln!("Example config:");
+        eprintln!(r#"[
+  {{"default": "base"}},
+  {{"class": "firefox", "layer": "browser"}},
+  {{"class": "alacritty", "title": "vim", "layer": "vim"}}
+]"#);
+        std::process::exit(1);
     }
 
     match fs::read_to_string(&path) {
@@ -187,13 +194,13 @@ fn load_config(config_path: Option<&Path>) -> Config {
                 Config { rules, default_layer }
             }
             Err(e) => {
-                eprintln!("[Config] Failed to parse: {}", e);
-                Config { rules: Vec::new(), default_layer: None }
+                eprintln!("[Config] Error: Failed to parse {}: {}", path.display(), e);
+                std::process::exit(1);
             }
         },
         Err(e) => {
-            eprintln!("[Config] Failed to read: {}", e);
-            Config { rules: Vec::new(), default_layer: None }
+            eprintln!("[Config] Error: Failed to read {}: {}", path.display(), e);
+            std::process::exit(1);
         }
     }
 }
@@ -300,6 +307,26 @@ struct LayerChangePayload {
     new: String,
 }
 
+#[derive(Serialize)]
+struct RequestLayerNamesMsg {
+    #[serde(rename = "RequestLayerNames")]
+    request_layer_names: RequestLayerNamesPayload,
+}
+
+#[derive(Serialize)]
+struct RequestLayerNamesPayload {}
+
+#[derive(Deserialize)]
+struct LayerNamesMsg {
+    #[serde(rename = "LayerNames")]
+    layer_names: Option<LayerNamesPayload>,
+}
+
+#[derive(Deserialize)]
+struct LayerNamesPayload {
+    names: Vec<String>,
+}
+
 struct KanataClientInner {
     host: String,
     port: u16,
@@ -308,6 +335,7 @@ struct KanataClientInner {
     auto_default_layer: Option<String>,
     config_default_layer: Option<String>,
     pending_layer: Option<String>,
+    known_layers: Vec<String>,
     connected: bool,
     quiet: bool,
 }
@@ -337,6 +365,7 @@ impl KanataClient {
                 auto_default_layer: None,
                 config_default_layer,
                 pending_layer: None,
+                known_layers: Vec::new(),
                 connected: false,
                 quiet,
             })),
@@ -379,26 +408,53 @@ impl KanataClient {
         let stream = TokioTcpStream::connect(&addr).await?;
         println!("[Kanata] Connected to {}", addr);
 
-        let (reader, writer) = stream.into_split();
+        let (reader, mut writer) = stream.into_split();
         let mut reader = TokioBufReader::new(reader);
 
+        // Read initial LayerChange message
         let mut line = String::new();
         reader.read_line(&mut line).await?;
+
+        let mut current_layer = None;
+        let mut auto_default_layer = None;
+        if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line) {
+            if let Some(lc) = msg.layer_change {
+                println!("[Kanata] Current layer: \"{}\"", lc.new);
+                auto_default_layer = Some(lc.new.clone());
+                current_layer = Some(lc.new);
+            }
+        }
+
+        // Request layer names
+        let request = RequestLayerNamesMsg {
+            request_layer_names: RequestLayerNamesPayload {},
+        };
+        let request_json = serde_json::to_string(&request).unwrap() + "\n";
+        writer.write_all(request_json.as_bytes()).await?;
+
+        // Read LayerNames response
+        line.clear();
+        reader.read_line(&mut line).await?;
+
+        let mut known_layers = Vec::new();
+        if let Ok(msg) = serde_json::from_str::<LayerNamesMsg>(&line) {
+            if let Some(ln) = msg.layer_names {
+                println!("[Kanata] Available layers: {:?}", ln.names);
+                known_layers = ln.names;
+            }
+        }
 
         {
             let mut inner = self.inner.lock().await;
             inner.connected = true;
             inner.writer = Some(writer);
-
-            if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line) {
-                if let Some(lc) = msg.layer_change {
-                    println!("[Kanata] Current layer: \"{}\"", lc.new);
-                    inner.auto_default_layer = Some(lc.new.clone());
-                    inner.current_layer = Some(lc.new.clone());
-                    if inner.config_default_layer.is_none() {
-                        println!("[Kanata] Using auto-detected default layer: \"{}\"", lc.new);
-                    }
+            inner.current_layer = current_layer;
+            inner.known_layers = known_layers;
+            if let Some(ref layer) = auto_default_layer {
+                if inner.config_default_layer.is_none() {
+                    println!("[Kanata] Using auto-detected default layer: \"{}\"", layer);
                 }
+                inner.auto_default_layer = auto_default_layer;
             }
         }
 
@@ -496,16 +552,39 @@ impl KanataClient {
     pub async fn change_layer(&self, layer_name: &str) -> bool {
         let mut inner = self.inner.lock().await;
 
+        // Validate layer exists if we have known layers
+        let target_layer = if !inner.known_layers.is_empty()
+            && !inner.known_layers.iter().any(|l| l == layer_name)
+        {
+            // Unknown layer - warn and fall back to default
+            if !inner.quiet {
+                eprintln!(
+                    "[Kanata] Warning: Unknown layer \"{}\", switching to default instead",
+                    layer_name
+                );
+            }
+            let default = inner
+                .config_default_layer
+                .clone()
+                .or_else(|| inner.auto_default_layer.clone());
+            match default {
+                Some(d) => d,
+                None => return false,
+            }
+        } else {
+            layer_name.to_string()
+        };
+
         let current = inner.current_layer.clone();
-        if current.as_deref() == Some(layer_name) {
+        if current.as_deref() == Some(&target_layer) {
             return false;
         }
 
         if !inner.connected {
-            inner.pending_layer = Some(layer_name.to_string());
+            inner.pending_layer = Some(target_layer.clone());
             println!(
                 "[Kanata] Not connected, will switch to \"{}\" on reconnect",
-                layer_name
+                target_layer
             );
             return false;
         }
@@ -513,7 +592,7 @@ impl KanataClient {
         if let Some(ref mut writer) = inner.writer {
             let msg = ChangeLayerMsg {
                 change_layer: ChangeLayerPayload {
-                    new: layer_name.to_string(),
+                    new: target_layer.clone(),
                 },
             };
             let json = serde_json::to_string(&msg).unwrap() + "\n";
@@ -523,10 +602,10 @@ impl KanataClient {
                     println!(
                         "[Kanata] Switching layer (daemon): {} -> {}",
                         current.as_deref().unwrap_or("(none)"),
-                        layer_name
+                        target_layer
                     );
                 }
-                inner.current_layer = Some(layer_name.to_string());
+                inner.current_layer = Some(target_layer);
                 return true;
             }
         }
@@ -1493,7 +1572,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let config = load_config(args.config.as_deref());
     if config.rules.is_empty() {
-        eprintln!("[Warning] No rules loaded");
+        eprintln!("[Config] Error: No rules found in config file");
+        eprintln!();
+        eprintln!("Example config (~/.config/kanata/kanata-switcher.json):");
+        eprintln!(r#"[
+  {{"default": "base"}},
+  {{"class": "firefox", "layer": "browser"}},
+  {{"class": "alacritty", "title": "vim", "layer": "vim"}}
+]"#);
+        std::process::exit(1);
     }
 
     let kanata = KanataClient::new(&args.host, args.port, config.default_layer, args.quiet);
