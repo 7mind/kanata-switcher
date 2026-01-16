@@ -14,6 +14,7 @@ Key crates:
 - `zbus` - DBus for GNOME/KDE backends
 - `wayland-client`, `wayland-protocols-wlr` - Wayland protocol handling
 - `wayland-scanner` - generates COSMIC protocol bindings from XML
+- `x11rb` - X11 protocol (pure Rust implementation)
 - `tokio` - async runtime
 - `clap` - CLI parsing
 - `regex` - rule pattern matching
@@ -96,6 +97,15 @@ When all windows are closed (no window focused), the daemon switches to the defa
 
 `FocusHandler::handle()` detects empty class+title and returns `Some(default_layer)` to trigger the switch.
 
+## X11 Backend
+
+Uses x11rb with pure Rust connection (no libxcb dependency). Implementation in `run_x11()`:
+1. Connect to X server via `x11rb::connect(None)` (reads $DISPLAY)
+2. Get atoms for `_NET_ACTIVE_WINDOW`, `_NET_WM_NAME`, `UTF8_STRING`
+3. Poll loop (100ms): read `_NET_ACTIVE_WINDOW` from root, get WM_CLASS and title
+
+X11 is fallback - only used if GNOME/KDE/Wayland not detected.
+
 ## Testing
 
 Tested on all supported environments:
@@ -103,3 +113,4 @@ Tested on all supported environments:
 - KDE Plasma
 - COSMIC
 - Sway, Hyprland, Niri (wlr-foreign-toplevel-management protocol)
+- X11 (various window managers)

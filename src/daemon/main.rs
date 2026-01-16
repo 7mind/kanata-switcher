@@ -22,6 +22,9 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
+use x11rb::connection::Connection as X11Connection;
+use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as X11ConnectionExt, Window};
+use x11rb::rust_connection::RustConnection;
 use zbus::Connection;
 
 // Generated COSMIC protocols
@@ -1021,6 +1024,133 @@ async fn run_wayland(
     }
 }
 
+// === X11 Backend ===
+
+x11rb::atom_manager! {
+    pub X11Atoms: X11AtomsCookie {
+        _NET_WM_NAME,
+        _NET_ACTIVE_WINDOW,
+        UTF8_STRING,
+    }
+}
+
+struct X11State {
+    connection: RustConnection,
+    screen_num: usize,
+    atoms: X11Atoms,
+}
+
+impl X11State {
+    fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (connection, screen_num) = x11rb::connect(None)?;
+        let atoms = X11Atoms::new(&connection)?.reply()?;
+        Ok(Self { connection, screen_num, atoms })
+    }
+
+    fn get_active_window_id(&self) -> Option<Window> {
+        let root = self.connection.setup().roots[self.screen_num].root;
+
+        let prop_reply = self.connection
+            .get_property(false, root, self.atoms._NET_ACTIVE_WINDOW, AtomEnum::WINDOW, 0, 1)
+            .ok()?
+            .reply()
+            .ok()?;
+
+        if prop_reply.type_ == x11rb::NONE || prop_reply.value.len() != 4 {
+            return None;
+        }
+
+        let arr: [u8; 4] = prop_reply.value.clone().try_into().ok()?;
+        let winid = u32::from_le_bytes(arr);
+
+        if winid == 0 {
+            None
+        } else {
+            Some(winid)
+        }
+    }
+
+    fn get_window_class(&self, window: Window) -> Option<String> {
+        let reply = self.connection
+            .get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1024)
+            .ok()?
+            .reply()
+            .ok()?;
+
+        if reply.value.is_empty() {
+            return None;
+        }
+
+        // WM_CLASS format: "instance\0class\0"
+        // We want just the class part (second element)
+        let parts: Vec<&[u8]> = reply.value.split(|&b| b == 0).collect();
+        if parts.len() >= 2 {
+            String::from_utf8(parts[1].to_vec()).ok()
+        } else if !parts.is_empty() {
+            String::from_utf8(parts[0].to_vec()).ok()
+        } else {
+            None
+        }
+    }
+
+    fn get_window_title(&self, window: Window) -> Option<String> {
+        // Try _NET_WM_NAME first (UTF-8)
+        let prop_reply = self.connection
+            .get_property(false, window, self.atoms._NET_WM_NAME, self.atoms.UTF8_STRING, 0, u32::MAX)
+            .ok()?
+            .reply()
+            .ok()?;
+
+        if prop_reply.type_ != x11rb::NONE {
+            return String::from_utf8(prop_reply.value).ok();
+        }
+
+        // Fallback to WM_NAME (Latin-1)
+        let prop_reply = self.connection
+            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, u32::MAX)
+            .ok()?
+            .reply()
+            .ok()?;
+
+        String::from_utf8(prop_reply.value).ok()
+    }
+
+    fn get_active_window(&self) -> WindowInfo {
+        let Some(window_id) = self.get_active_window_id() else {
+            return WindowInfo::default();
+        };
+
+        let class = self.get_window_class(window_id).unwrap_or_default();
+        let title = self.get_window_title(window_id).unwrap_or_default();
+
+        WindowInfo { class, title }
+    }
+}
+
+async fn run_x11(
+    kanata: KanataClient,
+    rules: Vec<Rule>,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let state = X11State::new()?;
+
+    println!("[X11] Connected to display");
+    println!("[X11] Listening for focus events...");
+
+    let mut handler = FocusHandler::new(rules, quiet);
+
+    loop {
+        let win = state.get_active_window();
+        let default_layer = kanata.default_layer_sync();
+
+        if let Some(layer) = handler.handle(&win, &default_layer) {
+            kanata.change_layer(&layer).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 // === GNOME Extension Management ===
 
 /// Path to GNOME extension source relative to repository root
@@ -1626,8 +1756,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Environment::Wayland => {
             run_wayland(kanata, config.rules, args.quiet).await?;
         }
-        _ => {
-            eprintln!("[Error] Unsupported environment: {}", env.as_str());
+        Environment::X11 => {
+            run_x11(kanata, config.rules, args.quiet).await?;
+        }
+        Environment::Unknown => {
+            eprintln!("[Error] Could not detect display environment");
+            eprintln!("[Error] Ensure WAYLAND_DISPLAY or DISPLAY is set");
             std::process::exit(1);
         }
     }

@@ -12,21 +12,18 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
                     │  - Kanata TCP client        │
                     └─────────────┬───────────────┘
                                   │
-        ┌─────────────────────────┼─────────────────────────┐
-        ▼                         ▼                         ▼
-   ┌─────────┐               ┌─────────┐               ┌─────────┐
-   │  GNOME  │               │   KDE   │               │ Wayland │
-   │  DBus   │               │  KWin   │               │Toplevel │
-   └────┬────┘               └────┬────┘               └────┬────┘
-        │                         │                         │
-        ▼                         ▼              ┌──────────┴──────────┐
-   ┌─────────┐               ┌─────────┐         ▼                    ▼
-   │Extension│               │ Script  │    ┌─────────┐          ┌─────────┐
-   │ (auto)  │               │ (auto)  │    │   wlr   │          │ cosmic  │
-   └─────────┘               └─────────┘    │protocol │          │protocol │
-                                            └─────────┘          └─────────┘
-                                            Sway,Hyprland,         COSMIC
-                                            Niri,etc.
+    ┌──────────────┬──────────────┼──────────────┬──────────────┐
+    ▼              ▼              ▼              ▼              ▼
+┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
+│  GNOME  │   │   KDE   │   │ Wayland │   │   X11   │   │ Wayland │
+│  DBus   │   │  KWin   │   │   wlr   │   │ x11rb   │   │ cosmic  │
+└────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘
+     │             │             │             │             │
+     ▼             ▼             ▼             ▼             ▼
+┌─────────┐   ┌─────────┐   Sway,Hypr,   _NET_ACTIVE      COSMIC
+│Extension│   │ Script  │   Niri,etc.    _WINDOW
+│ (auto)  │   │ (auto)  │
+└─────────┘   └─────────┘
 ```
 
 ## Backend Detection
@@ -36,8 +33,9 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
 | GNOME | `XDG_CURRENT_DESKTOP` contains "gnome" | DBus extension poll |
 | KDE | `KDE_SESSION_VERSION` set | KWin script injection |
 | Wayland | `WAYLAND_DISPLAY` set | Toplevel protocol (wlr or cosmic) |
+| X11 | `DISPLAY` set | _NET_ACTIVE_WINDOW polling |
 
-Detection order: GNOME → KDE → Wayland → X11 (unsupported)
+Detection order: GNOME → KDE → Wayland → X11 → Unknown
 
 ## Wayland Toplevel Protocol
 
@@ -46,6 +44,18 @@ The Wayland backend tries protocols in order:
 2. `cosmic-toplevel-info` - works on COSMIC
 
 Both protocols provide `title`, `app_id`, and `activated` state events.
+
+## X11 Backend
+
+Uses x11rb (pure Rust X11 implementation, no libxcb dependency).
+
+X11 atoms used:
+- `_NET_ACTIVE_WINDOW` - get currently focused window
+- `WM_CLASS` - get window class (returns `instance\0class\0`)
+- `_NET_WM_NAME` - get window title (UTF-8, preferred)
+- `WM_NAME` - get window title (fallback, Latin-1)
+
+Polling-based like GNOME backend (100ms interval).
 
 ## Kanata Protocol
 
@@ -201,5 +211,6 @@ Key crates:
 - `zbus` - DBus for GNOME/KDE backends
 - `wayland-client`, `wayland-protocols-wlr` - Wayland protocol handling
 - `wayland-scanner` - generates COSMIC protocol bindings from XML
+- `x11rb` - X11 protocol (pure Rust, no libxcb dependency)
 - `tokio` - async runtime
 - `clap` - CLI parsing
