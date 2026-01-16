@@ -415,6 +415,26 @@ fn test_non_matching_rules_skipped_in_fallthrough() {
     ]);
 }
 
+#[test]
+fn test_non_matching_non_fallthrough_rule_does_not_stop_chain() {
+    // A non-matching rule with fallthrough=false should NOT stop the chain
+    // (only matching rules can stop the chain)
+    let rules = vec![
+        rule_with_fallthrough(rule(Some("app"), None, Some("layer1"))),
+        rule(Some("other"), None, Some("layer2")),  // doesn't match, fallthrough=false
+        rule(Some("app"), None, Some("layer3")),    // should still be reached
+    ];
+    let mut handler = FocusHandler::new(rules, true);
+
+    let actions = handler.handle(&win("app", ""), "default").unwrap();
+    // layer1 and layer3 should be collected; layer2 skipped (doesn't match)
+    // The non-matching rule's fallthrough=false should NOT stop the chain
+    assert_eq!(get_layers(&actions), vec![
+        "layer1".to_string(),
+        "layer3".to_string(),
+    ]);
+}
+
 // === Property Tests ===
 
 fn arb_class() -> impl Strategy<Value = String> {

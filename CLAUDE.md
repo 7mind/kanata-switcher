@@ -15,7 +15,7 @@ These apply __ONLY__ to editing llm-docs:
 
 ### Env
 
-- You (Claude Code) are running in a sandboxed environment, your options for live testing changes are limited. Especially given the fact that the project in question relies on user interaction.
+- You are running in a sandboxed environment, your options for live testing changes are limited. Especially given the fact that the project in question relies on user interaction.
 
 ### README
 
@@ -29,3 +29,4 @@ These apply __ONLY__ to editing llm-docs:
 - **Run tests before commit**: `cargo test` and `nix flake check`
 - Test both Nix and Cargo builds before commit: `cargo build --release` and `nix build`
 - Do not amend commits, make new commits for your changes
+- Do not attribute commits to the LLM

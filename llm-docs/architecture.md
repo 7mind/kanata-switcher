@@ -113,7 +113,9 @@ Daemon switches to default layer on exit (any cause):
 - `virtual_key`: auto-managed VK - press on focus, release on unfocus (optional)
 - `raw_vk_action`: array of `[name, action]` pairs, fire-and-forget on focus (optional)
 - `fallthrough`: continue matching subsequent rules (default false)
-- With fallthrough: ALL actions execute in order (layers, VKs, raw actions)
+- A matching rule with `fallthrough: false` stops evaluation; `fallthrough: true` continues
+- Non-matching rules are skipped regardless of their fallthrough setting
+- All matching rules' actions execute in order (layers, VKs, raw actions)
 - Intermediate `virtual_key`s are tapped, final is held
 - Default layer used if no match
 

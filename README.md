@@ -1,12 +1,15 @@
 # kanata-switcher
 
-`kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers based on currently focused application windows for all Linux desktop environments - GNOME Shell, KDE Plasma, COSMIC, wlroots-based compositors (Sway, Hyprland, Niri, etc.), and X11.
+`kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers and pressing virtual keys based on the currently
+focused application window for all Linux desktop environments - for Wayland: GNOME Shell, KDE Plasma, COSMIC, wlroots-based
+compositors (Sway, Hyprland, Niri, etc.), and for X11.
 
-As of the time when the project was started, the only active project for application-based layer switching for kanata for Linux was [hyprkan](https://github.com/haithium/hyperkan) - which supported only wlroots-based compositors. There was no project attempting support for GNOME Shell or KDE Plasma.
+As of the time when the project was started, the only active project for application-based layer switching for kanata
+for Linux was [hyprkan](https://github.com/haithium/hyperkan) - which supported only wlroots-based compositors. There
+was no project attempting support for GNOME Shell or KDE Plasma.
 
-This project supports all Linux desktop environments in a single application.
-
-This project is fully LLM-generated and has so far been tested manually on the following environments:
+This project is fully LLM-generated, it has a comprehensive automated test suite and has also been manually tested in
+the following environments:
 
 - [x] GNOME Shell
 - [x] KDE Plasma
@@ -15,31 +18,31 @@ This project is fully LLM-generated and has so far been tested manually on the f
     - [x] Sway
     - [x] Hyprland
     - [x] Niri
-- [ ] X11 (implemented, needs testing)
+- [x] X11
 
 If you have tested it in other environments, and it did/didn't work, open a PR to change the README!
+
+## Machine summary
 
 ---
 
 ![ENTERPRISE QUALITY](./enterprise-quality.svg)
 
-This project features comprehensive automated tests and supports an unusually wide range of desktop environments in a single codebase.
+This project features comprehensive automated test suite and supports an unusually wide range of desktop environments in a single codebase.
 
 ---
-
-## Machine summary
 
 ### Supported Environments
 
 All environments use the unified daemon (`src/daemon/`). All backends are event-driven (no polling).
 
-| Environment | How it works |
-|-------------|--------------|
-| GNOME Shell | Extension pushes focus changes to daemon via DBus |
-| KDE Plasma | Daemon auto-injects KWin script which pushes via DBus |
-| COSMIC | Daemon receives `cosmic-toplevel-info` Wayland protocol events |
+| Environment                          | How it works                                                      |
+|--------------------------------------|-------------------------------------------------------------------|
+| GNOME Shell                          | Extension pushes focus changes to daemon via DBus                 |
+| KDE Plasma                           | Daemon auto-injects KWin script which pushes via DBus             |
+| COSMIC                               | Daemon receives `cosmic-toplevel-info` Wayland protocol events    |
 | wlroots (Sway, Hyprland, Niri, etc.) | Daemon receives `wlr-foreign-toplevel-management` protocol events |
-| X11 | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
+| X11                                  | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
 
 ### Prerequisites
 
@@ -56,48 +59,78 @@ Example config:
 
 ```json
 [
-  { "default": "default" },
-  { "class": "^firefox$", "layer": "browser" },
-  { "class": "jetbrains|codium|code|dev.zed.Zed", "layer": "vscode" },
-  { "class": "kitty|alacritty|com.mitchellh.ghostty|wezterm", "title": "vim", "layer": "vim" }
+  {
+    "default": "default"
+  },
+  {
+    "class": "^firefox$",
+    "layer": "browser"
+  },
+  {
+    "class": "jetbrains|codium|code|dev.zed.Zed",
+    "layer": "vscode"
+  },
+  {
+    "class": "kitty|alacritty|com.mitchellh.ghostty|wezterm",
+    "title": "vim",
+    "layer": "vim"
+  }
 ]
 ```
 
 **Rule entries:**
+
 - `class` - Window class regex (optional)
 - `title` - Window title regex (optional)
 - `layer` - Kanata layer name to switch to (optional)
 - `virtual_key` - Virtual key to press while window is focused (optional, see below)
-- `raw_vk_action` - Raw virtual key actions (optional, advanced, see below)
-- `fallthrough` - Continue matching subsequent rules (optional, default false)
-- Rules are matched top-to-bottom; first match wins unless `fallthrough: true`
-- With `fallthrough: true`, ALL matching rules' actions execute in order
+- `raw_vk_action` - Advanced: raw virtual key actions (optional, see below)
+- `fallthrough` - Advanced: continue matching subsequent rules (optional, default false)
+- Rules are evaluated top-to-bottom; a matching rule stops evaluation (unless it has `fallthrough: true` attribute)
+    - A matching rule with `fallthrough: true` continues to subsequent rules; non-matching rules are skipped
+    - All matching rules' actions are collected and execute in order (without any `fallthrough: true` rules, that is exactly 0 or 1 action)
 - Patterns use [Rust regex syntax](https://docs.rs/regex/latest/regex/#syntax) (Perl-like, no lookahead/lookbehind)
 - Use `*` as a special case to match anything
 
-**Default layer:**
+**Default layer rule:**
+
 - `{ "default": "layer_name" }` - Explicit default layer (optional)
 - When present, disables auto-detection from Kanata
 - When absent, daemon auto-detects from Kanata's initial layer on connect
 - Can appear at most once (multiple = error), position doesn't matter
 
-**Virtual keys (simple mode):**
+**Virtual keys:**
+
 - `virtual_key` - Automatically pressed when window is focused, released when unfocused
 - At most one virtual key is active at a time
-- Example: `{ "class": "firefox", "virtual_key": "vk_browser", "layer": "browser" }`
-
-**Virtual keys (advanced):**
-- `raw_vk_action` - Array of `[key_name, action]` pairs, fired on focus only
-- Actions: `Press`, `Release`, `Tap`, `Toggle`
-- With `fallthrough: true`:
-  - ALL matching layers execute in order
-  - Intermediate `virtual_key`s are tapped (press+release), final is held
-  - ALL `raw_vk_action` arrays are collected and fired
+- With `fallthrough: true`, intermediate `virtual_key`s are tapped (press+release), final is held
 - Example:
   ```json
-  { "class": "terminal", "virtual_key": "vk_terminal", "fallthrough": true },
-  { "class": "kitty", "layer": "kitty" },
-  { "class": "alacritty", "layer": "alacritty" }
+  [
+    { 
+      "class": "firefox", "virtual_key": "vk_browser", "layer": "browser"
+    },
+    {
+      "class": "terminal", "virtual_key": "vk_terminal"
+    }
+  ]
+  ```
+
+**Raw virtual key actions:**
+
+- `raw_vk_action` - Array of `[key_name, action]` pairs, fired on focus only (fire-and-forget)
+- Actions:
+  - `Press` - Press the key; remains pressed until another action triggers Release or Tap
+  - `Release` - Release the key; does nothing if not pressed
+  - `Tap` - Press and release the key; if already pressed, only releases it
+  - `Toggle` - Press if not pressed, release if pressed
+- Example:
+  ```json
+  [ 
+    {
+      "class": "firefox", "raw_vk_action": [["vk_notify", "Tap"], ["vk_browser", "Press"]] 
+    }
+  ]
   ```
 
 ### Running Without Installing
@@ -114,15 +147,18 @@ nix run github:7mind/kanata-switcher -- -p 10000
 cargo run --release -- -p 10000
 ```
 
-**GNOME Shell note:** The daemon automatically installs and enables the required GNOME extension on first run. After installation, restart GNOME Shell:
+**GNOME Shell note:** The daemon automatically installs and enables the required GNOME extension on first run. After
+installation, restart GNOME Shell:
+
 - **X11**: Press Alt+F2, type `r`, press Enter
 - **Wayland**: Log out and log back in
 
-The extension is loaded from the filesystem (`<install-dir>/gnome/`) if available, otherwise falls back to the embedded copy (enabled by default via `embed-gnome-extension` cargo feature).
+The extension is loaded from the filesystem (`<install-dir>/gnome/`) if available, otherwise falls back to the embedded
+copy (enabled by default via `embed-gnome-extension` cargo feature).
 
 ### Installing
 
-#### Home Manager (NixOS / Nix)
+#### Home Manager (Nix)
 
 Add flake input and import module:
 
@@ -170,7 +206,7 @@ Enable in your Home Manager config:
 }
 ```
 
-#### NixOS Module
+#### NixOS Module (NixOS)
 
 For system-wide installation without Home Manager:
 
@@ -215,11 +251,13 @@ For system-wide installation without Home Manager:
 }
 ```
 
-The NixOS module creates a systemd user service (`systemd.user.services`) that auto-starts for all users on graphical login. Config file still defaults to per-user `~/.config/kanata/kanata-switcher.json`.
+The NixOS module creates a systemd user service (`systemd.user.services`) that auto-starts for all users on graphical
+login. Config file still defaults to per-user `~/.config/kanata/kanata-switcher.json`.
 
-#### External GNOME Extension Management
+##### External GNOME Extension Management
 
-When using a centralized GNOME extensions module that manages all extensions via locked dconf settings, this module's dconf configuration will conflict - dconf databases don't merge, and locked settings take precedence.
+When using a centralized GNOME extensions module that manages all extensions via locked dconf settings, this module's
+dconf configuration will conflict - dconf databases don't merge, and locked settings take precedence.
 
 Set `gnomeExtension.manageDconf = false` to disable dconf management:
 
@@ -234,7 +272,8 @@ Set `gnomeExtension.manageDconf = false` to disable dconf management:
 }
 ```
 
-Then include the extension UUID in your dconf enabled-extensions list. The extension package is already installed when `gnomeExtension.enable = true`:
+Then include the extension UUID in your dconf enabled-extensions list. The extension package is already installed when
+`gnomeExtension.enable = true`:
 
 ```nix
 # your gnome-extensions module
@@ -254,7 +293,7 @@ in {
 
 #### Manual Installation (non-Nix)
 
-For non-Nix systems, install the binary and configure the systemd user service manually.
+For non-Nix / NixOS systems, install the binary and configure the systemd user service manually as follows.
 
 1. Install the binary:
    ```bash
@@ -268,7 +307,7 @@ For non-Nix systems, install the binary and configure the systemd user service m
    cp systemd/kanata-switcher.service ~/.config/systemd/user/
    ```
 
-3. The unit file works out of the box if `cargo install` installs to `~/.cargo/bin` (default) and with kanata port 10000. Edit it if using non-default paths or port.
+3. The unit file works out of the box if `cargo install` installs to `~/.cargo/bin` (default) and with default kanata port 10000. Edit the systemd unit file if you use a different port or install binary to a different location.
 
 4. Enable and start the service:
    ```bash
@@ -289,16 +328,6 @@ For non-Nix systems, install the binary and configure the systemd user service m
 ```
 
 Systemd units use `--quiet` by default to reduce log noise.
-
-### How It Works
-
-Single daemon handles all environments. All backends are event-driven (push model):
-
-- **GNOME**: Extension subscribes to focus changes and pushes to daemon via DBus
-- **KDE**: Daemon injects KWin script → script pushes focus changes to daemon via DBus
-- **COSMIC**: Daemon receives `cosmic-toplevel-info` Wayland protocol events
-- **wlroots compositors**: Daemon receives `wlr-foreign-toplevel-management` Wayland protocol events
-- **X11**: Daemon subscribes to `PropertyNotify` events on root window, filters for `_NET_ACTIVE_WINDOW` changes
 
 ### Related Projects
 
