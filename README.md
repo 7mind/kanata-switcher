@@ -58,8 +58,11 @@ Example config:
 **Rule entries:**
 - `class` - Window class regex (optional)
 - `title` - Window title regex (optional)
-- `layer` - Kanata layer name to switch to
-- Rules are matched top-to-bottom, first match wins
+- `layer` - Kanata layer name to switch to (optional)
+- `virtual_key` - Virtual key to press while window is focused (optional, see below)
+- `raw_vk_action` - Raw virtual key actions (optional, advanced, see below)
+- `fallthrough` - Continue matching subsequent rules (optional, default false)
+- Rules are matched top-to-bottom, first match wins (unless `fallthrough: true`)
 - Patterns use [Rust regex syntax](https://docs.rs/regex/latest/regex/#syntax) (Perl-like, no lookahead/lookbehind)
 - Use `*` as a special case to match anything
 
@@ -68,6 +71,22 @@ Example config:
 - When present, disables auto-detection from Kanata
 - When absent, daemon auto-detects from Kanata's initial layer on connect
 - Can appear at most once (multiple = error), position doesn't matter
+
+**Virtual keys (simple mode):**
+- `virtual_key` - Automatically pressed when window is focused, released when unfocused
+- At most one virtual key is active at a time
+- Example: `{ "class": "firefox", "virtual_key": "vk_browser", "layer": "browser" }`
+
+**Virtual keys (advanced):**
+- `raw_vk_action` - Array of `[key_name, action]` pairs, fired on focus only
+- Actions: `Press`, `Release`, `Tap`, `Toggle`
+- `fallthrough: true` - Continue matching rules (allows multiple VK actions)
+- Example:
+  ```json
+  { "class": "terminal", "virtual_key": "vk_terminal", "fallthrough": true },
+  { "class": "kitty", "layer": "kitty" },
+  { "class": "alacritty", "layer": "alacritty" }
+  ```
 
 ### Running Without Installing
 

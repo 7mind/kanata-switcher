@@ -124,11 +124,22 @@ fn resolve_install_gnome_extension(matches: &ArgMatches) -> bool {
 
 // === Config ===
 
+/// A rule for matching windows and triggering actions.
+/// At least one of `layer`, `virtual_key`, or `raw_vk_action` should be specified.
 #[derive(Debug, Clone, Deserialize)]
 struct Rule {
     class: Option<String>,
     title: Option<String>,
-    layer: String,
+    /// Layer to switch to when rule matches
+    layer: Option<String>,
+    /// Virtual key to press while window is focused (auto-released on unfocus)
+    virtual_key: Option<String>,
+    /// Raw virtual key actions to fire on focus (fire-and-forget)
+    /// Format: [["vk_name", "Press|Release|Tap|Toggle"], ...]
+    raw_vk_action: Option<Vec<(String, String)>>,
+    /// Continue matching subsequent rules after this one
+    #[serde(default)]
+    fallthrough: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,17 +220,6 @@ fn load_config(config_path: Option<&Path>) -> Config {
     }
 }
 
-fn match_rule<'a>(rules: &'a [Rule], window_info: &WindowInfo) -> Option<&'a Rule> {
-    for rule in rules {
-        if match_pattern(rule.class.as_deref(), &window_info.class)
-            && match_pattern(rule.title.as_deref(), &window_info.title)
-        {
-            return Some(rule);
-        }
-    }
-    None
-}
-
 fn match_pattern(pattern: Option<&str>, value: &str) -> bool {
     match pattern {
         None => true,
@@ -233,11 +233,34 @@ fn match_pattern(pattern: Option<&str>, value: &str) -> bool {
 
 // === Focus Handler ===
 
+/// Actions to execute on focus change
+#[derive(Debug, Default)]
+struct FocusActions {
+    /// Layer to switch to (if any)
+    layer: Option<String>,
+    /// Virtual key to release (previous managed VK)
+    release_vk: Option<String>,
+    /// Virtual key to press (new managed VK)
+    press_vk: Option<String>,
+    /// Raw VK actions to fire (fire-and-forget)
+    raw_vk_actions: Vec<(String, String)>,
+}
+
+impl FocusActions {
+    fn is_empty(&self) -> bool {
+        self.layer.is_none()
+            && self.release_vk.is_none()
+            && self.press_vk.is_none()
+            && self.raw_vk_actions.is_empty()
+    }
+}
+
 #[derive(Debug)]
 struct FocusHandler {
     rules: Vec<Rule>,
     last_class: String,
     last_title: String,
+    current_virtual_key: Option<String>,
     quiet: bool,
 }
 
@@ -247,12 +270,13 @@ impl FocusHandler {
             rules,
             last_class: String::new(),
             last_title: String::new(),
+            current_virtual_key: None,
             quiet,
         }
     }
 
-    /// Handle a focus change event. Returns Some(layer) if a layer switch is needed.
-    fn handle(&mut self, win: &WindowInfo, default_layer: &str) -> Option<String> {
+    /// Handle a focus change event. Returns actions to execute.
+    fn handle(&mut self, win: &WindowInfo, default_layer: &str) -> Option<FocusActions> {
         if win.class == self.last_class && win.title == self.last_title {
             return None;
         }
@@ -260,30 +284,114 @@ impl FocusHandler {
         self.last_class = win.class.clone();
         self.last_title = win.title.clone();
 
-        // Handle unfocused state (no window has focus) - switch to default layer
+        let mut actions = FocusActions::default();
+
+        // Handle unfocused state (no window has focus)
         if win.class.is_empty() && win.title.is_empty() {
             if !self.quiet {
                 println!("[Focus] No window focused");
             }
-            if default_layer.is_empty() {
-                return None;
+            // Release any active virtual key
+            if let Some(ref vk) = self.current_virtual_key {
+                actions.release_vk = Some(vk.clone());
+                self.current_virtual_key = None;
             }
-            return Some(default_layer.to_string());
+            // Switch to default layer
+            if !default_layer.is_empty() {
+                actions.layer = Some(default_layer.to_string());
+            }
+            return if actions.is_empty() { None } else { Some(actions) };
         }
 
         if !self.quiet {
             println!("[Focus] class=\"{}\" title=\"{}\"", win.class, win.title);
         }
 
-        let layer = match_rule(&self.rules, win)
-            .map(|r| r.layer.clone())
-            .unwrap_or_else(|| default_layer.to_string());
+        // Match rules with fallthrough support
+        let mut matched_layer: Option<String> = None;
+        let mut matched_virtual_key: Option<String> = None;
 
-        if layer.is_empty() {
+        for rule in &self.rules {
+            if match_pattern(rule.class.as_deref(), &win.class)
+                && match_pattern(rule.title.as_deref(), &win.title)
+            {
+                // Collect layer (first match wins)
+                if matched_layer.is_none() {
+                    if let Some(ref layer) = rule.layer {
+                        matched_layer = Some(layer.clone());
+                    }
+                }
+
+                // Collect virtual_key (first match wins)
+                if matched_virtual_key.is_none() {
+                    if let Some(ref vk) = rule.virtual_key {
+                        matched_virtual_key = Some(vk.clone());
+                    }
+                }
+
+                // Collect raw_vk_actions (all matches)
+                if let Some(ref raw_actions) = rule.raw_vk_action {
+                    actions.raw_vk_actions.extend(raw_actions.iter().cloned());
+                }
+
+                // Stop if no fallthrough
+                if !rule.fallthrough {
+                    break;
+                }
+            }
+        }
+
+        // Set layer (use default if no match)
+        actions.layer = matched_layer.or_else(|| {
+            if default_layer.is_empty() {
+                None
+            } else {
+                Some(default_layer.to_string())
+            }
+        });
+
+        // Handle virtual key transitions
+        let new_vk = matched_virtual_key;
+        if new_vk != self.current_virtual_key {
+            // Release old VK if different
+            if let Some(ref old_vk) = self.current_virtual_key {
+                actions.release_vk = Some(old_vk.clone());
+            }
+            // Press new VK if present
+            if let Some(ref vk) = new_vk {
+                actions.press_vk = Some(vk.clone());
+            }
+            self.current_virtual_key = new_vk;
+        }
+
+        if actions.is_empty() {
             None
         } else {
-            Some(layer)
+            Some(actions)
         }
+    }
+}
+
+/// Execute focus actions (VK releases, VK presses, raw VK actions, layer change)
+async fn execute_focus_actions(kanata: &KanataClient, actions: FocusActions) {
+    // Release old virtual key first
+    if let Some(ref vk) = actions.release_vk {
+        kanata.act_on_fake_key(vk, "Release").await;
+    }
+
+    // Press new virtual key
+    if let Some(ref vk) = actions.press_vk {
+        kanata.act_on_fake_key(vk, "Press").await;
+    }
+
+    // Fire raw VK actions
+    for (name, action) in &actions.raw_vk_actions {
+        kanata.act_on_fake_key(name, action).await;
+    }
+
+    // Change layer
+    if let Some(ref layer) = actions.layer {
+        kanata.change_layer(layer).await;
     }
 }
 
@@ -319,6 +427,18 @@ struct RequestLayerNamesMsg {
 
 #[derive(Serialize)]
 struct RequestLayerNamesPayload {}
+
+#[derive(Serialize)]
+struct ActOnFakeKeyMsg {
+    #[serde(rename = "ActOnFakeKey")]
+    act_on_fake_key: ActOnFakeKeyPayload,
+}
+
+#[derive(Serialize)]
+struct ActOnFakeKeyPayload {
+    name: String,
+    action: String,
+}
 
 #[derive(Deserialize)]
 struct LayerNamesMsg {
@@ -610,6 +730,35 @@ impl KanataClient {
                     );
                 }
                 inner.current_layer = Some(target_layer);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub async fn act_on_fake_key(&self, name: &str, action: &str) -> bool {
+        let mut inner = self.inner.lock().await;
+
+        if !inner.connected {
+            if !inner.quiet {
+                eprintln!("[Kanata] Not connected, cannot send fake key action");
+            }
+            return false;
+        }
+
+        if let Some(ref mut writer) = inner.writer {
+            let msg = ActOnFakeKeyMsg {
+                act_on_fake_key: ActOnFakeKeyPayload {
+                    name: name.to_string(),
+                    action: action.to_string(),
+                },
+            };
+            let json = serde_json::to_string(&msg).unwrap() + "\n";
+
+            if writer.write_all(json.as_bytes()).await.is_ok() {
+                if !inner.quiet {
+                    println!("[Kanata] Fake key: {} {}", action, name);
+                }
                 return true;
             }
         }
@@ -1017,8 +1166,8 @@ async fn run_wayland(
         let win = state.get_active_window();
         let default_layer = kanata.default_layer_sync();
 
-        if let Some(layer) = handler.handle(&win, &default_layer) {
-            kanata.change_layer(&layer).await;
+        if let Some(actions) = handler.handle(&win, &default_layer) {
+            execute_focus_actions(&kanata, actions).await;
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1147,8 +1296,8 @@ async fn run_x11(
     // Process initial state at boot
     let win = state.get_active_window();
     let default_layer = kanata.default_layer_sync();
-    if let Some(layer) = handler.handle(&win, &default_layer) {
-        kanata.change_layer(&layer).await;
+    if let Some(actions) = handler.handle(&win, &default_layer) {
+        execute_focus_actions(&kanata, actions).await;
     }
 
     println!("[X11] Listening for focus events...");
@@ -1163,8 +1312,8 @@ async fn run_x11(
                 let win = state.get_active_window();
                 let default_layer = kanata.default_layer_sync();
 
-                if let Some(layer) = handler.handle(&win, &default_layer) {
-                    kanata.change_layer(&layer).await;
+                if let Some(actions) = handler.handle(&win, &default_layer) {
+                    execute_focus_actions(&kanata, actions).await;
                 }
             }
             Ok(_) => {
@@ -1485,11 +1634,12 @@ async fn run_gnome(
                 .block_on(async { self.kanata.default_layer().await })
                 .unwrap_or_default();
 
-            let layer = self.handler.lock().unwrap().handle(&win, &default_layer);
+            let actions = self.handler.lock().unwrap().handle(&win, &default_layer);
 
-            if let Some(layer) = layer {
+            if let Some(actions) = actions {
+                let kanata = self.kanata.clone();
                 self.runtime_handle
-                    .block_on(async { self.kanata.change_layer(&layer).await });
+                    .block_on(async { execute_focus_actions(&kanata, actions).await });
             }
         }
     }
@@ -1550,11 +1700,12 @@ async fn run_kde(
                 .block_on(async { self.kanata.default_layer().await })
                 .unwrap_or_default();
 
-            let layer = self.handler.lock().unwrap().handle(&win, &default_layer);
+            let actions = self.handler.lock().unwrap().handle(&win, &default_layer);
 
-            if let Some(layer) = layer {
+            if let Some(actions) = actions {
+                let kanata = self.kanata.clone();
                 self.runtime_handle
-                    .block_on(async { self.kanata.change_layer(&layer).await });
+                    .block_on(async { execute_focus_actions(&kanata, actions).await });
             }
         }
     }

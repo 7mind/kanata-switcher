@@ -70,9 +70,12 @@ TCP JSON, newline-delimited. Default port 10000.
 → Server sends on connect:  {"LayerChange": {"new": "base"}}
 ← Client sends to switch:   {"ChangeLayer": {"new": "vim"}}
 → Server confirms:          {"LayerChange": {"new": "vim"}}
+← Client sends VK action:   {"ActOnFakeKey": {"name": "vk_browser", "action": "Press"}}
 ```
 
 Daemon captures first `LayerChange` as default layer (used when no rule matches).
+
+VK actions: `Press`, `Release`, `Tap`, `Toggle`.
 
 ### Reconnection
 
@@ -96,7 +99,7 @@ Daemon switches to default layer on exit (any cause):
 ```json
 [
   {"default": "default"},
-  {"class": "^firefox$", "layer": "browser"},
+  {"class": "^firefox$", "layer": "browser", "virtual_key": "vk_browser"},
   {"class": "terminal", "title": "vim", "layer": "vim"}
 ]
 ```
@@ -104,14 +107,22 @@ Daemon switches to default layer on exit (any cause):
 **Rule entries:**
 - `class`: regex against window class (optional)
 - `title`: regex against window title (optional)
-- `layer`: kanata layer name
-- First match wins, default layer if no match
+- `layer`: kanata layer name (optional)
+- `virtual_key`: auto-managed VK - press on focus, release on unfocus (optional)
+- `raw_vk_action`: array of `[name, action]` pairs, fire-and-forget on focus (optional)
+- `fallthrough`: continue matching subsequent rules (default false)
+- First match wins (unless `fallthrough: true`), default layer if no match
 
 **Default entry (optional):**
 - `{"default": "layer_name"}`: specifies explicit default layer
 - Disables auto-detection from Kanata
 - Can appear 0 or 1 times (multiple = error)
 - Position in array doesn't matter
+
+**Virtual key modes:**
+- Simple (`virtual_key`): at most one VK active, auto-released on unfocus/switch
+- Advanced (`raw_vk_action`): multiple actions, fire-and-forget
+- Both can be used in same rule
 
 ## GNOME Extension
 

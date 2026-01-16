@@ -114,6 +114,32 @@ Extension subscribes to `global.display.connect('notify::focus-window')` and cal
 - Initial state: calls `_notifyFocus()` in `enable()`
 - Unfocus: passes empty strings when `focus_window` is null
 
+## Virtual Key Support
+
+Two modes for virtual key actions:
+
+1. **Simple mode (`virtual_key`)**: Auto-managed press/release
+   - Pressed when window matches rule
+   - Released when switching to different window
+   - At most one VK active at a time
+   - Tracked in `FocusHandler::current_virtual_key`
+
+2. **Advanced mode (`raw_vk_action`)**: Fire-and-forget
+   - Array of `[name, action]` pairs
+   - Fired on focus only, no auto-release
+   - Actions: `Press`, `Release`, `Tap`, `Toggle`
+
+**Fallthrough**: Rules can set `fallthrough: true` to continue matching subsequent rules:
+- First matching `layer` is used
+- First matching `virtual_key` is used
+- All matching `raw_vk_action` arrays are collected
+
+**Execution order** (in `execute_focus_actions`):
+1. Release previous `virtual_key` (if any)
+2. Press new `virtual_key` (if any)
+3. Fire all `raw_vk_action` pairs
+4. Change layer (if specified)
+
 ## Testing
 
 Tested on all supported environments:
