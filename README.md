@@ -62,7 +62,8 @@ Example config:
 - `virtual_key` - Virtual key to press while window is focused (optional, see below)
 - `raw_vk_action` - Raw virtual key actions (optional, advanced, see below)
 - `fallthrough` - Continue matching subsequent rules (optional, default false)
-- Rules are matched top-to-bottom, first match wins (unless `fallthrough: true`)
+- Rules are matched top-to-bottom; first match wins unless `fallthrough: true`
+- With `fallthrough: true`, ALL matching rules' actions execute in order
 - Patterns use [Rust regex syntax](https://docs.rs/regex/latest/regex/#syntax) (Perl-like, no lookahead/lookbehind)
 - Use `*` as a special case to match anything
 
@@ -80,7 +81,10 @@ Example config:
 **Virtual keys (advanced):**
 - `raw_vk_action` - Array of `[key_name, action]` pairs, fired on focus only
 - Actions: `Press`, `Release`, `Tap`, `Toggle`
-- `fallthrough: true` - Continue matching rules (allows multiple VK actions)
+- With `fallthrough: true`:
+  - ALL matching layers execute in order
+  - Intermediate `virtual_key`s are tapped (press+release), final is held
+  - ALL `raw_vk_action` arrays are collected and fired
 - Example:
   ```json
   { "class": "terminal", "virtual_key": "vk_terminal", "fallthrough": true },

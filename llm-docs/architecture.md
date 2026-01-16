@@ -12,26 +12,28 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
                     │  - Kanata TCP client        │
                     └─────────────┬───────────────┘
                                   │
-    ┌──────────────┬──────────────┼──────────────┬──────────────┐
-    ▼              ▼              ▼              ▼              ▼
-┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
-│  GNOME  │   │   KDE   │   │ Wayland │   │   X11   │   │ Wayland │
-│  DBus   │   │  KWin   │   │   wlr   │   │ x11rb   │   │ cosmic  │
-└────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘
-     │             │             │             │             │
-     ▼             ▼             ▼             ▼             ▼
-┌─────────┐   ┌─────────┐   Sway,Hypr,   _NET_ACTIVE      COSMIC
-│Extension│   │ Script  │   Niri,etc.    _WINDOW
-│ (auto)  │   │ (auto)  │
-└─────────┘   └─────────┘
+    ┌─────────────────────┬───────┼───────┬──────────────┐
+    ▼                     ▼       ▼       ▼              ▼
+┌─────────────────┐   ┌───────┐ ┌───────┐ ┌───────┐  ┌───────┐
+│  DBus Backend   │   │Wayland│ │Wayland│ │  X11  │  │       │
+│  (GNOME + KDE)  │   │  wlr  │ │cosmic │ │ x11rb │  │       │
+└────────┬────────┘   └───┬───┘ └───┬───┘ └───┬───┘  │       │
+         │                │         │         │      │       │
+    ┌────┴────┐           ▼         ▼         ▼      │       │
+    ▼         ▼       Sway,etc.  COSMIC   _NET_ACTIVE│       │
+┌───────┐ ┌───────┐                       _WINDOW    │       │
+│ GNOME │ │  KDE  │                                  │       │
+│  Ext  │ │ KWin  │                                  │       │
+│(auto) │ │Script │                                  │       │
+└───────┘ └───────┘                                  └───────┘
 ```
 
 ## Backend Detection
 
 | Environment | Detection | Method |
 |-------------|-----------|--------|
-| GNOME | `XDG_CURRENT_DESKTOP` contains "gnome" | Extension pushes via DBus |
-| KDE | `KDE_SESSION_VERSION` set | KWin script pushes via DBus |
+| GNOME | `XDG_CURRENT_DESKTOP` contains "gnome" | Shared DBus backend, extension pushes |
+| KDE | `KDE_SESSION_VERSION` set | Shared DBus backend, KWin script pushes |
 | Wayland | `WAYLAND_DISPLAY` set | Toplevel protocol events (wlr or cosmic) |
 | X11 | `DISPLAY` set | PropertyNotify events on _NET_ACTIVE_WINDOW |
 

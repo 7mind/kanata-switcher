@@ -1638,6 +1638,62 @@ fn setup_gnome_extension(auto_install: bool) {
     }
 }
 
+// === DBus Backend (shared by GNOME and KDE) ===
+
+#[derive(Debug)]
+struct DbusWindowFocusService {
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    runtime_handle: tokio::runtime::Handle,
+}
+
+#[zbus::interface(name = "com.github.kanata.Switcher")]
+impl DbusWindowFocusService {
+    async fn window_focus(&self, window_class: &str, window_title: &str) {
+        let win = WindowInfo {
+            class: window_class.to_string(),
+            title: window_title.to_string(),
+        };
+
+        let default_layer = self
+            .runtime_handle
+            .block_on(async { self.kanata.default_layer().await })
+            .unwrap_or_default();
+
+        let actions = self.handler.lock().unwrap().handle(&win, &default_layer);
+
+        if let Some(actions) = actions {
+            let kanata = self.kanata.clone();
+            self.runtime_handle
+                .block_on(async { execute_focus_actions(&kanata, actions).await });
+        }
+    }
+}
+
+async fn register_dbus_service(
+    connection: &Connection,
+    kanata: KanataClient,
+    rules: Vec<Rule>,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let service = DbusWindowFocusService {
+        kanata,
+        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet))),
+        runtime_handle: tokio::runtime::Handle::current(),
+    };
+
+    connection
+        .object_server()
+        .at("/com/github/kanata/Switcher", service)
+        .await?;
+
+    connection
+        .request_name("com.github.kanata.Switcher")
+        .await?;
+
+    Ok(())
+}
+
 // === GNOME Backend ===
 
 async fn run_gnome(
@@ -1646,56 +1702,9 @@ async fn run_gnome(
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
-
-    // Register DBus service to receive focus events from extension
-    #[derive(Debug)]
-    struct GnomeSwitcher {
-        kanata: KanataClient,
-        handler: Arc<Mutex<FocusHandler>>,
-        runtime_handle: tokio::runtime::Handle,
-    }
-
-    #[zbus::interface(name = "com.github.kanata.Switcher")]
-    impl GnomeSwitcher {
-        async fn window_focus(&self, window_class: &str, window_title: &str) {
-            let win = WindowInfo {
-                class: window_class.to_string(),
-                title: window_title.to_string(),
-            };
-
-            let default_layer = self
-                .runtime_handle
-                .block_on(async { self.kanata.default_layer().await })
-                .unwrap_or_default();
-
-            let actions = self.handler.lock().unwrap().handle(&win, &default_layer);
-
-            if let Some(actions) = actions {
-                let kanata = self.kanata.clone();
-                self.runtime_handle
-                    .block_on(async { execute_focus_actions(&kanata, actions).await });
-            }
-        }
-    }
-
-    let switcher = GnomeSwitcher {
-        kanata,
-        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet))),
-        runtime_handle: tokio::runtime::Handle::current(),
-    };
-
-    connection
-        .object_server()
-        .at("/com/github/kanata/Switcher", switcher)
-        .await?;
-
-    connection
-        .request_name("com.github.kanata.Switcher")
-        .await?;
+    register_dbus_service(&connection, kanata, rules, quiet).await?;
 
     println!("[GNOME] Listening for focus events from extension...");
-
-    // Wait forever - extension will push focus changes to us
     std::future::pending::<()>().await;
     Ok(())
 }
@@ -1708,58 +1717,13 @@ async fn run_kde(
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
+    register_dbus_service(&connection, kanata, rules, quiet).await?;
 
     let is_kde6 = env::var("KDE_SESSION_VERSION")
         .map(|v| v == "6")
         .unwrap_or(false);
 
-    // Register DBus service BEFORE running KWin script
-    #[derive(Debug)]
-    struct KdeSwitcher {
-        kanata: KanataClient,
-        handler: Arc<Mutex<FocusHandler>>,
-        runtime_handle: tokio::runtime::Handle,
-    }
-
-    #[zbus::interface(name = "com.github.kanata.Switcher")]
-    impl KdeSwitcher {
-        async fn window_focus(&self, window_class: &str, window_title: &str) {
-            let win = WindowInfo {
-                class: window_class.to_string(),
-                title: window_title.to_string(),
-            };
-
-            let default_layer = self
-                .runtime_handle
-                .block_on(async { self.kanata.default_layer().await })
-                .unwrap_or_default();
-
-            let actions = self.handler.lock().unwrap().handle(&win, &default_layer);
-
-            if let Some(actions) = actions {
-                let kanata = self.kanata.clone();
-                self.runtime_handle
-                    .block_on(async { execute_focus_actions(&kanata, actions).await });
-            }
-        }
-    }
-
-    let switcher = KdeSwitcher {
-        kanata,
-        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet))),
-        runtime_handle: tokio::runtime::Handle::current(),
-    };
-
-    connection
-        .object_server()
-        .at("/com/github/kanata/Switcher", switcher)
-        .await?;
-
-    connection
-        .request_name("com.github.kanata.Switcher")
-        .await?;
-
-    // Now inject KWin script (DBus service is ready to receive calls)
+    // Inject KWin script (DBus service is ready to receive calls)
     let api = if is_kde6 { "windowActivated" } else { "clientActivated" };
     let active_window = if is_kde6 { "activeWindow" } else { "activeClient" };
     let kwin_script = format!(

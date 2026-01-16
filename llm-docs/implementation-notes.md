@@ -148,6 +148,14 @@ Two modes for virtual key actions:
    - Execute `virtual_key` (Tap if intermediate, Press if final)
    - Execute all `raw_vk_action` pairs
 
+## DBus Backend (GNOME/KDE)
+
+GNOME and KDE backends share a unified DBus service:
+- `DbusWindowFocusService` struct with `window_focus(class, title)` method
+- `register_dbus_service()` registers at `/com/github/kanata/Switcher`
+- GNOME: register service, wait for extension to push events
+- KDE: register service, inject KWin script, wait for script to push events
+
 ## Testing
 
 **Manual testing** on all supported environments:
@@ -157,7 +165,7 @@ Two modes for virtual key actions:
 - Sway, Hyprland, Niri (wlr-foreign-toplevel-management protocol)
 - X11 (various window managers)
 
-**Automated tests** in `src/daemon/main.rs` (test module):
+**Automated tests** in `src/daemon/tests.rs`:
 - Flow tests: verify rule matching produces expected `FocusActions`
 - Property tests (proptest): verify invariants like "release before press"
 - Tests cover fallthrough, VK lifecycle, action ordering, edge cases

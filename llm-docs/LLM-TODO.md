@@ -18,5 +18,11 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Test daemon on Sway/Hyprland/Niri
 - [x] Test daemon on COSMIC
 - [x] Add proper error handling and reconnection logic
+- [x] Add automated tests for rule matching and VK lifecycle (`src/daemon/tests.rs`)
 - [ ] Add config file watching for hot-reload
 - [ ] Package for distribution
+
+# Code Quality
+- [x] Unify GNOME/KDE into shared DBus backend (`DbusWindowFocusService`)
+- [x] FocusAction as algebraic data type with ordered action list
+- [x] Fallthrough executes ALL matching actions (layers, VKs, raw actions)
