@@ -108,10 +108,13 @@ Example config:
   ```json
   [
     { 
-      "class": "firefox", "virtual_key": "vk_browser", "layer": "browser"
+      "class": "firefox",
+      "virtual_key": "vk_browser",
+      "layer": "browser"
     },
     {
-      "class": "terminal", "virtual_key": "vk_terminal"
+      "class": "terminal",
+      "virtual_key": "vk_terminal"
     }
   ]
   ```
@@ -128,7 +131,8 @@ Example config:
   ```json
   [ 
     {
-      "class": "firefox", "raw_vk_action": [["vk_notify", "Tap"], ["vk_browser", "Press"]] 
+      "class": "firefox",
+      "raw_vk_action": [["vk_notify", "Tap"], ["vk_browser", "Press"]] 
     }
   ]
   ```
