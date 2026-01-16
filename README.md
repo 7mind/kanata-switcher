@@ -19,6 +19,14 @@ This project is fully LLM-generated and has so far been tested manually on the f
 
 If you have tested it in other environments, and it did/didn't work, open a PR to change the README!
 
+---
+
+![ENTERPRISE QUALITY](./enterprise-quality.svg)
+
+This project features comprehensive automated tests and supports an unusually wide range of desktop environments in a single codebase.
+
+---
+
 ## Machine summary
 
 ### Supported Environments

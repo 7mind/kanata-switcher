@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 30">
+  <defs>
+    <linearGradient id="rainbow" x1="0%" x2="100%">
+      <stop offset="0%" stop-color="#f00"/>
+      <stop offset="17%" stop-color="#f80"/>
+      <stop offset="33%" stop-color="#ff0"/>
+      <stop offset="50%" stop-color="#0c0"/>
+      <stop offset="67%" stop-color="#00f"/>
+      <stop offset="83%" stop-color="#60f"/>
+      <stop offset="100%" stop-color="#c0f"/>
+    </linearGradient>
+  </defs>
+  <text x="5" y="22" font-size="20" font-weight="bold" font-family="sans-serif" fill="url(#rainbow)">ENTERPRISE QUALITY</text>
+</svg>
