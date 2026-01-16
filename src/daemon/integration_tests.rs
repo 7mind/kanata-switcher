@@ -360,7 +360,11 @@ fn dbus_daemon_available() -> bool {
 struct DbusSessionGuard {
     child: std::process::Child,
     address: String,
+    config_dir: std::path::PathBuf,
 }
+
+use std::sync::atomic::{AtomicU64, Ordering};
+static DBUS_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl DbusSessionGuard {
     fn start() -> Result<Self, String> {
@@ -368,8 +372,9 @@ impl DbusSessionGuard {
             return Err("dbus-daemon binary not found in PATH".to_string());
         }
 
-        // Create a minimal session config file
-        let config_dir = std::env::temp_dir().join(format!("dbus-test-{}", std::process::id()));
+        // Create a minimal session config file with unique path per test
+        let unique_id = DBUS_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let config_dir = std::env::temp_dir().join(format!("dbus-test-{}-{}", std::process::id(), unique_id));
         std::fs::create_dir_all(&config_dir)
             .map_err(|e| format!("Failed to create config dir: {}", e))?;
 
@@ -426,7 +431,7 @@ impl DbusSessionGuard {
             std::os::unix::net::UnixStream::connect(&socket_path_clone).ok()
         }).map_err(|_| "Timeout waiting for dbus-daemon socket")?;
 
-        Ok(Self { child, address })
+        Ok(Self { child, address, config_dir })
     }
 
     fn address(&self) -> &str {
@@ -438,6 +443,8 @@ impl Drop for DbusSessionGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Clean up config directory
+        let _ = std::fs::remove_dir_all(&self.config_dir);
     }
 }
 
@@ -697,12 +704,15 @@ struct XvfbGuard {
     display: String,
 }
 
+static XVFB_DISPLAY_COUNTER: AtomicU64 = AtomicU64::new(100);
+
 impl XvfbGuard {
-    fn start(display_num: u32) -> Option<Self> {
+    fn start() -> Option<Self> {
         if !xvfb_available() {
             return None;
         }
 
+        let display_num = XVFB_DISPLAY_COUNTER.fetch_add(1, Ordering::SeqCst);
         let display = format!(":{}", display_num);
         let child = std::process::Command::new("Xvfb")
             .args([&display, "-screen", "0", "800x600x24"])
@@ -720,8 +730,9 @@ impl XvfbGuard {
         Some(Self { child, display })
     }
 
-    fn display(&self) -> &str {
-        &self.display
+    /// Connect to the Xvfb display with retry logic
+    fn connect(&self) -> Result<(x11rb::rust_connection::RustConnection, usize), &'static str> {
+        wait_for(|| x11rb::connect(Some(&self.display)).ok())
     }
 }
 
@@ -742,11 +753,11 @@ fn test_x11_property_notify() {
     use x11rb::wrapper::ConnectionExt as WrapperExt;
 
     // Fail if Xvfb is not available
-    let xvfb = XvfbGuard::start(99)
+    let xvfb = XvfbGuard::start()
         .expect("Xvfb not available. Run `nix flake check` or install Xvfb manually.");
 
     // Connect to Xvfb - "daemon" side that subscribes to PropertyNotify
-    let (daemon_conn, screen) = x11rb::connect(Some(xvfb.display())).expect("Failed to connect to Xvfb");
+    let (daemon_conn, screen) = xvfb.connect().expect("Failed to connect to Xvfb");
     let root = daemon_conn.setup().roots[screen].root;
     let atoms = X11Atoms::new(&daemon_conn).expect("Failed to create atoms").reply().expect("Failed to get atoms");
 
@@ -758,7 +769,7 @@ fn test_x11_property_notify() {
     daemon_conn.flush().expect("Failed to flush");
 
     // "App" side - creates window and triggers focus change
-    let (app_conn, _) = x11rb::connect(Some(xvfb.display())).expect("Failed to connect app to Xvfb");
+    let (app_conn, _) = xvfb.connect().expect("Failed to connect app to Xvfb");
 
     // Create a test window
     let win = app_conn.generate_id().expect("Failed to generate window id");
@@ -867,11 +878,11 @@ fn test_x11_focus_handler_integration() {
     use x11rb::protocol::xproto::*;
     use x11rb::wrapper::ConnectionExt as WrapperExt;
 
-    let xvfb = XvfbGuard::start(98)
+    let xvfb = XvfbGuard::start()
         .expect("Xvfb not available. Run `nix flake check` or install Xvfb manually.");
 
     // Set up X11 connections
-    let (conn, screen) = x11rb::connect(Some(xvfb.display())).expect("Failed to connect");
+    let (conn, screen) = xvfb.connect().expect("Failed to connect");
     let root = conn.setup().roots[screen].root;
     let atoms = X11Atoms::new(&conn).unwrap().reply().unwrap();
 
@@ -901,7 +912,7 @@ fn test_x11_focus_handler_integration() {
     let _ = handler.handle(&info, "default");
 
     // Create app connection and window
-    let (app_conn, _) = x11rb::connect(Some(xvfb.display())).expect("Failed to connect app");
+    let (app_conn, _) = xvfb.connect().expect("Failed to connect app");
     let win = app_conn.generate_id().unwrap();
     app_conn.create_window(
         x11rb::COPY_DEPTH_FROM_PARENT, win, root,
@@ -944,10 +955,10 @@ fn test_x11_multiple_focus_changes() {
     use x11rb::protocol::xproto::*;
     use x11rb::wrapper::ConnectionExt as WrapperExt;
 
-    let xvfb = XvfbGuard::start(97)
+    let xvfb = XvfbGuard::start()
         .expect("Xvfb not available. Run `nix flake check` or install Xvfb manually.");
 
-    let (conn, screen) = x11rb::connect(Some(xvfb.display())).expect("Failed to connect");
+    let (conn, screen) = xvfb.connect().expect("Failed to connect");
     let root = conn.setup().roots[screen].root;
     let atoms = X11Atoms::new(&conn).unwrap().reply().unwrap();
 
@@ -976,7 +987,7 @@ fn test_x11_multiple_focus_changes() {
     // Skip initial empty state
     handler.handle(&x11_state.get_active_window(), "default");
 
-    let (app_conn, _) = x11rb::connect(Some(xvfb.display())).unwrap();
+    let (app_conn, _) = xvfb.connect().unwrap();
 
     // Create first window (App1)
     let win1 = app_conn.generate_id().unwrap();
@@ -1047,4 +1058,249 @@ fn test_x11_multiple_focus_changes() {
     assert_eq!(info.class, "");
     let actions = handler.handle(&info, "default").unwrap();
     assert!(actions.actions.contains(&FocusAction::ChangeLayer("default".to_string())));
+}
+
+// === GNOME Shell Extension Detection Integration Tests ===
+
+/// Mock GNOME Shell Extensions D-Bus service.
+/// Implements GetExtensionInfo to verify the daemon probes correctly.
+struct MockGnomeShellExtensions {
+    /// Extension state to return (1.0=ENABLED, 2.0=DISABLED, etc.)
+    state: f64,
+}
+
+#[zbus::interface(name = "org.gnome.Shell.Extensions")]
+impl MockGnomeShellExtensions {
+    /// Mock implementation of GetExtensionInfo
+    /// Returns a{sv} dict with extension info including state as f64
+    fn get_extension_info(
+        &self,
+        uuid: &str,
+    ) -> HashMap<String, zbus::zvariant::OwnedValue> {
+        use zbus::zvariant::{OwnedValue, Value};
+        let mut info = HashMap::new();
+        info.insert("uuid".to_string(), OwnedValue::try_from(Value::Str(uuid.into())).unwrap());
+        // GNOME Shell returns state as f64 - this is the critical detail we're testing
+        info.insert("state".to_string(), OwnedValue::try_from(Value::F64(self.state)).unwrap());
+        info
+    }
+}
+
+/// Integration test for GNOME extension D-Bus probe.
+///
+/// This test verifies:
+/// 1. The probe calls the correct D-Bus destination (org.gnome.Shell)
+/// 2. The probe uses the correct object path (/org/gnome/Shell)
+/// 3. The probe calls the correct interface (org.gnome.Shell.Extensions)
+/// 4. The probe calls the correct method (GetExtensionInfo)
+/// 5. The probe correctly parses f64 state values (both enabled and disabled)
+///
+/// If any of these regress (wrong path, wrong type parsing, etc.),
+/// this test will fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_gnome_extension_dbus_probe_integration() {
+    use zbus::connection::Builder;
+
+    // Start private dbus-daemon
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix flake check` or install dbus.");
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    // --- Test 1: Extension ENABLED (state=1.0) ---
+    {
+        let mock_service = MockGnomeShellExtensions { state: 1.0 };
+
+        let service_connection = Builder::address(address.clone())
+            .expect("Failed to create connection builder")
+            .name(GNOME_SHELL_BUS_NAME)
+            .expect("Failed to set bus name")
+            .serve_at(GNOME_SHELL_OBJECT_PATH, mock_service)
+            .expect("Failed to serve mock service")
+            .build()
+            .await
+            .expect("Failed to build connection");
+
+        // Wait for service to be registered
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection).await.unwrap();
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy.name_has_owner(GNOME_SHELL_BUS_NAME.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&has_owner| has_owner)
+            }
+        }).await.expect("Timeout waiting for mock GNOME Shell registration");
+
+        // Create blocking connection for the probe
+        let client_connection = zbus::blocking::connection::Builder::address(address.clone())
+            .expect("Failed to create client builder")
+            .build()
+            .expect("Failed to connect client");
+
+        // Call the actual probe function - this verifies the full integration
+        let status = gnome_extension_dbus_probe_with_connection(&client_connection);
+
+        // Verify the probe succeeded and correctly parsed the response
+        let status = status.expect("D-Bus probe should succeed against mock service");
+        assert!(status.active, "Extension with state=1.0 should be active");
+        assert!(status.enabled, "Extension with state=1.0 should be enabled");
+        assert!(status.installed, "Extension found via D-Bus should be marked installed");
+        assert!(matches!(status.method, GnomeDetectionMethod::Dbus));
+
+        // Drop connections to release the bus name
+        drop(client_connection);
+        drop(service_connection);
+    }
+
+    // Small delay to ensure bus name is released
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // --- Test 2: Extension DISABLED (state=2.0) ---
+    {
+        let mock_service = MockGnomeShellExtensions { state: 2.0 };
+
+        let service_connection = Builder::address(address.clone())
+            .expect("Failed to create connection builder")
+            .name(GNOME_SHELL_BUS_NAME)
+            .expect("Failed to set bus name")
+            .serve_at(GNOME_SHELL_OBJECT_PATH, mock_service)
+            .expect("Failed to serve mock service")
+            .build()
+            .await
+            .expect("Failed to build connection");
+
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection).await.unwrap();
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy.name_has_owner(GNOME_SHELL_BUS_NAME.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&has| has)
+            }
+        }).await.expect("Timeout");
+
+        let client_connection = zbus::blocking::connection::Builder::address(address.clone())
+            .expect("Builder")
+            .build()
+            .expect("Connect");
+
+        let status = gnome_extension_dbus_probe_with_connection(&client_connection)
+            .expect("Probe should succeed");
+
+        assert!(!status.active, "Extension with state=2.0 should NOT be active");
+        assert!(!status.enabled, "Extension with state=2.0 should NOT be enabled");
+    }
+}
+
+/// Mock GNOME Shell Extensions D-Bus service with mutable state.
+/// Used to test the retry logic when extension state changes during startup.
+struct MockGnomeShellExtensionsDelayed {
+    /// Extension state (atomic for cross-thread mutation)
+    state: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[zbus::interface(name = "org.gnome.Shell.Extensions")]
+impl MockGnomeShellExtensionsDelayed {
+    fn get_extension_info(
+        &self,
+        uuid: &str,
+    ) -> HashMap<String, zbus::zvariant::OwnedValue> {
+        use zbus::zvariant::{OwnedValue, Value};
+        let state_bits = self.state.load(std::sync::atomic::Ordering::SeqCst);
+        let state = f64::from_bits(state_bits);
+        let mut info = HashMap::new();
+        info.insert("uuid".to_string(), OwnedValue::try_from(Value::Str(uuid.into())).unwrap());
+        info.insert("state".to_string(), OwnedValue::try_from(Value::F64(state)).unwrap());
+        info
+    }
+}
+
+/// Integration test for GNOME extension startup retry logic.
+///
+/// Simulates the real-world scenario where:
+/// 1. Service starts early, extension is in INITIALIZED state (6)
+/// 2. After ~500ms, GNOME Shell finishes loading and state becomes ENABLED (1)
+/// 3. The daemon's retry logic should detect the transition
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_gnome_extension_delayed_activation() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon");
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    // Start with INITIALIZED state (6)
+    let state = Arc::new(AtomicU64::new(f64::to_bits(6.0)));
+    let state_clone = state.clone();
+
+    let mock_service = MockGnomeShellExtensionsDelayed { state: state.clone() };
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .name(GNOME_SHELL_BUS_NAME)
+        .expect("Failed to set bus name")
+        .serve_at(GNOME_SHELL_OBJECT_PATH, mock_service)
+        .expect("Failed to serve mock service")
+        .build()
+        .await
+        .expect("Failed to build connection");
+
+    // Wait for service registration
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection).await.unwrap();
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner(GNOME_SHELL_BUS_NAME.try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has| has)
+        }
+    }).await.expect("Timeout waiting for mock service");
+
+    // Spawn task to change state to ENABLED after 500ms
+    let delay_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        state_clone.store(f64::to_bits(1.0), Ordering::SeqCst);
+    });
+
+    // Create blocking connection for probing
+    let client_connection = zbus::blocking::connection::Builder::address(address.clone())
+        .expect("Failed to create client builder")
+        .build()
+        .expect("Failed to connect client");
+
+    // Simulate retry logic: poll every 50ms until active or timeout
+    let start = Instant::now();
+    let mut status = gnome_extension_dbus_probe_with_connection(&client_connection)
+        .expect("Initial probe should succeed");
+
+    assert!(!status.active, "Initial state should not be active");
+    assert_eq!(status.state, Some(6), "Initial state should be INITIALIZED (6)");
+
+    while !status.active && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+        status = gnome_extension_dbus_probe_with_connection(&client_connection)
+            .expect("Probe should succeed");
+    }
+
+    let elapsed = start.elapsed();
+
+    // Verify success
+    assert!(status.active, "Extension should become active after delay");
+    assert_eq!(status.state, Some(1), "Final state should be ENABLED (1)");
+
+    // Verify timing: should take ~500ms (allow 450-800ms for CI variance)
+    assert!(
+        elapsed >= Duration::from_millis(450) && elapsed <= Duration::from_millis(800),
+        "Expected ~500ms delay, got {:?}",
+        elapsed
+    );
+
+    delay_task.await.unwrap();
 }

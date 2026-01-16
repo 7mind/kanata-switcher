@@ -1408,12 +1408,117 @@ fn write_embedded_extension_to_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+enum GnomeDetectionMethod {
+    /// Detected via D-Bus call to org.gnome.Shell.Extensions
+    Dbus,
+    /// Detected via gnome-extensions CLI and gsettings
+    Cli,
+}
+
 struct GnomeExtensionStatus {
     installed: bool,
     enabled: bool,
+    /// Extension is active in GNOME Shell (verified via D-Bus)
+    active: bool,
+    /// Raw state from D-Bus (None for CLI detection)
+    /// 1=ENABLED, 2=DISABLED, 3=ERROR, 4=OUT_OF_DATE, 5=DOWNLOADING, 6=INITIALIZED
+    state: Option<u8>,
+    /// How the status was detected
+    method: GnomeDetectionMethod,
+}
+
+fn gnome_state_name(state: u8) -> &'static str {
+    match state {
+        1 => "enabled",
+        2 => "disabled",
+        3 => "error",
+        4 => "out_of_date",
+        5 => "downloading",
+        6 => "initialized",
+        _ => "unknown",
+    }
+}
+
+/// Parse GNOME Shell extension state from D-Bus response.
+/// State values: 1.0=ENABLED, 2.0=DISABLED, 3.0=ERROR, 4.0=OUT_OF_DATE, 5.0=DOWNLOADING, 6.0=INITIALIZED
+#[cfg_attr(test, allow(dead_code))]
+fn parse_gnome_extension_state(body: &HashMap<String, zbus::zvariant::OwnedValue>) -> GnomeExtensionStatus {
+    // State is returned as f64 by GNOME Shell D-Bus API
+    let state_f64: f64 = body
+        .get("state")
+        .and_then(|v| v.downcast_ref::<f64>().ok())
+        .unwrap_or(0.0);
+    let state = state_f64 as u8;
+
+    // State 1 = ENABLED (active)
+    let active = state == 1;
+
+    GnomeExtensionStatus {
+        installed: true,
+        enabled: active,
+        active,
+        state: Some(state),
+        method: GnomeDetectionMethod::Dbus,
+    }
+}
+
+// D-Bus coordinates for GNOME Shell Extensions interface
+const GNOME_SHELL_BUS_NAME: &str = "org.gnome.Shell";
+const GNOME_SHELL_OBJECT_PATH: &str = "/org/gnome/Shell";
+const GNOME_SHELL_EXTENSIONS_INTERFACE: &str = "org.gnome.Shell.Extensions";
+
+/// Quick probe: check if extension is active via D-Bus call to GNOME Shell.
+/// This bypasses filesystem searches and works reliably from systemd services.
+fn gnome_extension_dbus_probe() -> Option<GnomeExtensionStatus> {
+    let connection = match zbus::blocking::Connection::session() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[GNOME] D-Bus probe: failed to connect to session bus: {}", e);
+            return None;
+        }
+    };
+    gnome_extension_dbus_probe_with_connection(&connection)
+}
+
+/// Probe using a specific D-Bus connection (for testing with mock services)
+fn gnome_extension_dbus_probe_with_connection(
+    connection: &zbus::blocking::Connection,
+) -> Option<GnomeExtensionStatus> {
+    let reply = match connection.call_method(
+        Some(GNOME_SHELL_BUS_NAME),
+        GNOME_SHELL_OBJECT_PATH,
+        Some(GNOME_SHELL_EXTENSIONS_INTERFACE),
+        "GetExtensionInfo",
+        &(GNOME_EXTENSION_UUID,),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[GNOME] D-Bus probe: GetExtensionInfo call failed: {}", e);
+            return None;
+        }
+    };
+
+    // Response is a dict (a{sv}) with extension info
+    let body: HashMap<String, zbus::zvariant::OwnedValue> = match reply.body().deserialize() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[GNOME] D-Bus probe: failed to deserialize response: {}", e);
+            return None;
+        }
+    };
+
+    Some(parse_gnome_extension_state(&body))
 }
 
 fn gnome_extension_status() -> GnomeExtensionStatus {
+    // Quick probe: try D-Bus call to GNOME Shell first
+    // This is the most reliable method from systemd services
+    if let Some(status) = gnome_extension_dbus_probe() {
+        return status;
+    }
+
+    // Fallback: CLI tools (may fail from systemd if XDG_DATA_DIRS is incomplete)
+
     // Check installed via gnome-extensions info (requires XDG_DATA_DIRS)
     let installed = Command::new("gnome-extensions")
         .args(["info", GNOME_EXTENSION_UUID])
@@ -1431,7 +1536,7 @@ fn gnome_extension_status() -> GnomeExtensionStatus {
         })
         .unwrap_or(false);
 
-    GnomeExtensionStatus { installed, enabled }
+    GnomeExtensionStatus { installed, enabled, active: false, state: None, method: GnomeDetectionMethod::Cli }
 }
 
 fn print_gnome_extension_install_instructions(reason: &str) {
@@ -1606,8 +1711,11 @@ fn enable_gnome_extension() -> bool {
     }
 }
 
-fn ensure_gnome_extension(auto_install: bool) -> bool {
-    let status = gnome_extension_status();
+fn ensure_gnome_extension(status: &GnomeExtensionStatus, auto_install: bool) -> bool {
+    // If D-Bus probe confirmed extension is active, we're done
+    if status.active {
+        return false;
+    }
 
     if !status.installed {
         if !auto_install {
@@ -1632,15 +1740,84 @@ fn ensure_gnome_extension(auto_install: bool) -> bool {
     !status.installed
 }
 
-fn setup_gnome_extension(auto_install: bool) {
-    let status = gnome_extension_status();
-    println!(
-        "[GNOME] Extension status: {}, {}",
-        if status.installed { "installed" } else { "not installed" },
-        if status.enabled { "enabled" } else { "not enabled" }
-    );
+fn print_gnome_extension_status(status: &GnomeExtensionStatus) {
+    let method_str = match status.method {
+        GnomeDetectionMethod::Dbus => "via D-Bus",
+        GnomeDetectionMethod::Cli => "via gnome-extensions",
+    };
 
-    let needs_restart = ensure_gnome_extension(auto_install);
+    if status.active {
+        println!("[GNOME] Extension status: active ({})", method_str);
+    } else {
+        let state_info = status
+            .state
+            .map(|s| format!(", state={}", gnome_state_name(s)))
+            .unwrap_or_default();
+        println!(
+            "[GNOME] Extension status: {}, {} ({}{}){}",
+            if status.installed { "installed" } else { "not installed" },
+            if status.enabled { "enabled" } else { "not enabled" },
+            method_str,
+            state_info,
+            if !matches!(status.state, Some(2) | Some(4)) { " - waiting for GNOME Shell..." } else { "" }
+        );
+    }
+}
+
+fn setup_gnome_extension(auto_install: bool) {
+    // Retry settings for when extension is installed but GNOME Shell is still loading
+    const RETRY_INTERVAL_MS: u64 = 50;
+    const MAX_WAIT_MS: u64 = 30_000;
+    const MAX_RETRIES: u64 = MAX_WAIT_MS / RETRY_INTERVAL_MS;
+
+    let mut status = gnome_extension_status();
+    print_gnome_extension_status(&status);
+
+    // Retry on all states except:
+    // - DISABLED (2): user explicitly disabled the extension
+    // - OUT_OF_DATE (4): extension doesn't support current GNOME Shell version
+    let is_transient_state = |s: Option<u8>| !matches!(s, Some(2) | Some(4));
+
+    if status.installed && !status.active && is_transient_state(status.state) {
+        let initial_state = status.state;
+        let mut elapsed_ms: u64 = 0;
+        for attempt in 0..MAX_RETRIES {
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_INTERVAL_MS));
+            elapsed_ms += RETRY_INTERVAL_MS;
+            status = gnome_extension_status();
+
+            if status.active {
+                println!("[GNOME] Extension became active after {}ms", elapsed_ms);
+                print_gnome_extension_status(&status);
+                return;
+            }
+
+            if !is_transient_state(status.state) {
+                println!(
+                    "[GNOME] Extension state changed to {} after {}ms",
+                    status.state.map(gnome_state_name).unwrap_or("unknown"),
+                    elapsed_ms
+                );
+                break;
+            }
+
+            // Log progress every second
+            if (attempt + 1) % 20 == 0 {
+                println!(
+                    "[GNOME] Still waiting for extension to load (state={})... ({}ms/{}ms)",
+                    initial_state.map(gnome_state_name).unwrap_or("unknown"),
+                    elapsed_ms,
+                    MAX_WAIT_MS
+                );
+            }
+        }
+
+        if !status.active {
+            print_gnome_extension_status(&status);
+        }
+    }
+
+    let needs_restart = ensure_gnome_extension(&status, auto_install);
 
     if needs_restart {
         println!("[GNOME] Extension installed and enabled.");

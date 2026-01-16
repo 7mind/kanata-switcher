@@ -47,10 +47,13 @@ this._dbus.export(Gio.DBus.session, '/path')
 ## GNOME Extension Detection
 
 Detection flow (optimized for systemd services):
-1. **Quick probe** - Try D-Bus call to extension. If responds → extension is active, skip all checks
-2. **Fallback** - If not responding:
+1. **Quick probe** - Call `org.gnome.Shell.Extensions.GetExtensionInfo` via D-Bus (native zbus). If extension state=1 (ENABLED) → active, skip all checks. This bypasses filesystem searches entirely.
+2. **Startup retry** - If D-Bus returns state=6 (INITIALIZED), the extension is in the enabled list but GNOME Shell hasn't finished loading it yet. Retry every 50ms (up to 30s max) until state becomes ENABLED or changes.
+3. **Fallback** - If D-Bus probe fails (GNOME Shell not running, no session bus):
    - Check **installed** via `gnome-extensions info` (requires `XDG_DATA_DIRS`)
    - Check **enabled** via `gsettings get org.gnome.shell enabled-extensions` (works in systemd)
+
+Extension states: 1=ENABLED, 2=DISABLED, 3=ERROR, 4=OUT_OF_DATE, 5=DOWNLOADING, 6=INITIALIZED.
 
 NixOS/Home Manager modules set `XDG_DATA_DIRS` environment for systemd services to ensure `gnome-extensions` can find Nix-installed extensions.
 
