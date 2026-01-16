@@ -102,9 +102,17 @@ When all windows are closed (no window focused), the daemon switches to the defa
 Uses x11rb with pure Rust connection (no libxcb dependency). Implementation in `run_x11()`:
 1. Connect to X server via `x11rb::connect(None)` (reads $DISPLAY)
 2. Get atoms for `_NET_ACTIVE_WINDOW`, `_NET_WM_NAME`, `UTF8_STRING`
-3. Poll loop (100ms): read `_NET_ACTIVE_WINDOW` from root, get WM_CLASS and title
+3. Subscribe to `PropertyNotify` events on root window
+4. Process initial focused window at startup
+5. Event loop: wait for `PropertyNotify`, filter for `_NET_ACTIVE_WINDOW` changes
 
 X11 is fallback - only used if GNOME/KDE/Wayland not detected.
+
+## GNOME Extension (Push Model)
+
+Extension subscribes to `global.display.connect('notify::focus-window')` and calls daemon's DBus `WindowFocus(class, title)` method on changes. Handles:
+- Initial state: calls `_notifyFocus()` in `enable()`
+- Unfocus: passes empty strings when `focus_window` is null
 
 ## Testing
 

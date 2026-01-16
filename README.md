@@ -1,10 +1,10 @@
 # kanata-switcher
 
-`kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers based on currently focused application windows for all Linux (Wayland) desktop environments - GNOME Shell, KDE Plasma, COSMIC and wlroots-based compositors (Sway, Hyprland, Niri, etc.).
+`kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers based on currently focused application windows for all Linux desktop environments - GNOME Shell, KDE Plasma, COSMIC, wlroots-based compositors (Sway, Hyprland, Niri, etc.), and X11.
 
 As of the time when the project was started, the only active project for application-based layer switching for kanata for Linux was [hyprkan](https://github.com/haithium/hyperkan) - which supported only wlroots-based compositors. There was no project attempting support for GNOME Shell or KDE Plasma.
 
-This project aims to support all Wayland-based environments at once in a single application. And possibly X11 too, but later!
+This project supports all Linux desktop environments in a single application.
 
 This project is fully LLM-generated and has so far been tested manually on the following environments:
 
@@ -15,6 +15,7 @@ This project is fully LLM-generated and has so far been tested manually on the f
     - [x] Sway
     - [x] Hyprland
     - [x] Niri
+- [ ] X11 (implemented, needs testing)
 
 If you have tested it in other environments, and it did/didn't work, open a PR to change the README!
 
@@ -22,14 +23,15 @@ If you have tested it in other environments, and it did/didn't work, open a PR t
 
 ### Supported Environments
 
-All environments use the unified daemon (`src/daemon/`).
+All environments use the unified daemon (`src/daemon/`). All backends are event-driven (no polling).
 
 | Environment | How it works |
 |-------------|--------------|
-| GNOME Shell | Daemon polls GNOME extension via DBus |
-| KDE Plasma | Daemon auto-injects KWin script at runtime |
-| COSMIC | Daemon uses `cosmic-toplevel-info` Wayland protocol |
-| wlroots (Sway, Hyprland, Niri, etc.) | Daemon uses `wlr-foreign-toplevel-management` Wayland protocol |
+| GNOME Shell | Extension pushes focus changes to daemon via DBus |
+| KDE Plasma | Daemon auto-injects KWin script which pushes via DBus |
+| COSMIC | Daemon receives `cosmic-toplevel-info` Wayland protocol events |
+| wlroots (Sway, Hyprland, Niri, etc.) | Daemon receives `wlr-foreign-toplevel-management` protocol events |
+| X11 | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
 
 ### Prerequisites
 
@@ -259,12 +261,13 @@ Systemd units use `--quiet` by default to reduce log noise.
 
 ### How It Works
 
-Single daemon handles all environments:
+Single daemon handles all environments. All backends are event-driven (push model):
 
-- **GNOME**: Daemon polls extension via DBus → extension returns focused window
-- **KDE**: Daemon injects KWin script → script calls daemon via DBus on focus change
-- **COSMIC**: Daemon connects to Wayland and uses `cosmic-toplevel-info` protocol (separate from wlroots, as COSMIC is not wlroots-based)
-- **wlroots compositors**: Daemon connects to Wayland and uses `wlr-foreign-toplevel-management` protocol to receive focus events
+- **GNOME**: Extension subscribes to focus changes and pushes to daemon via DBus
+- **KDE**: Daemon injects KWin script → script pushes focus changes to daemon via DBus
+- **COSMIC**: Daemon receives `cosmic-toplevel-info` Wayland protocol events
+- **wlroots compositors**: Daemon receives `wlr-foreign-toplevel-management` Wayland protocol events
+- **X11**: Daemon subscribes to `PropertyNotify` events on root window, filters for `_NET_ACTIVE_WINDOW` changes
 
 ### Related Projects
 

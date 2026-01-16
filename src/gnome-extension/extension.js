@@ -1,46 +1,52 @@
 // Kanata Layer Switcher - GNOME Shell Extension
-// Minimal extension that exposes focused window info via DBus
+// Push-based: notifies daemon on focus changes via DBus
 
 import Gio from 'gi://Gio';
-import Shell from 'gi://Shell';
+import GLib from 'gi://GLib';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+
+const DBUS_NAME = 'com.github.kanata.Switcher';
+const DBUS_PATH = '/com/github/kanata/Switcher';
+const DBUS_INTERFACE = 'com.github.kanata.Switcher';
 
 export default class KanataSwitcherExtension extends Extension {
   enable() {
-    const dbusXml = `
-      <node>
-        <interface name="com.github.kanata.Switcher">
-          <method name="GetFocusedWindow">
-            <arg type="s" direction="out" name="window"/>
-          </method>
-        </interface>
-      </node>
-    `;
+    this._focusWindowId = global.display.connect(
+      'notify::focus-window',
+      () => this._notifyFocus()
+    );
 
-    this._dbus = Gio.DBusExportedObject.wrapJSObject(dbusXml, this);
-    this._dbus.export(Gio.DBus.session, '/com/github/kanata/Switcher');
+    // Handle initial state at boot
+    this._notifyFocus();
 
-    console.log('[KanataSwitcher] Extension enabled, DBus service exported');
+    console.log('[KanataSwitcher] Extension enabled (push mode)');
   }
 
   disable() {
-    if (this._dbus) {
-      this._dbus.flush();
-      this._dbus.unexport();
-      this._dbus = null;
+    if (this._focusWindowId) {
+      global.display.disconnect(this._focusWindowId);
+      this._focusWindowId = null;
     }
 
     console.log('[KanataSwitcher] Extension disabled');
   }
 
-  GetFocusedWindow() {
-    const window = global.display.focus_window;
-    if (window) {
-      return JSON.stringify({
-        class: window.get_wm_class() || '',
-        title: window.get_title() || ''
-      });
-    }
-    return JSON.stringify({ class: '', title: '' });
+  _notifyFocus() {
+    const win = global.display.focus_window;
+    const windowClass = win?.get_wm_class() ?? '';
+    const windowTitle = win?.get_title() ?? '';
+
+    Gio.DBus.session.call(
+      DBUS_NAME,
+      DBUS_PATH,
+      DBUS_INTERFACE,
+      'WindowFocus',
+      new GLib.Variant('(ss)', [windowClass, windowTitle]),
+      null,
+      Gio.DBusCallFlags.NO_AUTO_START,
+      -1,
+      null,
+      null
+    );
   }
 }

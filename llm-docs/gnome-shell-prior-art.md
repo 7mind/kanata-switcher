@@ -11,6 +11,7 @@ We chose **Option B (Intermediary Daemon)** - extension is minimal, daemon handl
 | keymapper | Push | Extension → DBus → client |
 | keyd | Push | Extension → FIFO, dynamic KWin injection |
 | xremap | Pull | Client polls extension DBus |
+| **kanata-switcher** | **Push** | Extension → DBus → daemon (same as keymapper)
 
 ## keyd KDE Approach (adopted)
 

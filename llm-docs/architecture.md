@@ -30,12 +30,14 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
 
 | Environment | Detection | Method |
 |-------------|-----------|--------|
-| GNOME | `XDG_CURRENT_DESKTOP` contains "gnome" | DBus extension poll |
-| KDE | `KDE_SESSION_VERSION` set | KWin script injection |
-| Wayland | `WAYLAND_DISPLAY` set | Toplevel protocol (wlr or cosmic) |
-| X11 | `DISPLAY` set | _NET_ACTIVE_WINDOW polling |
+| GNOME | `XDG_CURRENT_DESKTOP` contains "gnome" | Extension pushes via DBus |
+| KDE | `KDE_SESSION_VERSION` set | KWin script pushes via DBus |
+| Wayland | `WAYLAND_DISPLAY` set | Toplevel protocol events (wlr or cosmic) |
+| X11 | `DISPLAY` set | PropertyNotify events on _NET_ACTIVE_WINDOW |
 
 Detection order: GNOME → KDE → Wayland → X11 → Unknown
+
+All backends are event-driven (push model) - no polling.
 
 ## Wayland Toplevel Protocol
 
@@ -49,13 +51,16 @@ Both protocols provide `title`, `app_id`, and `activated` state events.
 
 Uses x11rb (pure Rust X11 implementation, no libxcb dependency).
 
+Event-driven via PropertyNotify on root window:
+1. Subscribe to `PROPERTY_CHANGE` events on root
+2. Filter for `_NET_ACTIVE_WINDOW` atom changes
+3. Process initial state on startup
+
 X11 atoms used:
 - `_NET_ACTIVE_WINDOW` - get currently focused window
 - `WM_CLASS` - get window class (returns `instance\0class\0`)
 - `_NET_WM_NAME` - get window title (UTF-8, preferred)
 - `WM_NAME` - get window title (fallback, Latin-1)
-
-Polling-based like GNOME backend (100ms interval).
 
 ## Kanata Protocol
 

@@ -23,7 +23,8 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 use x11rb::connection::Connection as X11Connection;
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as X11ConnectionExt, Window};
+use x11rb::protocol::xproto::{AtomEnum, ChangeWindowAttributesAux, ConnectionExt as X11ConnectionExt, EventMask, Window};
+use x11rb::protocol::Event as X11Event;
 use x11rb::rust_connection::RustConnection;
 use zbus::Connection;
 
@@ -1036,22 +1037,27 @@ x11rb::atom_manager! {
 
 struct X11State {
     connection: RustConnection,
-    screen_num: usize,
+    root: Window,
     atoms: X11Atoms,
 }
 
 impl X11State {
     fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (connection, screen_num) = x11rb::connect(None)?;
+        let root = connection.setup().roots[screen_num].root;
         let atoms = X11Atoms::new(&connection)?.reply()?;
-        Ok(Self { connection, screen_num, atoms })
+
+        // Subscribe to PropertyNotify events on root window
+        let attrs = ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE);
+        connection.change_window_attributes(root, &attrs)?;
+        connection.flush()?;
+
+        Ok(Self { connection, root, atoms })
     }
 
     fn get_active_window_id(&self) -> Option<Window> {
-        let root = self.connection.setup().roots[self.screen_num].root;
-
         let prop_reply = self.connection
-            .get_property(false, root, self.atoms._NET_ACTIVE_WINDOW, AtomEnum::WINDOW, 0, 1)
+            .get_property(false, self.root, self.atoms._NET_ACTIVE_WINDOW, AtomEnum::WINDOW, 0, 1)
             .ok()?
             .reply()
             .ok()?;
@@ -1135,19 +1141,40 @@ async fn run_x11(
     let state = X11State::new()?;
 
     println!("[X11] Connected to display");
-    println!("[X11] Listening for focus events...");
 
     let mut handler = FocusHandler::new(rules, quiet);
 
+    // Process initial state at boot
+    let win = state.get_active_window();
+    let default_layer = kanata.default_layer_sync();
+    if let Some(layer) = handler.handle(&win, &default_layer) {
+        kanata.change_layer(&layer).await;
+    }
+
+    println!("[X11] Listening for focus events...");
+
+    // Event loop - wait for PropertyNotify events on _NET_ACTIVE_WINDOW
     loop {
-        let win = state.get_active_window();
-        let default_layer = kanata.default_layer_sync();
+        // Use poll_for_event in a loop with small sleep to avoid blocking tokio runtime
+        let event = tokio::task::block_in_place(|| state.connection.wait_for_event());
 
-        if let Some(layer) = handler.handle(&win, &default_layer) {
-            kanata.change_layer(&layer).await;
+        match event {
+            Ok(X11Event::PropertyNotify(e)) if e.atom == state.atoms._NET_ACTIVE_WINDOW => {
+                let win = state.get_active_window();
+                let default_layer = kanata.default_layer_sync();
+
+                if let Some(layer) = handler.handle(&win, &default_layer) {
+                    kanata.change_layer(&layer).await;
+                }
+            }
+            Ok(_) => {
+                // Ignore other events
+            }
+            Err(e) => {
+                eprintln!("[X11] Connection error: {}", e);
+                return Err(e.into());
+            }
         }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -1410,32 +1437,7 @@ fn ensure_gnome_extension(auto_install: bool) -> bool {
     !status.installed
 }
 
-pub struct GnomeContext {
-    connection: Connection,
-}
-
-async fn setup_gnome_extension(
-    auto_install: bool,
-) -> Result<GnomeContext, Box<dyn std::error::Error + Send + Sync>> {
-    let connection = Connection::session().await?;
-
-    // Quick probe: try D-Bus call first - if extension is active, skip all checks
-    let probe = connection
-        .call_method(
-            Some("org.gnome.Shell"),
-            "/com/github/kanata/Switcher",
-            Some("com.github.kanata.Switcher"),
-            "GetFocusedWindow",
-            &(),
-        )
-        .await;
-
-    if probe.is_ok() {
-        println!("[GNOME] Extension active");
-        return Ok(GnomeContext { connection });
-    }
-
-    // Extension not responding - check status for diagnostics
+fn setup_gnome_extension(auto_install: bool) {
     let status = gnome_extension_status();
     println!(
         "[GNOME] Extension status: {}, {}",
@@ -1447,42 +1449,10 @@ async fn setup_gnome_extension(
 
     if needs_restart {
         println!("[GNOME] Extension installed and enabled.");
-        println!("[GNOME] Please restart GNOME Shell to activate:");
+        println!("[GNOME] Please restart GNOME Shell to activate the extension.");
         println!("[GNOME]   - Press Alt+F2, type \"r\", press Enter (X11 only)");
         println!("[GNOME]   - Or log out and log back in (Wayland)");
-        println!("[GNOME] Waiting for extension to become available...");
     }
-
-    let max_attempts = if needs_restart { 600 } else { 5 };
-    for attempt in 1..=max_attempts {
-        let result = connection
-            .call_method(
-                Some("org.gnome.Shell"),
-                "/com/github/kanata/Switcher",
-                Some("com.github.kanata.Switcher"),
-                "GetFocusedWindow",
-                &(),
-            )
-            .await;
-
-        if result.is_ok() {
-            println!("[GNOME] Extension responding");
-            return Ok(GnomeContext { connection });
-        }
-
-        if attempt == max_attempts {
-            if needs_restart {
-                eprintln!("[GNOME] Timeout waiting for extension. Please restart GNOME Shell and try again.");
-            } else {
-                eprintln!("[GNOME] Extension not responding. Try restarting GNOME Shell.");
-            }
-            std::process::exit(1);
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    unreachable!()
 }
 
 // === GNOME Backend ===
@@ -1490,38 +1460,60 @@ async fn setup_gnome_extension(
 async fn run_gnome(
     kanata: KanataClient,
     rules: Vec<Rule>,
-    context: GnomeContext,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[GNOME] Starting focus polling...");
+    let connection = Connection::session().await?;
 
-    let mut handler = FocusHandler::new(rules, quiet);
+    // Register DBus service to receive focus events from extension
+    #[derive(Debug)]
+    struct GnomeSwitcher {
+        kanata: KanataClient,
+        handler: Arc<Mutex<FocusHandler>>,
+        runtime_handle: tokio::runtime::Handle,
+    }
 
-    loop {
-        let result = context
-            .connection
-            .call_method(
-                Some("org.gnome.Shell"),
-                "/com/github/kanata/Switcher",
-                Some("com.github.kanata.Switcher"),
-                "GetFocusedWindow",
-                &(),
-            )
-            .await;
+    #[zbus::interface(name = "com.github.kanata.Switcher")]
+    impl GnomeSwitcher {
+        async fn window_focus(&self, window_class: &str, window_title: &str) {
+            let win = WindowInfo {
+                class: window_class.to_string(),
+                title: window_title.to_string(),
+            };
 
-        if let Ok(reply) = result {
-            if let Ok(json) = reply.body().deserialize::<String>() {
-                if let Ok(win) = serde_json::from_str::<WindowInfo>(&json) {
-                    let default_layer = kanata.default_layer_sync();
-                    if let Some(layer) = handler.handle(&win, &default_layer) {
-                        kanata.change_layer(&layer).await;
-                    }
-                }
+            let default_layer = self
+                .runtime_handle
+                .block_on(async { self.kanata.default_layer().await })
+                .unwrap_or_default();
+
+            let layer = self.handler.lock().unwrap().handle(&win, &default_layer);
+
+            if let Some(layer) = layer {
+                self.runtime_handle
+                    .block_on(async { self.kanata.change_layer(&layer).await });
             }
         }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
+    let switcher = GnomeSwitcher {
+        kanata,
+        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet))),
+        runtime_handle: tokio::runtime::Handle::current(),
+    };
+
+    connection
+        .object_server()
+        .at("/com/github/kanata/Switcher", switcher)
+        .await?;
+
+    connection
+        .request_name("com.github.kanata.Switcher")
+        .await?;
+
+    println!("[GNOME] Listening for focus events from extension...");
+
+    // Wait forever - extension will push focus changes to us
+    std::future::pending::<()>().await;
+    Ok(())
 }
 
 // === KDE Backend ===
@@ -1694,11 +1686,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let env = detect_environment();
     println!("[Init] Detected environment: {}", env.as_str());
 
-    let gnome_context = if env == Environment::Gnome {
-        Some(setup_gnome_extension(install_gnome_extension).await?)
-    } else {
-        None
-    };
+    if env == Environment::Gnome {
+        setup_gnome_extension(install_gnome_extension);
+    }
 
     let config = load_config(args.config.as_deref());
     if config.rules.is_empty() {
@@ -1748,7 +1738,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match env {
         Environment::Gnome => {
-            run_gnome(kanata, config.rules, gnome_context.unwrap(), args.quiet).await?;
+            run_gnome(kanata, config.rules, args.quiet).await?;
         }
         Environment::Kde => {
             run_kde(kanata, config.rules, args.quiet).await?;
