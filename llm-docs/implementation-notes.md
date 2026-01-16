@@ -130,21 +130,34 @@ Two modes for virtual key actions:
    - Actions: `Press`, `Release`, `Tap`, `Toggle`
 
 **Fallthrough**: Rules can set `fallthrough: true` to continue matching subsequent rules:
-- First matching `layer` is used
-- First matching `virtual_key` is used
+- ALL matching `layer`s execute in order (not just first)
+- Intermediate `virtual_key`s are tapped (press+release), final is held
 - All matching `raw_vk_action` arrays are collected
 
+**FocusAction ADT**: Actions are represented as an algebraic data type:
+- `ReleaseVk(name)` - Release a managed VK
+- `ChangeLayer(layer)` - Switch to a layer
+- `TapVk(name)` - Press then immediately release (for intermediate VKs)
+- `PressVk(name)` - Press and hold (for final managed VK)
+- `RawVkAction(name, action)` - Fire-and-forget VK action
+
 **Execution order** (in `execute_focus_actions`):
-1. Release previous `virtual_key` (if any)
-2. Press new `virtual_key` (if any)
-3. Fire all `raw_vk_action` pairs
-4. Change layer (if specified)
+1. Release previous managed `virtual_key` (if any)
+2. For each matching rule in order:
+   - Execute `layer` switch (if specified)
+   - Execute `virtual_key` (Tap if intermediate, Press if final)
+   - Execute all `raw_vk_action` pairs
 
 ## Testing
 
-Tested on all supported environments:
+**Manual testing** on all supported environments:
 - GNOME Shell (Wayland)
 - KDE Plasma
 - COSMIC
 - Sway, Hyprland, Niri (wlr-foreign-toplevel-management protocol)
 - X11 (various window managers)
+
+**Automated tests** in `src/daemon/main.rs` (test module):
+- Flow tests: verify rule matching produces expected `FocusActions`
+- Property tests (proptest): verify invariants like "release before press"
+- Tests cover fallthrough, VK lifecycle, action ordering, edge cases

@@ -111,7 +111,9 @@ Daemon switches to default layer on exit (any cause):
 - `virtual_key`: auto-managed VK - press on focus, release on unfocus (optional)
 - `raw_vk_action`: array of `[name, action]` pairs, fire-and-forget on focus (optional)
 - `fallthrough`: continue matching subsequent rules (default false)
-- First match wins (unless `fallthrough: true`), default layer if no match
+- With fallthrough: ALL actions execute in order (layers, VKs, raw actions)
+- Intermediate `virtual_key`s are tapped, final is held
+- Default layer used if no match
 
 **Default entry (optional):**
 - `{"default": "layer_name"}`: specifies explicit default layer

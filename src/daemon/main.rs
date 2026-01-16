@@ -233,25 +233,34 @@ fn match_pattern(pattern: Option<&str>, value: &str) -> bool {
 
 // === Focus Handler ===
 
-/// Actions to execute on focus change
-#[derive(Debug, Default)]
+/// Individual action to execute on focus change
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FocusAction {
+    /// Release a virtual key
+    ReleaseVk(String),
+    /// Switch to a layer
+    ChangeLayer(String),
+    /// Tap a virtual key (press then immediately release)
+    TapVk(String),
+    /// Press and hold a virtual key (managed - will be released on next focus change)
+    PressVk(String),
+    /// Raw VK action (name, action: Press/Release/Tap/Toggle)
+    RawVkAction(String, String),
+}
+
+/// Actions to execute on focus change, in order.
+/// With fallthrough, all matching actions are collected and executed sequentially.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct FocusActions {
-    /// Layer to switch to (if any)
-    layer: Option<String>,
-    /// Virtual key to release (previous managed VK)
-    release_vk: Option<String>,
-    /// Virtual key to press (new managed VK)
-    press_vk: Option<String>,
-    /// Raw VK actions to fire (fire-and-forget)
-    raw_vk_actions: Vec<(String, String)>,
+    /// Ordered list of actions to execute
+    actions: Vec<FocusAction>,
+    /// The new managed VK after execution (used to update FocusHandler state)
+    new_managed_vk: Option<String>,
 }
 
 impl FocusActions {
     fn is_empty(&self) -> bool {
-        self.layer.is_none()
-            && self.release_vk.is_none()
-            && self.press_vk.is_none()
-            && self.raw_vk_actions.is_empty()
+        self.actions.is_empty()
     }
 }
 
@@ -276,6 +285,7 @@ impl FocusHandler {
     }
 
     /// Handle a focus change event. Returns actions to execute.
+    /// With fallthrough, ALL matching actions are collected and executed in order.
     fn handle(&mut self, win: &WindowInfo, default_layer: &str) -> Option<FocusActions> {
         if win.class == self.last_class && win.title == self.last_title {
             return None;
@@ -284,7 +294,7 @@ impl FocusHandler {
         self.last_class = win.class.clone();
         self.last_title = win.title.clone();
 
-        let mut actions = FocusActions::default();
+        let mut result = FocusActions::default();
 
         // Handle unfocused state (no window has focus)
         if win.class.is_empty() && win.title.is_empty() {
@@ -293,14 +303,15 @@ impl FocusHandler {
             }
             // Release any active virtual key
             if let Some(ref vk) = self.current_virtual_key {
-                actions.release_vk = Some(vk.clone());
-                self.current_virtual_key = None;
+                result.actions.push(FocusAction::ReleaseVk(vk.clone()));
             }
             // Switch to default layer
             if !default_layer.is_empty() {
-                actions.layer = Some(default_layer.to_string());
+                result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
             }
-            return if actions.is_empty() { None } else { Some(actions) };
+            result.new_managed_vk = None;
+            self.current_virtual_key = None;
+            return if result.is_empty() { None } else { Some(result) };
         }
 
         if !self.quiet {
@@ -308,90 +319,113 @@ impl FocusHandler {
         }
 
         // Match rules with fallthrough support
-        let mut matched_layer: Option<String> = None;
-        let mut matched_virtual_key: Option<String> = None;
+        // Collect matching rules first to determine which is final
+        struct MatchedRule {
+            layer: Option<String>,
+            virtual_key: Option<String>,
+            raw_vk_actions: Vec<(String, String)>,
+        }
+
+        let mut matched_rules: Vec<MatchedRule> = Vec::new();
 
         for rule in &self.rules {
             if match_pattern(rule.class.as_deref(), &win.class)
                 && match_pattern(rule.title.as_deref(), &win.title)
             {
-                // Collect layer (first match wins)
-                if matched_layer.is_none() {
-                    if let Some(ref layer) = rule.layer {
-                        matched_layer = Some(layer.clone());
-                    }
-                }
+                matched_rules.push(MatchedRule {
+                    layer: rule.layer.clone(),
+                    virtual_key: rule.virtual_key.clone(),
+                    raw_vk_actions: rule.raw_vk_action.clone().unwrap_or_default(),
+                });
 
-                // Collect virtual_key (first match wins)
-                if matched_virtual_key.is_none() {
-                    if let Some(ref vk) = rule.virtual_key {
-                        matched_virtual_key = Some(vk.clone());
-                    }
-                }
-
-                // Collect raw_vk_actions (all matches)
-                if let Some(ref raw_actions) = rule.raw_vk_action {
-                    actions.raw_vk_actions.extend(raw_actions.iter().cloned());
-                }
-
-                // Stop if no fallthrough
                 if !rule.fallthrough {
                     break;
                 }
             }
         }
 
-        // Set layer (use default if no match)
-        actions.layer = matched_layer.or_else(|| {
-            if default_layer.is_empty() {
-                None
-            } else {
-                Some(default_layer.to_string())
-            }
-        });
+        // Determine the final managed VK (from last matching rule with virtual_key)
+        let final_managed_vk = matched_rules
+            .iter()
+            .rev()
+            .find_map(|r| r.virtual_key.clone());
 
-        // Handle virtual key transitions
-        let new_vk = matched_virtual_key;
-        if new_vk != self.current_virtual_key {
-            // Release old VK if different
+        // Release old managed VK if it's changing
+        if self.current_virtual_key != final_managed_vk {
             if let Some(ref old_vk) = self.current_virtual_key {
-                actions.release_vk = Some(old_vk.clone());
+                result.actions.push(FocusAction::ReleaseVk(old_vk.clone()));
             }
-            // Press new VK if present
-            if let Some(ref vk) = new_vk {
-                actions.press_vk = Some(vk.clone());
-            }
-            self.current_virtual_key = new_vk;
         }
 
-        if actions.is_empty() {
+        // If no rules matched, use default layer
+        if matched_rules.is_empty() {
+            if !default_layer.is_empty() {
+                result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
+            }
+            result.new_managed_vk = None;
+        } else {
+            // Process matched rules in order, building action list
+            let last_idx = matched_rules.len() - 1;
+            for (idx, matched) in matched_rules.into_iter().enumerate() {
+                let is_final = idx == last_idx;
+
+                // Layer change
+                if let Some(layer) = matched.layer {
+                    result.actions.push(FocusAction::ChangeLayer(layer));
+                }
+
+                // Virtual key: intermediate ones get tapped, final one gets pressed (if changed)
+                if let Some(vk) = matched.virtual_key {
+                    if is_final {
+                        // Final rule's VK: press only if different from current
+                        if self.current_virtual_key.as_ref() != Some(&vk) {
+                            result.actions.push(FocusAction::PressVk(vk));
+                        }
+                    } else {
+                        // Intermediate rule's VK: tap (press+release)
+                        result.actions.push(FocusAction::TapVk(vk));
+                    }
+                }
+
+                // Raw VK actions
+                for (name, action) in matched.raw_vk_actions {
+                    result.actions.push(FocusAction::RawVkAction(name, action));
+                }
+            }
+            result.new_managed_vk = final_managed_vk;
+        }
+
+        // Update state
+        self.current_virtual_key = result.new_managed_vk.clone();
+
+        if result.is_empty() {
             None
         } else {
-            Some(actions)
+            Some(result)
         }
     }
 }
 
-/// Execute focus actions (VK releases, VK presses, raw VK actions, layer change)
+/// Execute focus actions in order
 async fn execute_focus_actions(kanata: &KanataClient, actions: FocusActions) {
-    // Release old virtual key first
-    if let Some(ref vk) = actions.release_vk {
-        kanata.act_on_fake_key(vk, "Release").await;
-    }
-
-    // Press new virtual key
-    if let Some(ref vk) = actions.press_vk {
-        kanata.act_on_fake_key(vk, "Press").await;
-    }
-
-    // Fire raw VK actions
-    for (name, action) in &actions.raw_vk_actions {
-        kanata.act_on_fake_key(name, action).await;
-    }
-
-    // Change layer
-    if let Some(ref layer) = actions.layer {
-        kanata.change_layer(layer).await;
+    for action in actions.actions {
+        match action {
+            FocusAction::ReleaseVk(vk) => {
+                kanata.act_on_fake_key(&vk, "Release").await;
+            }
+            FocusAction::ChangeLayer(layer) => {
+                kanata.change_layer(&layer).await;
+            }
+            FocusAction::TapVk(vk) => {
+                kanata.act_on_fake_key(&vk, "Tap").await;
+            }
+            FocusAction::PressVk(vk) => {
+                kanata.act_on_fake_key(&vk, "Press").await;
+            }
+            FocusAction::RawVkAction(name, action) => {
+                kanata.act_on_fake_key(&name, &action).await;
+            }
+        }
     }
 }
 
@@ -1909,3 +1943,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
+// === Tests ===
+
+
+#[cfg(test)]
+mod tests;
