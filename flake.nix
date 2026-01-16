@@ -89,11 +89,39 @@
             };
           });
 
+          # All tests - requires Xvfb for X11 tests and dbus-daemon for DBus tests
+          kanata-switcher-tests = craneLib.cargoTest (rustDaemonCommonArgs // {
+            cargoArtifacts = rustDaemonCargoArtifacts;
+
+            # dbus needs to be in both buildInputs (for linking) and nativeBuildInputs (for dbus-daemon binary)
+            buildInputs = rustDaemonCommonArgs.buildInputs ++ [ pkgs.dbus ];
+            nativeBuildInputs = rustDaemonCommonArgs.nativeBuildInputs ++ [
+              pkgs.xorg.xorgserver  # provides Xvfb
+              pkgs.xvfb-run
+              pkgs.dbus  # provides dbus-daemon
+            ];
+
+            # xvfb-run wrapper for X11 tests, HOME for dbus-daemon
+            preCheck = ''
+              export HOME=$(mktemp -d)
+            '';
+
+            checkPhase = ''
+              runHook preCheck
+              xvfb-run -s "-screen 0 800x600x24" cargo test --release
+              runHook postCheck
+            '';
+          });
+
         in {
           packages = {
             daemon = kanata-switcher-daemon;
             gnome-extension = kanata-switcher-gnome-extension;
             default = kanata-switcher-daemon;
+          };
+
+          checks = {
+            tests = kanata-switcher-tests;
           };
 
           devShells.default = pkgs.mkShell {
@@ -104,6 +132,9 @@
               rustToolchain
               rust-analyzer
               pkg-config
+              # For X11 integration tests
+              xorg.xorgserver  # provides Xvfb
+              xvfb-run
             ];
 
             shellHook = ''

@@ -32,3 +32,6 @@ x11rb = "0.13"
 
 [dev-dependencies]
 proptest = "1"
+tokio-test = "0.4"
+wayland-server = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }

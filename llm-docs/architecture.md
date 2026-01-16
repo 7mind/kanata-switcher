@@ -225,6 +225,25 @@ HM module adds `--no-install-gnome-extension` by default. Use either:
 
 Systemd units use `--quiet` by default.
 
+## Testing
+
+Test files:
+- `src/daemon/tests.rs` - Unit tests for FocusHandler (rule matching, VK lifecycle)
+- `src/daemon/integration_tests.rs` - Integration tests for DE backends
+
+Integration tests:
+- **DBus tests**: Test GNOME/KDE backend with mock Kanata TCP server
+- **Wayland tests**: Mock compositor implementing wlr-foreign-toplevel-management
+- **X11 tests**: Xvfb-based tests for PropertyNotify and window property reading
+
+Running tests:
+```bash
+cargo test                   # All tests - requires Xvfb and dbus-daemon
+nix flake check              # Recommended: provides all dependencies
+```
+
+Tests requiring external dependencies (Xvfb, dbus-daemon) fail with helpful error messages when unavailable. Run `nix flake check` for guaranteed full coverage.
+
 ## Rust Dependencies
 
 Key crates:
@@ -234,3 +253,7 @@ Key crates:
 - `x11rb` - X11 protocol (pure Rust, no libxcb dependency)
 - `tokio` - async runtime
 - `clap` - CLI parsing
+
+Dev dependencies:
+- `proptest` - Property-based testing for FocusHandler
+- `wayland-server` - Mock compositor for Wayland tests

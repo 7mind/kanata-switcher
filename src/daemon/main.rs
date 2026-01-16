@@ -1194,8 +1194,22 @@ async fn run_wayland(
 
     let mut handler = FocusHandler::new(rules, quiet);
 
+    // Process initial state
+    let win = state.get_active_window();
+    let default_layer = kanata.default_layer_sync();
+    if let Some(actions) = handler.handle(&win, &default_layer) {
+        execute_focus_actions(&kanata, actions).await;
+    }
+
+    // Event loop - block until events arrive
     loop {
-        queue.roundtrip(&mut state)?;
+        // blocking_dispatch waits for events instead of polling
+        let result = tokio::task::block_in_place(|| queue.blocking_dispatch(&mut state));
+
+        if let Err(e) = result {
+            eprintln!("[Wayland] Dispatch error: {}", e);
+            return Err(e.into());
+        }
 
         let win = state.get_active_window();
         let default_layer = kanata.default_layer_sync();
@@ -1203,8 +1217,6 @@ async fn run_wayland(
         if let Some(actions) = handler.handle(&win, &default_layer) {
             execute_focus_actions(&kanata, actions).await;
         }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -1338,7 +1350,7 @@ async fn run_x11(
 
     // Event loop - wait for PropertyNotify events on _NET_ACTIVE_WINDOW
     loop {
-        // Use poll_for_event in a loop with small sleep to avoid blocking tokio runtime
+        // block_in_place allows blocking I/O in async context
         let event = tokio::task::block_in_place(|| state.connection.wait_for_event());
 
         match event {
@@ -1913,3 +1925,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod integration_tests;
