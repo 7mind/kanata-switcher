@@ -68,51 +68,68 @@ struct MockKanataServer {
     port: u16,
     handle: Option<thread::JoinHandle<()>>,
     receiver: mpsc::Receiver<KanataMessage>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockKanataServer {
     fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (sender, receiver) = mpsc::channel();
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_thread = std::sync::Arc::clone(&shutdown);
 
         let handle = thread::spawn(move || {
-            // Accept one connection
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-
-            // Send initial LayerChange message
-            let init_msg = r#"{"LayerChange":{"new":"default"}}"#;
-            writeln!(stream, "{}", init_msg).unwrap();
-
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-
             loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break, // Connection closed
-                    Ok(_) => {
-                        // Parse and forward the message
-                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if let Some(cl) = value.get("ChangeLayer") {
-                                let new = cl.get("new").and_then(|v| v.as_str()).unwrap_or("");
-                                sender.send(KanataMessage::ChangeLayer { new: new.to_string() }).ok();
-                            } else if let Some(fk) = value.get("ActOnFakeKey") {
-                                let name = fk.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                let action = fk.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                                sender.send(KanataMessage::ActOnFakeKey {
-                                    name: name.to_string(),
-                                    action: action.to_string(),
-                                }).ok();
-                            } else if value.get("RequestLayerNames").is_some() {
-                                sender.send(KanataMessage::RequestLayerNames).ok();
-                                // Respond with layer names
-                                let response = r#"{"LayerNames":{"names":["default","browser","terminal","vim"]}}"#;
-                                writeln!(stream, "{}", response).unwrap();
-                            }
-                        }
+                if shutdown_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
                     }
                     Err(_) => break,
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+
+                // Send initial LayerChange message
+                let init_msg = r#"{"LayerChange":{"new":"default"}}"#;
+                if writeln!(stream, "{}", init_msg).is_err() {
+                    continue;
+                }
+
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break, // Connection closed
+                        Ok(_) => {
+                            // Parse and forward the message
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                                if let Some(cl) = value.get("ChangeLayer") {
+                                    let new = cl.get("new").and_then(|v| v.as_str()).unwrap_or("");
+                                    sender.send(KanataMessage::ChangeLayer { new: new.to_string() }).ok();
+                                } else if let Some(fk) = value.get("ActOnFakeKey") {
+                                    let name = fk.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    let action = fk.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                                    sender.send(KanataMessage::ActOnFakeKey {
+                                        name: name.to_string(),
+                                        action: action.to_string(),
+                                    }).ok();
+                                } else if value.get("RequestLayerNames").is_some() {
+                                    sender.send(KanataMessage::RequestLayerNames).ok();
+                                    // Respond with layer names
+                                    let response = r#"{"LayerNames":{"names":["default","browser","terminal","vim"]}}"#;
+                                    writeln!(stream, "{}", response).ok();
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         });
@@ -121,6 +138,7 @@ impl MockKanataServer {
             port,
             handle: Some(handle),
             receiver,
+            shutdown,
         }
     }
 
@@ -135,9 +153,9 @@ impl MockKanataServer {
 
 impl Drop for MockKanataServer {
     fn drop(&mut self) {
-        // Server thread will exit when connection is dropped
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
-            // Don't wait indefinitely
             let _ = handle.join();
         }
     }
@@ -524,12 +542,16 @@ async fn test_dbus_service_real_bus() {
         .await
         .expect("Failed to connect to private bus");
 
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
     register_dbus_service(
         &service_connection,
         kanata,
         rules,
         true,
         status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
     )
         .await
         .expect("Failed to register service");
@@ -571,6 +593,434 @@ async fn test_dbus_service_real_bus() {
     // Verify layer change (recv_timeout handles waiting)
     let msg = mock_server.recv_timeout(Duration::from_secs(2));
     assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "browser".to_string() }));
+}
+
+/// Test that GetStatus reports the initial layer without waiting for a layer change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_get_status_initial_layer() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+        .await
+        .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    }).await.expect("Timeout waiting for service registration");
+
+    let reply = client
+        .call_method(
+            Some("com.github.kanata.Switcher"),
+            "/com/github/kanata/Switcher",
+            Some("com.github.kanata.Switcher"),
+            "GetStatus",
+            &(),
+        )
+        .await
+        .expect("GetStatus call failed");
+
+    let (layer, virtual_keys, source): (String, Vec<String>, String) = reply
+        .body()
+        .deserialize()
+        .expect("Failed to deserialize GetStatus response");
+
+    assert_eq!(layer, "default");
+    assert!(virtual_keys.is_empty());
+    assert_eq!(source, "external");
+}
+
+/// Test that focus-based status updates override the layer source on GetStatus.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_get_status_focus_source() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+        .await
+        .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    }).await.expect("Timeout waiting for service registration");
+
+    let focus_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "WindowFocus",
+        &("test-app", "Test Window"),
+    ).await;
+    assert!(focus_result.is_ok(), "DBus WindowFocus failed: {:?}", focus_result.err());
+
+    let reply = client
+        .call_method(
+            Some("com.github.kanata.Switcher"),
+            "/com/github/kanata/Switcher",
+            Some("com.github.kanata.Switcher"),
+            "GetStatus",
+            &(),
+        )
+        .await
+        .expect("GetStatus call failed");
+
+    let (layer, _virtual_keys, source): (String, Vec<String>, String) = reply
+        .body()
+        .deserialize()
+        .expect("Failed to deserialize GetStatus response");
+
+    assert_eq!(layer, "browser");
+    assert_eq!(source, "focus");
+}
+
+/// Test that Restart requests trigger the restart channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_restart_request() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let mut restart_receiver = restart_handle.subscribe();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+        .await
+        .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    }).await.expect("Timeout waiting for service registration");
+
+    let restart_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "Restart",
+        &(),
+    ).await;
+    assert!(restart_result.is_ok(), "DBus Restart failed: {:?}", restart_result.err());
+
+    let changed = tokio::time::timeout(Duration::from_secs(2), restart_receiver.changed()).await;
+    assert!(changed.is_ok(), "Restart signal timed out");
+}
+
+/// Test pause/unpause flow with a mock Kanata server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_pause_unpause() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: Some("vk_browser".to_string()),
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+        .await
+        .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    }).await.expect("Timeout waiting for service registration");
+
+    let focus_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "WindowFocus",
+        &("test-app", "Test Window"),
+    ).await;
+    assert!(focus_result.is_ok(), "DBus WindowFocus failed: {:?}", focus_result.err());
+
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "browser".to_string() }));
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(
+        msg,
+        Some(KanataMessage::ActOnFakeKey {
+            name: "vk_browser".to_string(),
+            action: "Press".to_string(),
+        })
+    );
+
+    let pause_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "Pause",
+        &(),
+    ).await;
+    assert!(pause_result.is_ok(), "DBus Pause failed: {:?}", pause_result.err());
+
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(
+        msg,
+        Some(KanataMessage::ActOnFakeKey {
+            name: "vk_browser".to_string(),
+            action: "Release".to_string(),
+        })
+    );
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "default".to_string() }));
+
+    let focus_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "WindowFocus",
+        &("test-app", "Test Window"),
+    ).await;
+    assert!(focus_result.is_ok(), "DBus WindowFocus failed: {:?}", focus_result.err());
+    let msg = mock_server.recv_timeout(Duration::from_millis(500));
+    assert!(msg.is_none(), "Expected no Kanata messages while paused");
+
+    let unpause_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "Unpause",
+        &(),
+    ).await;
+    assert!(unpause_result.is_ok(), "DBus Unpause failed: {:?}", unpause_result.err());
+
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(msg, Some(KanataMessage::RequestLayerNames));
+
+    let focus_result = client.call_method(
+        Some("com.github.kanata.Switcher"),
+        "/com/github/kanata/Switcher",
+        Some("com.github.kanata.Switcher"),
+        "WindowFocus",
+        &("test-app", "Test Window"),
+    ).await;
+    assert!(focus_result.is_ok(), "DBus WindowFocus failed: {:?}", focus_result.err());
+
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "browser".to_string() }));
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(
+        msg,
+        Some(KanataMessage::ActOnFakeKey {
+            name: "vk_browser".to_string(),
+            action: "Press".to_string(),
+        })
+    );
 }
 
 // === Wayland Protocol Integration Tests ===

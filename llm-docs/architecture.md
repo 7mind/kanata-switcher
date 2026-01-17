@@ -136,9 +136,11 @@ Location: `src/gnome-extension/` (`extension.js`, `prefs.js`, `metadata.json`, `
 
 Behavior:
 - Pushes focus changes to daemon DBus `WindowFocus(class, title)`
-- Listens for daemon `StatusChanged(layer, virtual_keys)` signals
+- Listens for daemon `StatusChanged(layer, virtual_keys, source)` signals
 - Calls daemon `GetStatus()` on startup to populate the top bar indicator
 - GSettings key `show-top-bar-icon` (schema `org.gnome.shell.extensions.kanata-switcher`) toggles the indicator
+- GSettings key `show-focus-layer-only` controls whether external kanata layer changes are ignored
+- Panel menu includes Pause, Settings, and Restart (Pause calls daemon DBus `Pause`/`Unpause`)
 
 ### Extension Loading
 

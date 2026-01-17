@@ -6,5 +6,10 @@
       <summary>Show top bar icon</summary>
       <description>Show a top bar indicator for the active layer and virtual keys.</description>
     </key>
+    <key name="show-focus-layer-only" type="b">
+      <default>true</default>
+      <summary>Show app layer only</summary>
+      <description>Use the layer based on the current app.</description>
+    </key>
   </schema>
 </schemalist>

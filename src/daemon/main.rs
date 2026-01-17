@@ -403,12 +403,34 @@ impl FocusHandler {
     fn current_virtual_keys(&self) -> Vec<String> {
         self.current_virtual_keys.clone()
     }
+
+    fn reset(&mut self) {
+        self.last_class.clear();
+        self.last_title.clear();
+        self.current_virtual_keys.clear();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StatusSnapshot {
     layer: String,
     virtual_keys: Vec<String>,
+    layer_source: LayerSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LayerSource {
+    Focus,
+    External,
+}
+
+impl LayerSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            LayerSource::Focus => "focus",
+            LayerSource::External => "external",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -416,11 +438,61 @@ struct StatusBroadcaster {
     sender: watch::Sender<StatusSnapshot>,
 }
 
+#[derive(Clone, Debug)]
+struct RestartHandle {
+    sender: watch::Sender<bool>,
+}
+
+#[derive(Clone, Debug)]
+struct PauseBroadcaster {
+    sender: watch::Sender<bool>,
+}
+
+impl RestartHandle {
+    fn new() -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender }
+    }
+
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.sender.subscribe()
+    }
+
+    fn request(&self) {
+        self.sender.send_replace(true);
+    }
+}
+
+impl PauseBroadcaster {
+    fn new() -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender }
+    }
+
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.sender.subscribe()
+    }
+
+    fn is_paused(&self) -> bool {
+        *self.sender.borrow()
+    }
+
+    fn set_paused(&self, paused: bool) -> bool {
+        let current = *self.sender.borrow();
+        if current == paused {
+            return false;
+        }
+        self.sender.send_replace(paused);
+        true
+    }
+}
+
 impl StatusBroadcaster {
     fn new() -> Self {
         let initial = StatusSnapshot {
             layer: String::new(),
             virtual_keys: Vec::new(),
+            layer_source: LayerSource::External,
         };
         let (sender, _) = watch::channel(initial);
         Self { sender }
@@ -434,9 +506,10 @@ impl StatusBroadcaster {
         self.sender.borrow().clone()
     }
 
-    fn update_layer(&self, layer: String) {
+    fn update_layer(&self, layer: String, source: LayerSource) {
         self.update(|state| {
             state.layer = layer;
+            state.layer_source = source;
         });
     }
 
@@ -444,6 +517,21 @@ impl StatusBroadcaster {
         self.update(|state| {
             state.virtual_keys = virtual_keys;
         });
+    }
+
+    fn update_focus_layer(&self, layer: String) {
+        let mut next = self.sender.borrow().clone();
+        next.layer = layer;
+        next.layer_source = LayerSource::Focus;
+        self.sender.send_replace(next);
+    }
+
+    fn set_paused_status(&self, layer: String) {
+        let mut next = self.sender.borrow().clone();
+        next.layer = layer;
+        next.layer_source = LayerSource::External;
+        next.virtual_keys = Vec::new();
+        self.sender.send_replace(next);
     }
 
     fn update<F>(&self, updater: F)
@@ -454,7 +542,7 @@ impl StatusBroadcaster {
         let mut next = current.clone();
         updater(&mut next);
         if next != current {
-            let _ = self.sender.send(next);
+            self.sender.send_replace(next);
         }
     }
 }
@@ -477,6 +565,16 @@ async fn execute_focus_actions(kanata: &KanataClient, actions: FocusActions) {
             }
         }
     }
+}
+
+fn extract_focus_layer(actions: &FocusActions) -> Option<String> {
+    actions.actions.iter().fold(None, |last, action| {
+        if let FocusAction::ChangeLayer(layer) = action {
+            Some(layer.clone())
+        } else {
+            last
+        }
+    })
 }
 
 // === Kanata Client ===
@@ -539,12 +637,14 @@ struct KanataClientInner {
     host: String,
     port: u16,
     writer: Option<OwnedWriteHalf>,
+    reader_handle: Option<tokio::task::JoinHandle<()>>,
     current_layer: Option<String>,
     auto_default_layer: Option<String>,
     config_default_layer: Option<String>,
     pending_layer: Option<String>,
     known_layers: Vec<String>,
     connected: bool,
+    paused: bool,
     quiet: bool,
     status_broadcaster: StatusBroadcaster,
 }
@@ -576,12 +676,14 @@ impl KanataClient {
                 host: host.to_string(),
                 port,
                 writer: None,
+                reader_handle: None,
                 current_layer: None,
                 auto_default_layer: None,
                 config_default_layer,
                 pending_layer: None,
                 known_layers: Vec::new(),
                 connected: false,
+                paused: false,
                 quiet,
                 status_broadcaster,
             })),
@@ -672,13 +774,22 @@ impl KanataClient {
                 }
                 inner.auto_default_layer = auto_default_layer;
             }
+            if let Some(ref layer) = inner.current_layer {
+                inner.status_broadcaster
+                    .update_layer(layer.clone(), LayerSource::External);
+            }
         }
 
-        self.clone().spawn_reader(reader);
+        let reader_handle = self.clone().spawn_reader(reader);
+        let mut inner = self.inner.lock().await;
+        inner.reader_handle = Some(reader_handle);
         Ok(())
     }
 
-    fn spawn_reader(self, mut reader: TokioBufReader<tokio::net::tcp::OwnedReadHalf>) {
+    fn spawn_reader(
+        self,
+        mut reader: TokioBufReader<tokio::net::tcp::OwnedReadHalf>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut line = String::new();
             loop {
@@ -690,6 +801,10 @@ impl KanataClient {
                             let mut inner = self.inner.lock().await;
                             inner.connected = false;
                             inner.writer = None;
+                            inner.reader_handle = None;
+                            if inner.paused {
+                                return;
+                            }
                         }
                         self.reconnect_loop().await;
                         return;
@@ -698,12 +813,16 @@ impl KanataClient {
                         if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line) {
                             if let Some(lc) = msg.layer_change {
                                 let mut inner = self.inner.lock().await;
+                                if inner.paused {
+                                    continue;
+                                }
                                 let old_layer = inner.current_layer.clone();
                                 inner.current_layer = Some(lc.new.clone());
                                 let status_broadcaster = inner.status_broadcaster.clone();
                                 let quiet = inner.quiet;
                                 if old_layer.as_ref() != Some(&lc.new) {
-                                    status_broadcaster.update_layer(lc.new.clone());
+                                    status_broadcaster
+                                        .update_layer(lc.new.clone(), LayerSource::External);
                                     if !quiet {
                                         println!(
                                             "[Kanata] Layer changed (external): {} -> {}",
@@ -721,13 +840,17 @@ impl KanataClient {
                             let mut inner = self.inner.lock().await;
                             inner.connected = false;
                             inner.writer = None;
+                            inner.reader_handle = None;
+                            if inner.paused {
+                                return;
+                            }
                         }
                         self.reconnect_loop().await;
                         return;
                     }
                 }
             }
-        });
+        })
     }
 
     async fn reconnect_loop(&self) {
@@ -737,7 +860,7 @@ impl KanataClient {
         loop {
             {
                 let inner = self.inner.lock().await;
-                if inner.connected {
+                if inner.connected || inner.paused {
                     return;
                 }
             }
@@ -867,6 +990,30 @@ impl KanataClient {
         inner.config_default_layer.clone().or_else(|| inner.auto_default_layer.clone())
     }
 
+    pub async fn pause_disconnect(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.paused = true;
+        if let Some(handle) = inner.reader_handle.take() {
+            handle.abort();
+        }
+        if let Some(mut writer) = inner.writer.take() {
+            let _ = writer.shutdown().await;
+        }
+        inner.connected = false;
+        inner.current_layer = None;
+        inner.auto_default_layer = None;
+        inner.pending_layer = None;
+        inner.known_layers.clear();
+    }
+
+    pub async fn unpause_connect(&self) {
+        {
+            let mut inner = self.inner.lock().await;
+            inner.paused = false;
+        }
+        self.connect_with_retry().await;
+    }
+
     pub fn default_layer_sync(&self) -> String {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -949,6 +1096,12 @@ pub enum Environment {
     Wayland,
     X11,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunOutcome {
+    Restart,
+    Exit,
 }
 
 impl Environment {
@@ -1442,6 +1595,7 @@ async fn run_x11(
 const GNOME_EXTENSION_SRC_PATH: &str = "src/gnome-extension";
 const GNOME_EXTENSION_SCHEMA_FILE: &str =
     "schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml";
+const GNOME_EXTENSION_SCHEMA_COMPILED: &str = "schemas/gschemas.compiled";
 
 #[cfg(feature = "embed-gnome-extension")]
 macro_rules! gnome_ext_file {
@@ -1456,6 +1610,8 @@ const EMBEDDED_EXTENSION_JS: &str = include_str!(gnome_ext_file!("extension.js")
 const EMBEDDED_METADATA_JSON: &str = include_str!(gnome_ext_file!("metadata.json"));
 #[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_PREFS_JS: &str = include_str!(gnome_ext_file!("prefs.js"));
+#[cfg(feature = "embed-gnome-extension")]
+const EMBEDDED_FORMAT_JS: &str = include_str!(gnome_ext_file!("format.js"));
 #[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_GSETTINGS_SCHEMA: &str = include_str!(gnome_ext_file!(
     "schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"
@@ -1472,7 +1628,25 @@ fn gnome_extension_fs_exists() -> bool {
     path.join("extension.js").exists()
         && path.join("metadata.json").exists()
         && path.join("prefs.js").exists()
+        && path.join("format.js").exists()
         && path.join(GNOME_EXTENSION_SCHEMA_FILE).exists()
+        && path.join(GNOME_EXTENSION_SCHEMA_COMPILED).exists()
+}
+
+#[cfg(feature = "embed-gnome-extension")]
+fn compile_gnome_schemas(dir: &Path) -> std::io::Result<()> {
+    let schema_dir = dir.join("schemas");
+    let output = Command::new("glib-compile-schemas").arg(&schema_dir).output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "glib-compile-schemas failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "embed-gnome-extension")]
@@ -1480,9 +1654,11 @@ fn write_embedded_extension_to_dir(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join("extension.js"), EMBEDDED_EXTENSION_JS)?;
     fs::write(dir.join("metadata.json"), EMBEDDED_METADATA_JSON)?;
     fs::write(dir.join("prefs.js"), EMBEDDED_PREFS_JS)?;
+    fs::write(dir.join("format.js"), EMBEDDED_FORMAT_JS)?;
     let schema_dir = dir.join("schemas");
     fs::create_dir_all(&schema_dir)?;
     fs::write(dir.join(GNOME_EXTENSION_SCHEMA_FILE), EMBEDDED_GSETTINGS_SCHEMA)?;
+    compile_gnome_schemas(dir)?;
     Ok(())
 }
 
@@ -1913,11 +2089,17 @@ struct DbusWindowFocusService {
     handler: Arc<Mutex<FocusHandler>>,
     runtime_handle: tokio::runtime::Handle,
     status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
 }
 
 #[zbus::interface(name = "com.github.kanata.Switcher")]
 impl DbusWindowFocusService {
     async fn window_focus(&self, window_class: &str, window_title: &str) {
+        if self.pause_broadcaster.is_paused() {
+            return;
+        }
+
         let win = WindowInfo {
             class: window_class.to_string(),
             title: window_title.to_string(),
@@ -1928,14 +2110,20 @@ impl DbusWindowFocusService {
             .block_on(async { self.kanata.default_layer().await })
             .unwrap_or_default();
 
-        let (actions, virtual_keys) = {
+        let (actions, virtual_keys, focus_layer) = {
             let mut handler = self.handler.lock().unwrap();
             let actions = handler.handle(&win, &default_layer);
             let virtual_keys = handler.current_virtual_keys();
-            (actions, virtual_keys)
+            let focus_layer = actions
+                .as_ref()
+                .and_then(|focus_actions| extract_focus_layer(focus_actions));
+            (actions, virtual_keys, focus_layer)
         };
 
         self.status_broadcaster.update_virtual_keys(virtual_keys);
+        if let Some(layer) = focus_layer {
+            self.status_broadcaster.update_focus_layer(layer);
+        }
 
         if let Some(actions) = actions {
             let kanata = self.kanata.clone();
@@ -1944,9 +2132,17 @@ impl DbusWindowFocusService {
         }
     }
 
-    async fn get_status(&self) -> (String, Vec<String>) {
+    async fn get_status(&self) -> (String, Vec<String>, String) {
         let snapshot = self.status_broadcaster.snapshot();
-        (snapshot.layer, snapshot.virtual_keys)
+        (
+            snapshot.layer,
+            snapshot.virtual_keys,
+            snapshot.layer_source.as_str().to_string(),
+        )
+    }
+
+    async fn get_paused(&self) -> bool {
+        self.pause_broadcaster.is_paused()
     }
 
     #[zbus(signal)]
@@ -1954,7 +2150,61 @@ impl DbusWindowFocusService {
         signal_emitter: &SignalEmitter<'_>,
         layer: &str,
         virtual_keys: &[&str],
+        source: &str,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn paused_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        paused: bool,
+    ) -> zbus::Result<()>;
+
+    async fn restart(&self) {
+        println!("[Restart] Restart requested via DBus");
+        self.restart_handle.request();
+    }
+
+    async fn pause(&self) {
+        if !self.pause_broadcaster.set_paused(true) {
+            println!("[Pause] Pause requested via DBus (already paused)");
+            return;
+        }
+        println!("[Pause] Pausing daemon");
+        let virtual_keys = {
+            let mut handler = self.handler.lock().unwrap();
+            let keys = handler.current_virtual_keys();
+            handler.reset();
+            keys
+        };
+        let status_broadcaster = self.status_broadcaster.clone();
+        let kanata = self.kanata.clone();
+        self.runtime_handle.block_on(async move {
+            let default_layer = kanata.default_layer().await.unwrap_or_default();
+
+            for vk in virtual_keys.iter().rev() {
+                kanata.act_on_fake_key(vk, "Release").await;
+            }
+
+            if !default_layer.is_empty() {
+                let _ = kanata.change_layer(&default_layer).await;
+            }
+
+            status_broadcaster.set_paused_status(default_layer);
+            kanata.pause_disconnect().await;
+        });
+    }
+
+    async fn unpause(&self) {
+        if !self.pause_broadcaster.set_paused(false) {
+            println!("[Pause] Unpause requested via DBus (already running)");
+            return;
+        }
+        println!("[Pause] Resuming daemon");
+        let kanata = self.kanata.clone();
+        self.runtime_handle.block_on(async move {
+            kanata.unpause_connect().await;
+        });
+    }
 }
 
 async fn register_dbus_service(
@@ -1963,12 +2213,16 @@ async fn register_dbus_service(
     rules: Vec<Rule>,
     quiet_focus: bool,
     status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let service = DbusWindowFocusService {
         kanata,
         handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet_focus))),
         runtime_handle: tokio::runtime::Handle::current(),
         status_broadcaster: status_broadcaster.clone(),
+        restart_handle,
+        pause_broadcaster: pause_broadcaster.clone(),
     };
 
     connection
@@ -1982,6 +2236,20 @@ async fn register_dbus_service(
 
     let mut receiver = status_broadcaster.subscribe();
     let signal_emitter = SignalEmitter::new(connection, "/com/github/kanata/Switcher")?.into_owned();
+    let initial_status = status_broadcaster.snapshot();
+    let initial_virtual_keys: Vec<&str> = initial_status
+        .virtual_keys
+        .iter()
+        .map(|vk| vk.as_str())
+        .collect();
+    DbusWindowFocusService::status_changed(
+        &signal_emitter,
+        &initial_status.layer,
+        &initial_virtual_keys,
+        initial_status.layer_source.as_str(),
+    )
+    .await?;
+    let signal_emitter_task = signal_emitter.clone();
     tokio::spawn(async move {
         let mut last = receiver.borrow().clone();
         loop {
@@ -1992,11 +2260,29 @@ async fn register_dbus_service(
             if current != last {
                 let virtual_keys: Vec<&str> = current.virtual_keys.iter().map(|vk| vk.as_str()).collect();
                 let _ = DbusWindowFocusService::status_changed(
-                    &signal_emitter,
+                    &signal_emitter_task,
                     &current.layer,
                     &virtual_keys,
+                    current.layer_source.as_str(),
                 )
                 .await;
+                last = current;
+            }
+        }
+    });
+
+    let mut pause_receiver = pause_broadcaster.subscribe();
+    let pause_emitter = signal_emitter.clone();
+    DbusWindowFocusService::paused_changed(&pause_emitter, pause_broadcaster.is_paused()).await?;
+    tokio::spawn(async move {
+        let mut last = *pause_receiver.borrow();
+        loop {
+            if pause_receiver.changed().await.is_err() {
+                break;
+            }
+            let current = *pause_receiver.borrow();
+            if current != last {
+                let _ = DbusWindowFocusService::paused_changed(&pause_emitter, current).await;
                 last = current;
             }
         }
@@ -2012,13 +2298,25 @@ async fn run_gnome(
     rules: Vec<Rule>,
     quiet_focus: bool,
     status_broadcaster: StatusBroadcaster,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
-    register_dbus_service(&connection, kanata, rules, quiet_focus, status_broadcaster).await?;
+    register_dbus_service(
+        &connection,
+        kanata,
+        rules,
+        quiet_focus,
+        status_broadcaster,
+        restart_handle.clone(),
+        pause_broadcaster,
+    )
+    .await?;
 
     println!("[GNOME] Listening for focus events from extension...");
-    std::future::pending::<()>().await;
-    Ok(())
+    let mut receiver = restart_handle.subscribe();
+    let _ = receiver.changed().await;
+    Ok(RunOutcome::Restart)
 }
 
 // === KDE Backend ===
@@ -2028,9 +2326,20 @@ async fn run_kde(
     rules: Vec<Rule>,
     quiet_focus: bool,
     status_broadcaster: StatusBroadcaster,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
-    register_dbus_service(&connection, kanata, rules, quiet_focus, status_broadcaster).await?;
+    register_dbus_service(
+        &connection,
+        kanata,
+        rules,
+        quiet_focus,
+        status_broadcaster,
+        restart_handle.clone(),
+        pause_broadcaster,
+    )
+    .await?;
 
     let is_kde6 = env::var("KDE_SESSION_VERSION")
         .map(|v| v == "6")
@@ -2126,21 +2435,30 @@ notifyFocus(workspace.{active});
 
     println!("[KDE] KWin script injected, listening for window focus events...");
 
-    std::future::pending::<()>().await;
-    Ok(())
+    let mut receiver = restart_handle.subscribe();
+    let _ = receiver.changed().await;
+    Ok(RunOutcome::Restart)
 }
 
 // === Main ===
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("[Fatal] {}", e);
-        std::process::exit(1);
+    loop {
+        match run_once().await {
+            Ok(RunOutcome::Restart) => {
+                println!("[Restart] Restarting daemon");
+            }
+            Ok(RunOutcome::Exit) => break,
+            Err(e) => {
+                eprintln!("[Fatal] {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let matches = Args::command().get_matches();
     let args = Args::from_arg_matches(&matches)?;
     let install_gnome_extension = resolve_install_gnome_extension(&matches);
@@ -2167,6 +2485,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let quiet_focus = args.quiet || args.quiet_focus;
     let status_broadcaster = StatusBroadcaster::new();
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
     let kanata = KanataClient::new(
         &args.host,
         args.port,
@@ -2208,10 +2528,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match env {
         Environment::Gnome => {
-            run_gnome(kanata, config.rules, quiet_focus, status_broadcaster).await?;
+            return run_gnome(
+                kanata,
+                config.rules,
+                quiet_focus,
+                status_broadcaster,
+                restart_handle,
+                pause_broadcaster,
+            )
+            .await;
         }
         Environment::Kde => {
-            run_kde(kanata, config.rules, quiet_focus, status_broadcaster).await?;
+            return run_kde(
+                kanata,
+                config.rules,
+                quiet_focus,
+                status_broadcaster,
+                restart_handle,
+                pause_broadcaster,
+            )
+            .await;
         }
         Environment::Wayland => {
             run_wayland(kanata, config.rules, quiet_focus).await?;
@@ -2226,7 +2562,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    Ok(())
+    Ok(RunOutcome::Exit)
 }
 
 // === Tests ===

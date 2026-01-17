@@ -120,6 +120,14 @@ Extension subscribes to `global.display.connect('notify::focus-window')` and cal
 Top bar indicator:
 - Optional panel indicator (settings key `show-top-bar-icon`) shows layer + virtual key status
 - Extension listens for daemon `StatusChanged(layer, virtual_keys)` DBus signal and calls `GetStatus()` on startup
+- Schemas must be compiled (`schemas/gschemas.compiled`) for `getSettings()` to work; build/install paths run `glib-compile-schemas`
+- Preferences UI imports `ExtensionPreferences` from `resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js`
+- Character formatting lives in `src/gnome-extension/format.js` with a GJS test in `tests/gnome-extension-format.js`
+- Status updates include a `source` field (`focus` or `external`); prefs default to showing focus-based layer only
+- Focus updates force-broadcast via `StatusBroadcaster::update_focus_layer` so the indicator refreshes on focus events
+- Indicator menu includes Pause, Settings, and Restart; Pause calls daemon DBus `Pause`/`Unpause`
+- Pause handling releases managed virtual keys, switches to the default layer, disconnects from kanata, clears handler state, and ignores focus events until unpaused
+- GJS test also validates focus-only selection logic via `selectStatus()`
 
 ## Virtual Key Support
 

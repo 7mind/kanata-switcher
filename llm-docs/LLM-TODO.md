@@ -20,6 +20,10 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Add proper error handling and reconnection logic
 - [x] Add automated tests for rule matching and VK lifecycle (`src/daemon/tests.rs`)
 - [x] Add integration tests for DE backends (`src/daemon/integration_tests.rs`)
+- [x] GNOME prefs load via gnome-extensions-app (ExtensionPreferences import path)
+- [x] Add GJS test for GNOME top bar character formatting (Nix check)
+- [x] GNOME indicator updates on focus-based layer changes with focus-only toggle
+- [x] Add DBus GetStatus test for focus source
 - [ ] Add config file watching for hot-reload
 - [ ] Package for distribution
 

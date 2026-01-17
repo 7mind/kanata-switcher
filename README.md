@@ -32,6 +32,9 @@ This project features comprehensive automated test suite and supports an unusual
 
 Recent changes: `--quiet-focus` mutes focus logging while leaving layer and virtual key logs intact.
 GNOME Shell now supports an optional top bar indicator for the active layer and virtual keys (toggle in extension settings).
+Extension settings also include a focus-only mode so the indicator reflects kanata-switcher focus rules instead of external kanata layer changes.
+The GNOME indicator menu now includes Settings and Restart (re-initializes the daemon).
+The GNOME indicator menu includes a Pause toggle that suspends focus processing until unpaused.
 
 ---
 

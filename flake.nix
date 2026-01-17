@@ -30,14 +30,16 @@
 
             src = ./src/gnome-extension;
 
-            nativeBuildInputs = [ pkgs.buildPackages.glib ];
+            nativeBuildInputs = [ pkgs.buildPackages.glib.dev ];
 
             installPhase = ''
               runHook preInstall
 
               extensionDir=$out/share/gnome-shell/extensions/kanata-switcher@7mind.io
-              mkdir -p $extensionDir
-              cp extension.js metadata.json $extensionDir/
+              mkdir -p $extensionDir/schemas
+              cp extension.js metadata.json prefs.js format.js $extensionDir/
+              cp schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml $extensionDir/schemas/
+              ${pkgs.buildPackages.glib.dev}/bin/glib-compile-schemas $extensionDir/schemas
 
               runHook postInstall
             '';
@@ -63,7 +65,7 @@
             src = rustDaemonSrc;
             strictDeps = true;
             buildInputs = [ pkgs.dbus ];
-            nativeBuildInputs = [ pkgs.pkg-config ];
+            nativeBuildInputs = [ pkgs.pkg-config pkgs.buildPackages.glib.dev ];
           };
 
           rustDaemonCargoArtifacts = craneLib.buildDepsOnly rustDaemonCommonArgs;
@@ -78,8 +80,13 @@
 
             postInstall = ''
               mkdir -p $out/bin/gnome
+              mkdir -p $out/bin/gnome/schemas
               cp ${./src/gnome-extension}/extension.js $out/bin/gnome/
               cp ${./src/gnome-extension}/metadata.json $out/bin/gnome/
+              cp ${./src/gnome-extension}/prefs.js $out/bin/gnome/
+              cp ${./src/gnome-extension}/format.js $out/bin/gnome/
+              cp ${./src/gnome-extension}/schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml $out/bin/gnome/schemas/
+              ${pkgs.buildPackages.glib.dev}/bin/glib-compile-schemas $out/bin/gnome/schemas
             '';
 
             meta = with pkgs.lib; {
@@ -136,6 +143,16 @@
 
           checks = {
             tests = kanata-switcher-tests;
+            gnome-schema = pkgs.runCommand "kanata-switcher-gnome-schema-check" {} ''
+              test -f ${kanata-switcher-gnome-extension}/share/gnome-shell/extensions/kanata-switcher@7mind.io/schemas/gschemas.compiled
+              touch $out
+            '';
+            gnome-format = pkgs.runCommand "kanata-switcher-gnome-format-check" {
+              nativeBuildInputs = [ pkgs.gjs ];
+            } ''
+              KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-format.js}
+              touch $out
+            '';
           };
 
           apps.test = {

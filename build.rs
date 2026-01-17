@@ -1,9 +1,10 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 const GNOME_EXTENSION_SRC: &str = "src/gnome-extension";
-const GNOME_EXTENSION_FILES: &[&str] = &["extension.js", "metadata.json", "prefs.js"];
+const GNOME_EXTENSION_FILES: &[&str] = &["extension.js", "metadata.json", "prefs.js", "format.js"];
 const GNOME_EXTENSION_SCHEMA_FILES: &[&str] =
     &["schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"];
 
@@ -47,6 +48,17 @@ fn main() {
         fs::copy(&src, &dst).unwrap_or_else(|e| {
             panic!("Failed to copy {} to {}: {}", src.display(), dst.display(), e)
         });
+    }
+
+    let compile_result = Command::new("glib-compile-schemas")
+        .arg(&target_schema_dir)
+        .output()
+        .unwrap_or_else(|e| panic!("Failed to run glib-compile-schemas: {}", e));
+    if !compile_result.status.success() {
+        panic!(
+            "glib-compile-schemas failed: {}",
+            String::from_utf8_lossy(&compile_result.stderr)
+        );
     }
 
     println!(
