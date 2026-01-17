@@ -1,6 +1,6 @@
 [package]
 name = "kanata-switcher"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "MIT"
 description = "Daemon for kanata layer switching based on focused window"
