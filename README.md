@@ -242,6 +242,9 @@ Enable in your Home Manager config:
     gnomeExtension.enable = true;       # Nix-managed extension (recommended)
     # gnomeExtension.autoInstall = true; # Runtime auto-install (mutable)
     # gnomeExtension.manageDconf = false; # Disable dconf management (see below)
+
+    # Logging for systemd unit:
+    # logging = "quiet-focus"; # default: quiet-focus, options: quiet, quiet-focus, none
   };
 }
 ```
@@ -287,6 +290,9 @@ For system-wide installation without Home Manager:
     # For GNOME Shell:
     gnomeExtension.enable = true;  # installs extension and enables via dconf for all users
     # gnomeExtension.manageDconf = false; # Disable dconf management (see below)
+
+    # Logging for systemd unit:
+    # logging = "quiet-focus"; # default: quiet-focus, options: quiet, quiet-focus, none
   };
 }
 ```
@@ -367,7 +373,7 @@ For non-Nix / NixOS systems, install the binary and configure the systemd user s
 -h, --help                   Show help
 ```
 
-Systemd units use `--quiet` by default to reduce log noise.
+Systemd units use `--quiet-focus` by default to reduce log noise.
 
 ### Related Projects
 

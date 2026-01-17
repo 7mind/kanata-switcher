@@ -210,6 +210,12 @@
           description = "Config as a list of rule attrsets, serialized to JSON. Mutually exclusive with 'configFile'.";
         };
 
+        logging = lib.mkOption {
+          type = lib.types.enum [ "quiet" "quiet-focus" "none" ];
+          default = "quiet-focus";
+          description = "Log verbosity for systemd units. quiet = suppress focus + layer logs, quiet-focus = suppress focus logs only, none = no suppression.";
+        };
+
         gnomeExtension = {
           enable = lib.mkEnableOption "GNOME Shell extension for kanata-switcher (Nix-managed)";
 
@@ -241,12 +247,16 @@
             if cfg.configFile != null then cfg.configFile
             else if cfg.settings != null then pkgs.writeText "kanata-switcher.json" (builtins.toJSON cfg.settings)
             else null;
+          loggingArg =
+            if cfg.logging == "quiet" then "--quiet"
+            else if cfg.logging == "quiet-focus" then "--quiet-focus"
+            else null;
           execArgs = [
             "${cfg.package}/bin/kanata-switcher"
-            "--quiet"
             "-p" (toString cfg.kanataPort)
             "-H" cfg.kanataHost
-          ] ++ lib.optionals (configFile != null) [ "-c" (toString configFile) ]
+          ] ++ lib.optionals (loggingArg != null) [ loggingArg ]
+            ++ lib.optionals (configFile != null) [ "-c" (toString configFile) ]
             ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [ "--no-install-gnome-extension" ];
         in {
           options.services.kanata-switcher = moduleOptions lib packages;

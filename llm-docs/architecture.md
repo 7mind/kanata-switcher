@@ -227,7 +227,12 @@ HM module adds `--no-install-gnome-extension` by default. Use either:
 --no-install-gnome-extension Skip auto-install
 ```
 
-Systemd units use `--quiet` by default.
+Systemd units use `--quiet-focus` by default.
+
+Nix module option `services.kanata-switcher.logging` controls the systemd unit logging flag:
+- `quiet` -> `--quiet`
+- `quiet-focus` -> `--quiet-focus` (default)
+- `none` -> no quiet flags
 
 ## Testing
 
