@@ -90,6 +90,10 @@ struct Args {
     #[arg(short = 'q', long)]
     quiet: bool,
 
+    /// Suppress focus messages only
+    #[arg(long)]
+    quiet_focus: bool,
+
     /// Auto-install GNOME extension if missing (default behavior)
     #[arg(long)]
     install_gnome_extension: bool,
@@ -269,17 +273,17 @@ struct FocusHandler {
     last_title: String,
     /// Currently held virtual keys, in order they were pressed (top-to-bottom rule order)
     current_virtual_keys: Vec<String>,
-    quiet: bool,
+    quiet_focus: bool,
 }
 
 impl FocusHandler {
-    fn new(rules: Vec<Rule>, quiet: bool) -> Self {
+    fn new(rules: Vec<Rule>, quiet_focus: bool) -> Self {
         Self {
             rules,
             last_class: String::new(),
             last_title: String::new(),
             current_virtual_keys: Vec::new(),
-            quiet,
+            quiet_focus,
         }
     }
 
@@ -298,7 +302,7 @@ impl FocusHandler {
 
         // Handle unfocused state (no window has focus)
         if win.class.is_empty() && win.title.is_empty() {
-            if !self.quiet {
+            if !self.quiet_focus {
                 println!("[Focus] No window focused");
             }
             // Release all active virtual keys in reverse order (bottom-to-top)
@@ -314,7 +318,7 @@ impl FocusHandler {
             return if result.is_empty() { None } else { Some(result) };
         }
 
-        if !self.quiet {
+        if !self.quiet_focus {
             println!("[Focus] class=\"{}\" title=\"{}\"", win.class, win.title);
         }
 
@@ -1150,7 +1154,7 @@ enum WaylandProtocol {
 async fn run_wayland(
     kanata: KanataClient,
     rules: Vec<Rule>,
-    quiet: bool,
+    quiet_focus: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = WaylandConnection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
@@ -1179,7 +1183,7 @@ async fn run_wayland(
 
     println!("[Wayland] Listening for focus events...");
 
-    let mut handler = FocusHandler::new(rules, quiet);
+    let mut handler = FocusHandler::new(rules, quiet_focus);
 
     // Process initial state
     let win = state.get_active_window();
@@ -1318,13 +1322,13 @@ impl X11State {
 async fn run_x11(
     kanata: KanataClient,
     rules: Vec<Rule>,
-    quiet: bool,
+    quiet_focus: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = X11State::new()?;
 
     println!("[X11] Connected to display");
 
-    let mut handler = FocusHandler::new(rules, quiet);
+    let mut handler = FocusHandler::new(rules, quiet_focus);
 
     // Process initial state at boot
     let win = state.get_active_window();
@@ -1850,11 +1854,11 @@ async fn register_dbus_service(
     connection: &Connection,
     kanata: KanataClient,
     rules: Vec<Rule>,
-    quiet: bool,
+    quiet_focus: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let service = DbusWindowFocusService {
         kanata,
-        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet))),
+        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet_focus))),
         runtime_handle: tokio::runtime::Handle::current(),
     };
 
@@ -1875,10 +1879,10 @@ async fn register_dbus_service(
 async fn run_gnome(
     kanata: KanataClient,
     rules: Vec<Rule>,
-    quiet: bool,
+    quiet_focus: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
-    register_dbus_service(&connection, kanata, rules, quiet).await?;
+    register_dbus_service(&connection, kanata, rules, quiet_focus).await?;
 
     println!("[GNOME] Listening for focus events from extension...");
     std::future::pending::<()>().await;
@@ -1890,10 +1894,10 @@ async fn run_gnome(
 async fn run_kde(
     kanata: KanataClient,
     rules: Vec<Rule>,
-    quiet: bool,
+    quiet_focus: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
-    register_dbus_service(&connection, kanata, rules, quiet).await?;
+    register_dbus_service(&connection, kanata, rules, quiet_focus).await?;
 
     let is_kde6 = env::var("KDE_SESSION_VERSION")
         .map(|v| v == "6")
@@ -2028,6 +2032,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::process::exit(1);
     }
 
+    let quiet_focus = args.quiet || args.quiet_focus;
     let kanata = KanataClient::new(&args.host, args.port, config.default_layer, args.quiet);
     kanata.connect_with_retry().await;
 
@@ -2063,16 +2068,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match env {
         Environment::Gnome => {
-            run_gnome(kanata, config.rules, args.quiet).await?;
+            run_gnome(kanata, config.rules, quiet_focus).await?;
         }
         Environment::Kde => {
-            run_kde(kanata, config.rules, args.quiet).await?;
+            run_kde(kanata, config.rules, quiet_focus).await?;
         }
         Environment::Wayland => {
-            run_wayland(kanata, config.rules, args.quiet).await?;
+            run_wayland(kanata, config.rules, quiet_focus).await?;
         }
         Environment::X11 => {
-            run_x11(kanata, config.rules, args.quiet).await?;
+            run_x11(kanata, config.rules, quiet_focus).await?;
         }
         Environment::Unknown => {
             eprintln!("[Error] Could not detect display environment");

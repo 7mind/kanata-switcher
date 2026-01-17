@@ -221,6 +221,7 @@ HM module adds `--no-install-gnome-extension` by default. Use either:
 -H, --host HOST              Kanata host (default: 127.0.0.1)
 -c, --config PATH            Config file path
 -q, --quiet                  Suppress focus/layer-switch messages
+--quiet-focus                Suppress focus messages only
 --install-gnome-extension    Auto-install GNOME extension (default)
 --no-install-gnome-extension Skip auto-install
 ```
