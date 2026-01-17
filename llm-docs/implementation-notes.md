@@ -122,10 +122,10 @@ Extension subscribes to `global.display.connect('notify::focus-window')` and cal
 Two modes for virtual key actions:
 
 1. **Simple mode (`virtual_key`)**: Auto-managed press/release
-   - Pressed when window matches rule
-   - Released when switching to different window
-   - At most one VK active at a time
-   - Tracked in `FocusHandler::current_virtual_key`
+   - All matching rules' VKs are pressed and held simultaneously
+   - Released when focus changes and the VK is no longer matched
+   - Tracked in `FocusHandler::current_virtual_keys` (Vec, preserves order)
+   - VKs pressed in rule order (top-to-bottom), released in reverse order (bottom-to-top)
 
 2. **Advanced mode (`raw_vk_action`)**: Fire-and-forget
    - Array of `[name, action]` pairs
@@ -133,22 +133,21 @@ Two modes for virtual key actions:
    - Actions: `Press`, `Release`, `Tap`, `Toggle`
 
 **Fallthrough**: Rules can set `fallthrough: true` to continue matching subsequent rules:
-- ALL matching `layer`s execute in order (not just first)
-- Intermediate `virtual_key`s are tapped (press+release), final is held
+- ALL matching `layer`s execute in order, but **last wins** (kanata TCP `ChangeLayer` sets base layer, doesn't stack)
+- ALL matching `virtual_key`s are pressed and held simultaneously (use with `layer-while-held` in kanata for stacking)
 - All matching `raw_vk_action` arrays are collected
 
 **FocusAction ADT**: Actions are represented as an algebraic data type:
 - `ReleaseVk(name)` - Release a managed VK
 - `ChangeLayer(layer)` - Switch to a layer
-- `TapVk(name)` - Press then immediately release (for intermediate VKs)
-- `PressVk(name)` - Press and hold (for final managed VK)
+- `PressVk(name)` - Press and hold a managed VK
 - `RawVkAction(name, action)` - Fire-and-forget VK action
 
 **Execution order** (in `execute_focus_actions`):
-1. Release previous managed `virtual_key` (if any)
+1. Release VKs that are no longer matched (in reverse order of the old list)
 2. For each matching rule in order:
    - Execute `layer` switch (if specified)
-   - Execute `virtual_key` (Tap if intermediate, Press if final)
+   - Execute `virtual_key` Press (if not already held)
    - Execute all `raw_vk_action` pairs
 
 ## DBus Backend (GNOME/KDE)

@@ -102,12 +102,12 @@ Example config:
 **Virtual keys:**
 
 - `virtual_key` - Automatically pressed when window is focused, released when unfocused
-- At most one virtual key is active at a time
-- With `"fallthrough": true`, intermediate `virtual_key`s are tapped (press+release), final is held
+- With `"fallthrough": true`, ALL matching `virtual_key`s are pressed and held simultaneously
+- VKs are pressed in rule order (top-to-bottom), released in reverse order (bottom-to-top)
 - Example:
   ```json
   [
-    { 
+    {
       "class": "firefox",
       "virtual_key": "vk_browser",
       "layer": "browser"
@@ -135,12 +135,40 @@ Example config:
       "raw_vk_action": [["vk_notify", "Tap"], ["vk_browser", "Press"]],
       "fallthrough": true
     }
+  ]
+  ```
+
+**Layer switching and stacking:**
+
+- `"fallthrough": true` is only useful for virtual keys, not layers, because **only the last layer wins**, layer switches won't stack because kanata's TCP `ChangeLayer` command swaps the base layer (it doesn't stack)
+- For **stacked layers** (e.g., browser layer + youtube-specific layer on top), use `virtual_key` with `layer-while-held` actions in your kanata config:
+
+  In kanata config - define virtual keys with layer-while-held:
+  ```lisp
+  (defvirtualkeys
+    vk_browser (layer-while-held browser)
+    vk_youtube (layer-while-held youtube)
+  )
+  ```
+
+  In kanata-switcher config - stack layers via virtual keys:
+  ```json
+  [
     {
-      "title": "Youtube",
-      "vk_action": "vk_youtube"
+      "class": "firefox",
+      "virtual_key": "vk_browser",
+      "fallthrough": true
+    },
+    {
+      "class": "firefox",
+      "title": "YouTube",
+      "virtual_key": "vk_youtube"
     }
   ]
   ```
+
+  When focusing Firefox on YouTube, both `vk_browser` and `vk_youtube` are held → kanata stacks `browser` and `youtube` layers.
+
 
 ### Running Without Installing
 

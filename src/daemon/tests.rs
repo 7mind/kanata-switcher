@@ -133,7 +133,7 @@ fn test_unfocus_releases_vk_and_switches_to_default() {
         FocusAction::ReleaseVk("vk_browser".to_string()),
         FocusAction::ChangeLayer("default".to_string()),
     ]);
-    assert_eq!(actions.new_managed_vk, None);
+    assert_eq!(actions.new_managed_vks, Vec::<String>::new());
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn test_virtual_key_press_on_focus() {
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
     assert!(has_action(&actions, &FocusAction::PressVk("vk_browser".to_string())));
     assert!(!actions.actions.iter().any(|a| matches!(a, FocusAction::ReleaseVk(_))));
-    assert_eq!(actions.new_managed_vk, Some("vk_browser".to_string()));
+    assert_eq!(actions.new_managed_vks, vec!["vk_browser".to_string()]);
 }
 
 #[test]
@@ -175,10 +175,91 @@ fn test_virtual_key_no_change_no_press() {
     handler.handle(&win("firefox", "tab1"), "default");
     let actions = handler.handle(&win("firefox", "tab2"), "default");
 
-    // Window changed but VK is the same - no VK actions, but action list might be empty
+    // Window changed but VK is the same - no VK actions (VK already held)
     assert!(actions.is_none() || !actions.as_ref().unwrap().actions.iter().any(|a|
         matches!(a, FocusAction::PressVk(_) | FocusAction::ReleaseVk(_))
     ));
+}
+
+#[test]
+fn test_partial_vk_set_change_only_releases_removed() {
+    // Two rules with fallthrough: vk1 and vk2 are both held
+    // Then switch to a window that only matches vk2 - only vk1 should be released
+    let rules = vec![
+        Rule {
+            class: Some("app".to_string()),
+            title: Some("both".to_string()),
+            layer: None,
+            virtual_key: Some("vk1".to_string()),
+            raw_vk_action: None,
+            fallthrough: true,
+        },
+        Rule {
+            class: Some("app".to_string()),
+            title: None,
+            layer: None,
+            virtual_key: Some("vk2".to_string()),
+            raw_vk_action: None,
+            fallthrough: false,
+        },
+    ];
+    let mut handler = FocusHandler::new(rules, true);
+
+    // Focus window that matches both rules - both VKs pressed
+    let actions = handler.handle(&win("app", "both"), "default").unwrap();
+    assert!(has_action(&actions, &FocusAction::PressVk("vk1".to_string())));
+    assert!(has_action(&actions, &FocusAction::PressVk("vk2".to_string())));
+    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string()]);
+
+    // Focus window that only matches second rule - only vk1 should be released, vk2 stays held
+    let actions = handler.handle(&win("app", "other"), "default").unwrap();
+    assert!(has_action(&actions, &FocusAction::ReleaseVk("vk1".to_string())));
+    assert!(!has_action(&actions, &FocusAction::ReleaseVk("vk2".to_string())));
+    assert!(!has_action(&actions, &FocusAction::PressVk("vk2".to_string()))); // vk2 already held
+    assert_eq!(actions.new_managed_vks, vec!["vk2".to_string()]);
+}
+
+#[test]
+fn test_unfocus_releases_multiple_vks_in_reverse_order() {
+    // Multiple VKs held should be released in reverse order (bottom-to-top)
+    let rules = vec![
+        Rule {
+            class: Some("app".to_string()),
+            title: None,
+            layer: None,
+            virtual_key: Some("vk1".to_string()),
+            raw_vk_action: None,
+            fallthrough: true,
+        },
+        Rule {
+            class: Some("app".to_string()),
+            title: None,
+            layer: None,
+            virtual_key: Some("vk2".to_string()),
+            raw_vk_action: None,
+            fallthrough: true,
+        },
+        Rule {
+            class: Some("app".to_string()),
+            title: None,
+            layer: None,
+            virtual_key: Some("vk3".to_string()),
+            raw_vk_action: None,
+            fallthrough: false,
+        },
+    ];
+    let mut handler = FocusHandler::new(rules, true);
+
+    // Focus window - all three VKs pressed in order
+    let actions = handler.handle(&win("app", ""), "default").unwrap();
+    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string(), "vk3".to_string()]);
+
+    // Unfocus - all VKs should be released in reverse order (vk3, vk2, vk1)
+    let actions = handler.handle(&win("", ""), "default").unwrap();
+    let release_actions: Vec<_> = actions.actions.iter()
+        .filter_map(|a| if let FocusAction::ReleaseVk(vk) = a { Some(vk.clone()) } else { None })
+        .collect();
+    assert_eq!(release_actions, vec!["vk3".to_string(), "vk2".to_string(), "vk1".to_string()]);
 }
 
 #[test]
@@ -222,7 +303,7 @@ fn test_fallthrough_collects_all_raw_vk_actions() {
 }
 
 #[test]
-fn test_fallthrough_intermediate_vk_tapped_final_pressed() {
+fn test_fallthrough_all_vks_pressed_and_held() {
     let rules = vec![
         rule_with_fallthrough(rule_vk(Some("kitty"), "vk1")),
         rule_vk(Some("kitty"), "vk2"),
@@ -230,14 +311,14 @@ fn test_fallthrough_intermediate_vk_tapped_final_pressed() {
     let mut handler = FocusHandler::new(rules, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
-    // vk1 should be tapped (intermediate), vk2 should be pressed (final)
-    assert!(has_action(&actions, &FocusAction::TapVk("vk1".to_string())));
+    // Both vk1 and vk2 should be pressed (all matched VKs are held)
+    assert!(has_action(&actions, &FocusAction::PressVk("vk1".to_string())));
     assert!(has_action(&actions, &FocusAction::PressVk("vk2".to_string())));
-    assert_eq!(actions.new_managed_vk, Some("vk2".to_string()));
+    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string()]);
 }
 
 #[test]
-fn test_fallthrough_multiple_intermediate_vks_all_tapped() {
+fn test_fallthrough_multiple_vks_all_pressed_and_held() {
     let rules = vec![
         rule_with_fallthrough(rule_vk(Some("kitty"), "vk1")),
         rule_with_fallthrough(rule_vk(Some("kitty"), "vk2")),
@@ -246,11 +327,11 @@ fn test_fallthrough_multiple_intermediate_vks_all_tapped() {
     let mut handler = FocusHandler::new(rules, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
-    // vk1 and vk2 should be tapped, vk3 should be pressed
-    assert!(has_action(&actions, &FocusAction::TapVk("vk1".to_string())));
-    assert!(has_action(&actions, &FocusAction::TapVk("vk2".to_string())));
+    // All three VKs should be pressed and held
+    assert!(has_action(&actions, &FocusAction::PressVk("vk1".to_string())));
+    assert!(has_action(&actions, &FocusAction::PressVk("vk2".to_string())));
     assert!(has_action(&actions, &FocusAction::PressVk("vk3".to_string())));
-    assert_eq!(actions.new_managed_vk, Some("vk3".to_string()));
+    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string(), "vk3".to_string()]);
 }
 
 #[test]
@@ -278,10 +359,11 @@ fn test_fallthrough_action_order_preserved() {
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
 
-    // Expected order: layer1, TapVk(vk1), raw1, layer2, PressVk(vk2), raw2
+    // Expected order: layer1, PressVk(vk1), raw1, layer2, PressVk(vk2), raw2
+    // All matched VKs are pressed (not tapped)
     assert_eq!(actions.actions, vec![
         FocusAction::ChangeLayer("layer1".to_string()),
-        FocusAction::TapVk("vk1".to_string()),
+        FocusAction::PressVk("vk1".to_string()),
         FocusAction::RawVkAction("raw1".to_string(), "Tap".to_string()),
         FocusAction::ChangeLayer("layer2".to_string()),
         FocusAction::PressVk("vk2".to_string()),
@@ -510,7 +592,7 @@ fn arb_window() -> impl Strategy<Value = WindowInfo> {
 
 proptest! {
     #[test]
-    fn prop_at_most_one_managed_vk(
+    fn prop_managed_vks_consistent(
         rules in prop::collection::vec(arb_rule(), 1..5),
         windows in prop::collection::vec(arb_window(), 1..10),
     ) {
@@ -518,13 +600,13 @@ proptest! {
 
         for win in &windows {
             let _ = handler.handle(win, "default");
-            // Invariant: at most one managed VK can be active
-            prop_assert!(handler.current_virtual_key.is_none() || handler.current_virtual_key.is_some());
+            // Just verify the handler state is consistent (Vec is always valid)
+            prop_assert!(handler.current_virtual_keys.len() <= 10); // sanity bound
         }
     }
 
     #[test]
-    fn prop_release_before_other_actions(
+    fn prop_releases_before_presses(
         rules in prop::collection::vec(arb_rule(), 1..5),
         windows in prop::collection::vec(arb_window(), 2..10),
     ) {
@@ -532,16 +614,19 @@ proptest! {
 
         for win in &windows {
             if let Some(actions) = handler.handle(win, "default") {
-                // If there's a ReleaseVk, it should be first
-                if let Some(release_idx) = actions.actions.iter().position(|a| matches!(a, FocusAction::ReleaseVk(_))) {
-                    prop_assert_eq!(release_idx, 0, "ReleaseVk should be first action");
+                // All ReleaseVk actions should come before any PressVk actions
+                let first_press_idx = actions.actions.iter().position(|a| matches!(a, FocusAction::PressVk(_)));
+                let last_release_idx = actions.actions.iter().rposition(|a| matches!(a, FocusAction::ReleaseVk(_)));
+
+                if let (Some(press_idx), Some(release_idx)) = (first_press_idx, last_release_idx) {
+                    prop_assert!(release_idx < press_idx, "All releases should come before presses");
                 }
             }
         }
     }
 
     #[test]
-    fn prop_unfocus_releases_vk(
+    fn prop_unfocus_releases_all_vks(
         rules in prop::collection::vec(arb_rule(), 1..5),
         win in arb_window(),
     ) {
@@ -549,19 +634,21 @@ proptest! {
 
         // Focus a window first
         let _ = handler.handle(&win, "default");
-        let vk_before = handler.current_virtual_key.clone();
+        let vks_before = handler.current_virtual_keys.clone();
 
         // Unfocus (empty class and title)
         let actions = handler.handle(&WindowInfo { class: String::new(), title: String::new() }, "default");
 
-        // If we had a VK active, it must be released
-        if let Some(old_vk) = vk_before {
+        // All previously active VKs must be released
+        if !vks_before.is_empty() {
             prop_assert!(actions.is_some());
             let actions = actions.unwrap();
-            prop_assert!(has_action(&actions, &FocusAction::ReleaseVk(old_vk)));
+            for old_vk in &vks_before {
+                prop_assert!(has_action(&actions, &FocusAction::ReleaseVk(old_vk.clone())));
+            }
         }
-        // After unfocus, no VK should be active
-        prop_assert!(handler.current_virtual_key.is_none());
+        // After unfocus, no VKs should be active
+        prop_assert!(handler.current_virtual_keys.is_empty());
     }
 
     #[test]
@@ -633,7 +720,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_intermediate_vks_tapped_final_pressed(
+    fn prop_all_matched_vks_pressed_and_held(
         base_class in arb_class(),
         vk1 in arb_vk_name(),
         vk2 in arb_vk_name(),
@@ -661,12 +748,11 @@ proptest! {
         let win = WindowInfo { class: base_class, title: String::new() };
 
         if let Some(actions) = handler.handle(&win, "default") {
-            // vk1 should be tapped (intermediate)
-            prop_assert!(has_action(&actions, &FocusAction::TapVk(vk1)));
-            // vk2 should be pressed (final)
+            // Both vk1 and vk2 should be pressed (all matched VKs are held)
+            prop_assert!(has_action(&actions, &FocusAction::PressVk(vk1.clone())));
             prop_assert!(has_action(&actions, &FocusAction::PressVk(vk2.clone())));
-            // new_managed_vk should be vk2
-            prop_assert_eq!(actions.new_managed_vk, Some(vk2));
+            // new_managed_vks should contain both
+            prop_assert_eq!(actions.new_managed_vks, vec![vk1, vk2]);
         }
     }
 }
