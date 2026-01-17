@@ -86,9 +86,9 @@ Example config:
 - `virtual_key` - Virtual key to press while window is focused (optional, see below)
 - `raw_vk_action` - Advanced: raw virtual key actions (optional, see below)
 - `fallthrough` - Advanced: continue matching subsequent rules (optional, default false)
-- Rules are evaluated top-to-bottom; a matching rule stops evaluation (unless it has `fallthrough: true` attribute)
-    - A matching rule with `fallthrough: true` continues to subsequent rules; non-matching rules are skipped
-    - All matching rules' actions are collected and execute in order (without any `fallthrough: true` rules, that is exactly 0 or 1 action)
+- Rules are evaluated top-to-bottom; a matching rule stops evaluation (unless it has `"fallthrough": true` attribute)
+    - A matching rule with `"fallthrough": true` continues to subsequent rules; non-matching rules are skipped
+    - All matching rules' actions are collected and execute in order (without any `"fallthrough": true` rules, that is exactly 0 or 1 action)
 - Patterns use [Rust regex syntax](https://docs.rs/regex/latest/regex/#syntax) (Perl-like, no lookahead/lookbehind)
 - Use `*` as a special case to match anything
 
@@ -132,7 +132,12 @@ Example config:
   [ 
     {
       "class": "firefox",
-      "raw_vk_action": [["vk_notify", "Tap"], ["vk_browser", "Press"]] 
+      "raw_vk_action": [["vk_notify", "Tap"], ["vk_browser", "Press"]],
+      "fallthrough": true
+    }
+    {
+      "title": "Youtube",
+      "vk_action": "vk_youtube"
     }
   ]
   ```
