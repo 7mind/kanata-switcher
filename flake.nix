@@ -89,29 +89,43 @@
             };
           });
 
-          # All tests - requires Xvfb for X11 tests and dbus-daemon for DBus tests
-          kanata-switcher-tests = craneLib.cargoTest (rustDaemonCommonArgs // {
+          # Test archive - compile tests into nextest archive (cached)
+          kanata-switcher-test-archive = craneLib.mkCargoDerivation (rustDaemonCommonArgs // {
+            pname = "kanata-switcher-test-archive";
             cargoArtifacts = rustDaemonCargoArtifacts;
+            nativeBuildInputs = rustDaemonCommonArgs.nativeBuildInputs ++ [ pkgs.cargo-nextest ];
 
-            # dbus needs to be in both buildInputs (for linking) and nativeBuildInputs (for dbus-daemon binary)
-            buildInputs = rustDaemonCommonArgs.buildInputs ++ [ pkgs.dbus ];
-            nativeBuildInputs = rustDaemonCommonArgs.nativeBuildInputs ++ [
-              pkgs.xorg.xorgserver  # provides Xvfb
-              pkgs.xvfb-run
-              pkgs.dbus  # provides dbus-daemon
-            ];
-
-            # xvfb-run wrapper for X11 tests, HOME for dbus-daemon
-            preCheck = ''
-              export HOME=$(mktemp -d)
+            # Build test archive without running
+            buildPhaseCargoCommand = ''
+              mkdir -p $out
+              cargo nextest archive --release --archive-file $out/archive.tar.zst
             '';
 
-            checkPhase = ''
-              runHook preCheck
-              xvfb-run -s "-screen 0 800x600x24" cargo test --release
-              runHook postCheck
-            '';
+            installPhaseCommand = "true";  # Archive created in build phase
+            doInstallCargoArtifacts = false;
           });
+
+          # Script to run tests from nextest archive
+          # Runs from temp directory with minimal Cargo.toml so nextest can write output files
+          run-tests = pkgs.writeShellScriptBin "run-tests" ''
+            WORK_DIR=$(mktemp -d)
+            trap 'rm -rf "$WORK_DIR"' EXIT
+            cd "$WORK_DIR"
+            echo '[workspace]' > Cargo.toml
+            HOME="$WORK_DIR" ${pkgs.xvfb-run}/bin/xvfb-run -s "-screen 0 800x600x24" \
+              ${pkgs.cargo-nextest}/bin/cargo-nextest nextest run \
+              --archive-file ${kanata-switcher-test-archive}/archive.tar.zst \
+              --workspace-remap . "$@"
+          '';
+
+          # Check derivation that runs tests (reuses run-tests script)
+          # Adds dbus-daemon to PATH for DBus integration tests
+          kanata-switcher-tests = pkgs.runCommand "kanata-switcher-tests" {
+            nativeBuildInputs = [ pkgs.dbus ];
+          } ''
+            ${run-tests}/bin/run-tests
+            touch $out
+          '';
 
         in {
           packages = {
@@ -122,6 +136,11 @@
 
           checks = {
             tests = kanata-switcher-tests;
+          };
+
+          apps.test = {
+            type = "app";
+            program = "${run-tests}/bin/run-tests";
           };
 
           devShells.default = pkgs.mkShell {

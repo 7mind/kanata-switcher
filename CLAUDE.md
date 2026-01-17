@@ -26,7 +26,7 @@ These apply __ONLY__ to editing llm-docs:
 
 - Make a git commit after a shippable chunk of work are done
 - Before commit, update llm-docs and LLM-TODO, and if there are new features or user-facing changes, README.md. Guidelines in [llm-docs](#llm-docs) section apply.
-- **Run tests before commit**: `cargo test` and `nix flake check`
+- **Run tests before commit**: `cargo test` and `nix run .#test`
 - Test both Nix and Cargo builds before commit: `cargo build --release` and `nix build`
 - Do not amend commits, make new commits for your changes
 - Do not attribute commits to the LLM

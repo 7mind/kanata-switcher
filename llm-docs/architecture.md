@@ -241,10 +241,15 @@ Integration tests:
 Running tests:
 ```bash
 cargo test                   # All tests - requires Xvfb and dbus-daemon
-nix flake check              # Recommended: provides all dependencies
+xvfb-run cargo test          # With X11 display (if not in devShell)
+nix run .#test               # Recommended: always runs tests via nextest
 ```
 
-Tests requiring external dependencies (Xvfb, dbus-daemon) fail with helpful error messages when unavailable. Run `nix flake check` for guaranteed full coverage.
+**How it works**: `nix run .#test` executes tests using cargo-nextest. The test archive is compiled once (cached via `cargo nextest archive`), but execution happens fresh every run. `nix flake check` reuses the same nextest archive.
+
+**X11 test parallelism**: Each X11 test uses a unique hardcoded Xvfb display number (:100, :101, :102) to allow parallel execution with nextest (which spawns separate processes per test). See `XvfbGuard::start()` in `integration_tests.rs`.
+
+Tests requiring external dependencies (Xvfb, dbus-daemon) fail with helpful error messages when unavailable.
 
 ## Rust Dependencies
 

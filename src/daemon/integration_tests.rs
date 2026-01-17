@@ -6,7 +6,7 @@
 //! - X11 PropertyNotify (requires Xvfb)
 //!
 //! Tests requiring external dependencies (Xvfb, dbus-daemon) fail with helpful error
-//! messages when dependencies are not available. Run via `nix flake check` for guaranteed
+//! messages when dependencies are not available. Run via `nix run .#test` for guaranteed
 //! full test coverage, or install dependencies manually.
 
 use super::*;
@@ -463,7 +463,7 @@ async fn test_dbus_service_real_bus() {
 
     // Start private dbus-daemon
     let dbus = DbusSessionGuard::start()
-        .expect("Failed to start dbus-daemon. Run `nix flake check` or install dbus.");
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
 
     let mock_server = MockKanataServer::start();
     let port = mock_server.port();
@@ -704,15 +704,15 @@ struct XvfbGuard {
     display: String,
 }
 
-static XVFB_DISPLAY_COUNTER: AtomicU64 = AtomicU64::new(100);
-
 impl XvfbGuard {
-    fn start() -> Option<Self> {
+    /// Start Xvfb with a specific display number.
+    /// Each test should use a unique hardcoded display number to allow parallel execution
+    /// (nextest runs each test in a separate process).
+    fn start(display_num: u32) -> Option<Self> {
         if !xvfb_available() {
             return None;
         }
 
-        let display_num = XVFB_DISPLAY_COUNTER.fetch_add(1, Ordering::SeqCst);
         let display = format!(":{}", display_num);
         let child = std::process::Command::new("Xvfb")
             .args([&display, "-screen", "0", "800x600x24"])
@@ -745,16 +745,16 @@ impl Drop for XvfbGuard {
 
 /// Test that X11State can connect to an X server and receive PropertyNotify events
 ///
-/// Requires Xvfb. Run via `nix flake check` or install Xvfb manually.
+/// Requires Xvfb. Run via `nix run .#test` or install Xvfb manually.
 #[test]
 fn test_x11_property_notify() {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::*;
     use x11rb::wrapper::ConnectionExt as WrapperExt;
 
-    // Fail if Xvfb is not available
-    let xvfb = XvfbGuard::start()
-        .expect("Xvfb not available. Run `nix flake check` or install Xvfb manually.");
+    // Fail if Xvfb is not available (display :100 for this test)
+    let xvfb = XvfbGuard::start(100)
+        .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
 
     // Connect to Xvfb - "daemon" side that subscribes to PropertyNotify
     let (daemon_conn, screen) = xvfb.connect().expect("Failed to connect to Xvfb");
@@ -871,15 +871,16 @@ fn test_x11_property_notify() {
 /// Test X11State integration with FocusHandler
 ///
 /// This tests the full flow: X11 events → X11State → FocusHandler → actions
-/// Requires Xvfb. Run via `nix flake check` or install Xvfb manually.
+/// Requires Xvfb. Run via `nix run .#test` or install Xvfb manually.
 #[test]
 fn test_x11_focus_handler_integration() {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::*;
     use x11rb::wrapper::ConnectionExt as WrapperExt;
 
-    let xvfb = XvfbGuard::start()
-        .expect("Xvfb not available. Run `nix flake check` or install Xvfb manually.");
+    // Display :101 for this test
+    let xvfb = XvfbGuard::start(101)
+        .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
 
     // Set up X11 connections
     let (conn, screen) = xvfb.connect().expect("Failed to connect");
@@ -948,15 +949,16 @@ fn test_x11_focus_handler_integration() {
 }
 
 /// Test that multiple focus changes are tracked correctly
-/// Requires Xvfb. Run via `nix flake check` or install Xvfb manually.
+/// Requires Xvfb. Run via `nix run .#test` or install Xvfb manually.
 #[test]
 fn test_x11_multiple_focus_changes() {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::*;
     use x11rb::wrapper::ConnectionExt as WrapperExt;
 
-    let xvfb = XvfbGuard::start()
-        .expect("Xvfb not available. Run `nix flake check` or install Xvfb manually.");
+    // Display :102 for this test
+    let xvfb = XvfbGuard::start(102)
+        .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
 
     let (conn, screen) = xvfb.connect().expect("Failed to connect");
     let root = conn.setup().roots[screen].root;
@@ -1103,7 +1105,7 @@ async fn test_gnome_extension_dbus_probe_integration() {
 
     // Start private dbus-daemon
     let dbus = DbusSessionGuard::start()
-        .expect("Failed to start dbus-daemon. Run `nix flake check` or install dbus.");
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
 
     let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
 

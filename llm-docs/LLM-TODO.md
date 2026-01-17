@@ -27,5 +27,5 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Unify GNOME/KDE into shared DBus backend (`DbusWindowFocusService`)
 - [x] FocusAction as algebraic data type with ordered action list
 - [x] Fallthrough executes ALL matching actions (layers, VKs, raw actions)
-- [x] `nix flake check` runs unit tests via crane's cargoTest
-- [x] `nix flake check` runs X11/Xvfb integration tests via xvfb-run
+- [x] `nix run .#test` runs tests via cargo-nextest (compilation cached, execution fresh)
+- [x] X11 tests use hardcoded display numbers for parallel nextest execution

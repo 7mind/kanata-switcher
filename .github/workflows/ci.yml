@@ -21,5 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: 7mind/github-env@minimal
+      - name: Build
+        run: nix build -L
       - name: Run tests
-        run: nix build -L && nix flake check -L
+        run: nix run .#test
