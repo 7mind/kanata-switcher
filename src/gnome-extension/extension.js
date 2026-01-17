@@ -11,7 +11,7 @@ const DBUS_INTERFACE = 'com.github.kanata.Switcher';
 
 export default class KanataSwitcherExtension extends Extension {
   enable() {
-    this._focusWindowId = global.display.connect(
+    this._signalHandlerId = global.display.connect(
       'notify::focus-window',
       () => this._notifyFocus()
     );
@@ -23,9 +23,9 @@ export default class KanataSwitcherExtension extends Extension {
   }
 
   disable() {
-    if (this._focusWindowId) {
-      global.display.disconnect(this._focusWindowId);
-      this._focusWindowId = null;
+    if (this._signalHandlerId) {
+      global.display.disconnect(this._signalHandlerId);
+      this._signalHandlerId = null;
     }
 
     console.log('[KanataSwitcher] Extension disabled');
