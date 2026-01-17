@@ -103,7 +103,7 @@ Example config:
 
 - `virtual_key` - Automatically pressed when window is focused, released when unfocused
 - At most one virtual key is active at a time
-- With `fallthrough: true`, intermediate `virtual_key`s are tapped (press+release), final is held
+- With `"fallthrough": true`, intermediate `virtual_key`s are tapped (press+release), final is held
 - Example:
   ```json
   [
