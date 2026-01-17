@@ -117,6 +117,10 @@ Extension subscribes to `global.display.connect('notify::focus-window')` and cal
 - Initial state: calls `_notifyFocus()` in `enable()`
 - Unfocus: passes empty strings when `focus_window` is null
 
+Top bar indicator:
+- Optional panel indicator (settings key `show-top-bar-icon`) shows layer + virtual key status
+- Extension listens for daemon `StatusChanged(layer, virtual_keys)` DBus signal and calls `GetStatus()` on startup
+
 ## Virtual Key Support
 
 Two modes for virtual key actions:

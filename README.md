@@ -31,6 +31,7 @@ If you have tested it in other environments, and it did/didn't work, open a PR t
 This project features comprehensive automated test suite and supports an unusually wide range of desktop environments in a single codebase.
 
 Recent changes: `--quiet-focus` mutes focus logging while leaving layer and virtual key logs intact.
+GNOME Shell now supports an optional top bar indicator for the active layer and virtual keys (toggle in extension settings).
 
 ---
 

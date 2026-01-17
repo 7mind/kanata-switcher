@@ -172,7 +172,14 @@ async fn test_dbus_service_layer_switching() {
     ];
 
     // Create kanata client and connect
-    let kanata = KanataClient::new("127.0.0.1", server.port(), Some("default".to_string()), true);
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster,
+    );
     kanata.connect_with_retry().await;
 
     // Skip RequestLayerNames message
@@ -232,7 +239,14 @@ async fn test_dbus_service_virtual_keys() {
         },
     ];
 
-    let kanata = KanataClient::new("127.0.0.1", server.port(), Some("default".to_string()), true);
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster,
+    );
     kanata.connect_with_retry().await;
 
     // Skip RequestLayerNames
@@ -312,7 +326,14 @@ async fn test_dbus_service_fallthrough() {
         },
     ];
 
-    let kanata = KanataClient::new("127.0.0.1", server.port(), Some("default".to_string()), true);
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster,
+    );
     kanata.connect_with_retry().await;
 
     server.recv_timeout(Duration::from_secs(1));
@@ -483,7 +504,14 @@ async fn test_dbus_service_real_bus() {
     let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
 
     // Create the kanata client and connect
-    let kanata = KanataClient::new("127.0.0.1", port, Some("default".to_string()), true);
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        port,
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
     kanata.connect_with_retry().await;
 
     // Skip RequestLayerNames
@@ -496,7 +524,13 @@ async fn test_dbus_service_real_bus() {
         .await
         .expect("Failed to connect to private bus");
 
-    register_dbus_service(&service_connection, kanata, rules, true)
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+    )
         .await
         .expect("Failed to register service");
 

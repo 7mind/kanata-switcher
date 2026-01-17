@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.kanata-switcher" path="/org/gnome/shell/extensions/kanata-switcher/">
+    <key name="show-top-bar-icon" type="b">
+      <default>true</default>
+      <summary>Show top bar icon</summary>
+      <description>Show a top bar indicator for the active layer and virtual keys.</description>
+    </key>
+  </schema>
+</schemalist>

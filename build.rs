@@ -3,10 +3,15 @@ use std::fs;
 use std::path::Path;
 
 const GNOME_EXTENSION_SRC: &str = "src/gnome-extension";
-const GNOME_EXTENSION_FILES: &[&str] = &["extension.js", "metadata.json"];
+const GNOME_EXTENSION_FILES: &[&str] = &["extension.js", "metadata.json", "prefs.js"];
+const GNOME_EXTENSION_SCHEMA_FILES: &[&str] =
+    &["schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"];
 
 fn main() {
     for file in GNOME_EXTENSION_FILES {
+        println!("cargo:rerun-if-changed={}/{}", GNOME_EXTENSION_SRC, file);
+    }
+    for file in GNOME_EXTENSION_SCHEMA_FILES {
         println!("cargo:rerun-if-changed={}/{}", GNOME_EXTENSION_SRC, file);
     }
 
@@ -27,6 +32,16 @@ fn main() {
     let src_dir = Path::new(GNOME_EXTENSION_SRC);
 
     for file in GNOME_EXTENSION_FILES {
+        let src = src_dir.join(file);
+        let dst = target_gnome_dir.join(file);
+        fs::copy(&src, &dst).unwrap_or_else(|e| {
+            panic!("Failed to copy {} to {}: {}", src.display(), dst.display(), e)
+        });
+    }
+
+    let target_schema_dir = target_gnome_dir.join("schemas");
+    fs::create_dir_all(&target_schema_dir).expect("Failed to create gnome schema directory");
+    for file in GNOME_EXTENSION_SCHEMA_FILES {
         let src = src_dir.join(file);
         let dst = target_gnome_dir.join(file);
         fs::copy(&src, &dst).unwrap_or_else(|e| {

@@ -132,12 +132,13 @@ Daemon switches to default layer on exit (any cause):
 
 ## GNOME Extension
 
-Location: `src/gnome-extension/` (2 files: extension.js, metadata.json)
+Location: `src/gnome-extension/` (`extension.js`, `prefs.js`, `metadata.json`, `schemas/`)
 
-DBus service exposed by extension:
-- Path: `/com/github/kanata/Switcher`
-- Interface: `com.github.kanata.Switcher`
-- Method: `GetFocusedWindow()` → `{"class": "...", "title": "..."}`
+Behavior:
+- Pushes focus changes to daemon DBus `WindowFocus(class, title)`
+- Listens for daemon `StatusChanged(layer, virtual_keys)` signals
+- Calls daemon `GetStatus()` on startup to populate the top bar indicator
+- GSettings key `show-top-bar-icon` (schema `org.gnome.shell.extensions.kanata-switcher`) toggles the indicator
 
 ### Extension Loading
 
