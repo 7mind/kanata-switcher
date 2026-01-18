@@ -20,9 +20,9 @@ the following environments:
     - [x] Niri
 - [x] X11
 
-If you have tested it in other environments, and it did/didn't work, open a PR to change the README!
+There's also a manual QA checklist in [./qa](./qa) folder.
 
-## Machine summary
+If you have tested it in other environments, and it did/didn't work, open a PR to change the README or QA checklist!
 
 ---
 
@@ -30,15 +30,9 @@ If you have tested it in other environments, and it did/didn't work, open a PR t
 
 This project features comprehensive automated test suite and supports an unusually wide range of desktop environments in a single codebase.
 
-Recent changes: `--quiet-focus` mutes focus logging while leaving layer and virtual key logs intact.
-GNOME Shell now supports an optional top bar indicator for the active layer and virtual keys (toggle in extension settings).
-Extension settings also include a focus-only mode so the indicator reflects kanata-switcher focus rules instead of external kanata layer changes.
-The GNOME indicator menu now includes Settings and Restart (re-initializes the daemon).
-The GNOME indicator menu includes a Pause toggle that suspends focus processing until unpaused.
-Non-GNOME environments now show an optional StatusNotifier (SNI) indicator with Pause/Restart and a “Show app layer only” toggle in the menu (disable with `--no-indicator`).
-Native terminal (Ctrl+Alt+F*) switching now has an `on_native_terminal` rule to apply layers and virtual keys outside the GUI session.
-
 ---
+
+## Machine summary
 
 ### Supported Environments
 
@@ -59,7 +53,7 @@ All environments use the unified daemon (`src/daemon/`). All backends are event-
    kanata -c your-config.kbd -p 10000
    ```
 
-2. Config file at usually `~/.config/kanata/kanata-switcher.json` (or in applicable `$XDG_CONFIG_HOME`)
+2. Config file at `~/.config/kanata/kanata-switcher.json` (or in applicable `$XDG_CONFIG_HOME` location)
 
 ### Config Format
 
@@ -93,7 +87,6 @@ Example config:
 
 - `class` - Window class regex (optional)
 - `title` - Window title regex (optional)
-- `on_native_terminal` - Layer to switch to when active session switches to a native terminal (optional)
 - `layer` - Kanata layer name to switch to (optional)
 - `virtual_key` - Virtual key to press while window is focused (optional, see below)
 - `raw_vk_action` - Advanced: raw virtual key actions (optional, see below)
@@ -113,10 +106,11 @@ Example config:
 
 **Native terminal rule:**
 
-- `{ "on_native_terminal": "layer_name" }` - Layer to use when switching to a native terminal (Ctrl+Alt+F*)
-- Can appear at most once (multiple = error), position doesn't matter
+- `{ "on_native_terminal": "layer_name" }` - Layer to use when switching to Linux Kernel native terminal (Ctrl+Alt+F*)
 - Must not include `class`, `title`, or `layer`
 - Can include `virtual_key` and/or `raw_vk_action`
+- Can appear at most once (multiple = error), position doesn't matter
+- When absent, daemon switches to layer specified in Default layer rule or the auto-detected initial layer
 
 **Virtual keys:**
 
@@ -389,7 +383,7 @@ This writes `~/.config/autostart/kanata-switcher.desktop` with an absolute `Exec
 passed on the command line. To update the entry, rerun the install command with new options. To remove it:
 
 ```bash
-kanata-switcher --uninstall-autostart
+~/.cargo/bin/kanata-switcher --uninstall-autostart
 ```
 
 ### Daemon Options

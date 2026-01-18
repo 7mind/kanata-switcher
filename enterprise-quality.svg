@@ -10,5 +10,5 @@
       <stop offset="100%" stop-color="#c0f"/>
     </linearGradient>
   </defs>
-  <text x="5" y="22" font-size="16" font-weight="bold" font-family="sans-serif" fill="url(#rainbow)">ENTERPRISE QUALITY</text>
+  <text x="5" y="22" font-size="18" font-weight="bold" font-family="sans-serif" fill="url(#rainbow)">ENTERPRISE QUALITY</text>
 </svg>
