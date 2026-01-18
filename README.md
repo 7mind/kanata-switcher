@@ -405,9 +405,9 @@ kanata-switcher --uninstall-autostart
 --install-gnome-extension    Auto-install GNOME extension if missing (default)
 --no-install-gnome-extension Do not auto-install GNOME extension
 --no-indicator               Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
---restart                    Send a Restart request to an existing daemon and exit
---pause                      Send a Pause request to an existing daemon and exit
---unpause                    Send an Unpause request to an existing daemon and exit
+--restart                    Send Restart request to an existing daemon and exit
+--pause                      Send Pause request to an existing daemon and exit
+--unpause                    Send Unpause request to an existing daemon and exit
 -h, --help                   Show help
 ```
 
