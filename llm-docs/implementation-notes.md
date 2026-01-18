@@ -7,6 +7,7 @@
 3. **KDE script injected at runtime** - No manual installation needed
 4. **Auto-detect default layer** - On connect, Kanata sends initial `LayerChange`; daemon stores this as fallback when no rule matches
 5. **GNOME extension auto-install by default** - Controlled by `--[no-]install-gnome-extension` flags
+6. **CLI control commands** - `--restart`, `--pause`, `--unpause` send DBus requests to an existing daemon and exit
 
 ## Rust Dependencies
 

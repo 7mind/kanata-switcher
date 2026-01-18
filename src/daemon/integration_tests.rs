@@ -869,6 +869,85 @@ async fn test_dbus_restart_request() {
     assert!(changed.is_ok(), "Restart signal timed out");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_restart_private_dbus() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let mut restart_receiver = restart_handle.subscribe();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+    .await
+    .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    })
+    .await
+    .expect("Timeout waiting for service registration");
+
+    let control_result = send_control_command_with_connection(&client, ControlCommand::Restart).await;
+    assert!(control_result.is_ok(), "Restart control command failed: {:?}", control_result.err());
+
+    let changed = tokio::time::timeout(Duration::from_secs(2), restart_receiver.changed()).await;
+    assert!(changed.is_ok(), "Restart signal timed out");
+}
+
 /// Test pause/unpause flow with a mock Kanata server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_dbus_pause_unpause() {
@@ -1021,6 +1100,93 @@ async fn test_dbus_pause_unpause() {
             action: "Press".to_string(),
         })
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_pause_unpause_private_dbus() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: Some("vk_browser".to_string()),
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let mut pause_receiver = pause_broadcaster.subscribe();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster.clone(),
+    )
+    .await
+    .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    })
+    .await
+    .expect("Timeout waiting for service registration");
+
+    let pause_result = send_control_command_with_connection(&client, ControlCommand::Pause).await;
+    assert!(pause_result.is_ok(), "Pause control command failed: {:?}", pause_result.err());
+
+    let pause_changed = tokio::time::timeout(Duration::from_secs(2), pause_receiver.changed()).await;
+    assert!(pause_changed.is_ok(), "Pause broadcast timed out");
+    assert!(*pause_receiver.borrow(), "Expected paused state true");
+
+    let unpause_result = send_control_command_with_connection(&client, ControlCommand::Unpause).await;
+    assert!(unpause_result.is_ok(), "Unpause control command failed: {:?}", unpause_result.err());
+
+    let unpause_changed = tokio::time::timeout(Duration::from_secs(2), pause_receiver.changed()).await;
+    assert!(unpause_changed.is_ok(), "Unpause broadcast timed out");
+    assert!(!*pause_receiver.borrow(), "Expected paused state false");
 }
 
 // === Wayland Protocol Integration Tests ===

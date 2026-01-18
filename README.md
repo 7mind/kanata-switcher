@@ -371,8 +371,12 @@ For non-Nix / NixOS systems, install the binary and configure the systemd user s
 -H, --host HOST              Kanata host (default: 127.0.0.1)
 -c, --config PATH            Config file path
 -q, --quiet                  Suppress focus/layer-switch messages
+--quiet-focus                Suppress focus messages only
 --install-gnome-extension    Auto-install GNOME extension if missing (default)
 --no-install-gnome-extension Do not auto-install GNOME extension
+--restart                    Send a Restart request to an existing daemon and exit
+--pause                      Send a Pause request to an existing daemon and exit
+--unpause                    Send an Unpause request to an existing daemon and exit
 -h, --help                   Show help
 ```
 

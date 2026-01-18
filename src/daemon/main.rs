@@ -71,6 +71,34 @@ use cosmic_workspace::{
 };
 
 const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
+const DBUS_NAME: &str = "com.github.kanata.Switcher";
+const DBUS_PATH: &str = "/com/github/kanata/Switcher";
+const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlCommand {
+    Restart,
+    Pause,
+    Unpause,
+}
+
+impl ControlCommand {
+    fn dbus_method(self) -> &'static str {
+        match self {
+            ControlCommand::Restart => "Restart",
+            ControlCommand::Pause => "Pause",
+            ControlCommand::Unpause => "Unpause",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ControlCommand::Restart => "restart",
+            ControlCommand::Pause => "pause",
+            ControlCommand::Unpause => "unpause",
+        }
+    }
+}
 
 // === CLI ===
 
@@ -102,6 +130,18 @@ struct Args {
     /// Do not auto-install GNOME extension
     #[arg(long)]
     no_install_gnome_extension: bool,
+
+    /// Send a Restart request to an existing daemon and exit
+    #[arg(long, conflicts_with_all = ["pause", "unpause"])]
+    restart: bool,
+
+    /// Send a Pause request to an existing daemon and exit
+    #[arg(long, conflicts_with_all = ["restart", "unpause"])]
+    pause: bool,
+
+    /// Send an Unpause request to an existing daemon and exit
+    #[arg(long, conflicts_with_all = ["restart", "pause"])]
+    unpause: bool,
 }
 
 fn resolve_install_gnome_extension(matches: &ArgMatches) -> bool {
@@ -125,6 +165,42 @@ fn resolve_install_gnome_extension(matches: &ArgMatches) -> bool {
             }
         }
     }
+}
+
+fn resolve_control_command(args: &Args) -> Option<ControlCommand> {
+    if args.restart {
+        return Some(ControlCommand::Restart);
+    }
+    if args.pause {
+        return Some(ControlCommand::Pause);
+    }
+    if args.unpause {
+        return Some(ControlCommand::Unpause);
+    }
+    None
+}
+
+async fn send_control_command(command: ControlCommand) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let connection = Connection::session().await?;
+    send_control_command_with_connection(&connection, command).await?;
+    println!("[Control] Sent {} request to running daemon", command.label());
+    Ok(())
+}
+
+async fn send_control_command_with_connection(
+    connection: &Connection,
+    command: ControlCommand,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    connection
+        .call_method(
+            Some(DBUS_NAME),
+            DBUS_PATH,
+            Some(DBUS_INTERFACE),
+            command.dbus_method(),
+            &(),
+        )
+        .await?;
+    Ok(())
 }
 
 // === Config ===
@@ -2461,6 +2537,11 @@ async fn main() {
 async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let matches = Args::command().get_matches();
     let args = Args::from_arg_matches(&matches)?;
+    if let Some(command) = resolve_control_command(&args) {
+        send_control_command(command).await?;
+        return Ok(RunOutcome::Exit);
+    }
+
     let install_gnome_extension = resolve_install_gnome_extension(&matches);
 
     let env = detect_environment();
