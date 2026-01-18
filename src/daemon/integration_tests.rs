@@ -1099,15 +1099,6 @@ async fn test_dbus_pause_unpause() {
     let msg = mock_server.recv_timeout(Duration::from_secs(2));
     assert_eq!(msg, Some(KanataMessage::RequestLayerNames));
 
-    let focus_result = client.call_method(
-        Some("com.github.kanata.Switcher"),
-        "/com/github/kanata/Switcher",
-        Some("com.github.kanata.Switcher"),
-        "WindowFocus",
-        &("test-app", "Test Window"),
-    ).await;
-    assert!(focus_result.is_ok(), "DBus WindowFocus failed: {:?}", focus_result.err());
-
     let msg = mock_server.recv_timeout(Duration::from_secs(2));
     assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "browser".to_string() }));
     let msg = mock_server.recv_timeout(Duration::from_secs(2));

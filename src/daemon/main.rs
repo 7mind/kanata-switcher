@@ -762,13 +762,20 @@ impl FocusHandler {
         self.last_gui_window.clone()
     }
 
+    fn cache_gui_window(&mut self, win: &WindowInfo) {
+        if win.is_native_terminal {
+            return;
+        }
+        self.last_gui_window = Some(win.clone());
+    }
+
     fn reset(&mut self) {
         self.last_class.clear();
         self.last_title.clear();
         self.last_matched_rules.clear();
         self.last_effective_layer.clear();
         self.current_virtual_keys.clear();
-        self.last_gui_window = None;
+        // Preserve last_gui_window to restore focus on unpause.
     }
 
     fn handle_unfocused(&mut self, default_layer: &str) -> Option<FocusActions> {
@@ -1160,6 +1167,8 @@ impl SniControlOps for SniControl {
             SniControl::Local(control) => {
                 unpause_daemon(
                     &control.pause_broadcaster,
+                    &control.handler,
+                    &control.status_broadcaster,
                     &control.kanata,
                     &control.runtime_handle,
                     "via SNI",
@@ -1491,6 +1500,7 @@ fn handle_focus_event(
     default_layer: &str,
 ) -> Option<FocusActions> {
     if pause_broadcaster.is_paused() {
+        cache_focus_window(handler, win);
         return None;
     }
     update_status_for_focus(handler, status_broadcaster, win, default_layer)
@@ -1507,6 +1517,26 @@ fn native_terminal_window() -> WindowInfo {
 fn cached_gui_window(handler: &Arc<Mutex<FocusHandler>>) -> WindowInfo {
     let handler = handler.lock().unwrap();
     handler.last_gui_window().unwrap_or_default()
+}
+
+fn cache_focus_window(handler: &Arc<Mutex<FocusHandler>>, win: &WindowInfo) {
+    let mut handler = handler.lock().unwrap();
+    handler.cache_gui_window(win);
+}
+
+async fn refresh_focus_from_cache(
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    pause_broadcaster: &PauseBroadcaster,
+    kanata: &KanataClient,
+) {
+    let win = cached_gui_window(handler);
+    let default_layer = kanata.default_layer().await.unwrap_or_default();
+    if let Some(actions) =
+        handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
+    {
+        execute_focus_actions(kanata, actions).await;
+    }
 }
 
 fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
@@ -1734,6 +1764,8 @@ fn pause_daemon(
 
 fn unpause_daemon(
     pause_broadcaster: &PauseBroadcaster,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
     kanata: &KanataClient,
     runtime_handle: &tokio::runtime::Handle,
     request_label: &str,
@@ -1743,9 +1775,13 @@ fn unpause_daemon(
         return;
     }
     println!("[Pause] Resuming daemon");
+    let pause_broadcaster = pause_broadcaster.clone();
+    let handler = handler.clone();
+    let status_broadcaster = status_broadcaster.clone();
     let kanata = kanata.clone();
     runtime_handle.block_on(async move {
         kanata.unpause_connect().await;
+        refresh_focus_from_cache(&handler, &status_broadcaster, &pause_broadcaster, &kanata).await;
     });
 }
 
@@ -3352,15 +3388,16 @@ struct DbusWindowFocusService {
 #[zbus::interface(name = "com.github.kanata.Switcher")]
 impl DbusWindowFocusService {
     async fn window_focus(&self, window_class: &str, window_title: &str) {
-        if self.pause_broadcaster.is_paused() {
-            return;
-        }
-
         let win = WindowInfo {
             class: window_class.to_string(),
             title: window_title.to_string(),
             is_native_terminal: false,
         };
+
+        if self.pause_broadcaster.is_paused() {
+            cache_focus_window(&self.handler, &win);
+            return;
+        }
 
         let default_layer = self
             .runtime_handle
@@ -3427,6 +3464,8 @@ impl DbusWindowFocusService {
     async fn unpause(&self) {
         unpause_daemon(
             &self.pause_broadcaster,
+            &self.handler,
+            &self.status_broadcaster,
             &self.kanata,
             &self.runtime_handle,
             "via DBus",

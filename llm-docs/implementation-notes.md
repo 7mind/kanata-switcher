@@ -145,7 +145,8 @@ Top bar indicator:
 - Status updates include a `source` field (`focus` or `external`); prefs default to showing focus-based layer only
 - Focus updates force-broadcast via `StatusBroadcaster::update_focus_layer` so the indicator refreshes on focus events
 - Indicator menu includes Pause, Settings, and Restart; Pause calls daemon DBus `Pause`/`Unpause`
-- Pause handling releases managed virtual keys, switches to the default layer, disconnects from kanata, clears handler state, and ignores focus events until unpaused
+- Pause handling releases managed virtual keys, switches to the default layer, disconnects from kanata, clears handler state, and ignores focus events for action execution
+- Focus events are still cached while paused so unpause can reapply the current focused window
 - GJS test also validates focus-only selection logic via `selectStatus()`
 
 SNI indicator (non-GNOME):
