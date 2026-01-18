@@ -109,6 +109,8 @@ When all windows are closed (no window focused), the daemon switches to the defa
 
 The daemon watches `org.freedesktop.login1.Session.Active` on the system bus. When the session becomes inactive (Ctrl+Alt+F*), it applies the `on_native_terminal` rule if present, otherwise it behaves like an unfocused state. When the session becomes active again, it refreshes focus (querying the backend on Wayland/X11, using the cached GUI focus for GNOME/KDE).
 
+If logind monitoring fails to start (no system bus, permissions, etc.), the daemon logs the error and continues without native terminal switching.
+
 ## X11 Backend
 
 Uses x11rb with pure Rust connection (no libxcb dependency). Implementation in `run_x11()`:

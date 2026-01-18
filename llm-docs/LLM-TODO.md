@@ -34,3 +34,6 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Fallthrough executes ALL matching actions (layers, VKs, raw actions)
 - [x] `nix run .#test` runs tests via cargo-nextest (compilation cached, execution fresh)
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
+
+# Notes
+- 2026-01-18: logind session monitoring failure is non-fatal; daemon continues without native terminal switching.

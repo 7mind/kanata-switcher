@@ -55,6 +55,8 @@ All environments use the unified daemon (`src/daemon/`). All backends are event-
 
 2. Config file at `~/.config/kanata/kanata-switcher.json` (or in applicable `$XDG_CONFIG_HOME` location)
 
+If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but native terminal switching is disabled; a warning is logged on startup.
+
 ### Config Format
 
 Example config:

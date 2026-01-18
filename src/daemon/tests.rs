@@ -1303,3 +1303,45 @@ fn test_gnome_extension_state_missing() {
     assert!(!status.active, "missing state should not be active");
     assert!(!status.enabled, "missing state should not be enabled");
 }
+
+#[tokio::test]
+async fn test_logind_monitor_startup_failure_is_non_fatal() {
+    let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
+
+    let started = start_logind_session_monitor_best_effort(
+        Environment::Wayland,
+        handler,
+        status_broadcaster.clone(),
+        pause_broadcaster,
+        kanata,
+        |_env, _handler, _status, _pause, _kanata| async {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "logind unavailable").into())
+        },
+    )
+    .await;
+
+    assert!(!started);
+}
+
+#[tokio::test]
+async fn test_logind_monitor_startup_success_returns_true() {
+    let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
+
+    let started = start_logind_session_monitor_best_effort(
+        Environment::Wayland,
+        handler,
+        status_broadcaster.clone(),
+        pause_broadcaster,
+        kanata,
+        |_env, _handler, _status, _pause, _kanata| async { Ok(()) },
+    )
+    .await;
+
+    assert!(started);
+}

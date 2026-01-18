@@ -1665,6 +1665,36 @@ async fn start_logind_session_monitor(
     Ok(())
 }
 
+async fn start_logind_session_monitor_best_effort<F, Fut>(
+    env: Environment,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
+    kanata: KanataClient,
+    starter: F,
+) -> bool
+where
+    F: FnOnce(
+        Environment,
+        Arc<Mutex<FocusHandler>>,
+        StatusBroadcaster,
+        PauseBroadcaster,
+        KanataClient,
+    ) -> Fut,
+    Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+{
+    match starter(env, handler, status_broadcaster, pause_broadcaster, kanata).await {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "[Logind] Disabled native terminal monitoring (startup failed): {}",
+                error
+            );
+            false
+        }
+    }
+}
+
 fn pause_daemon(
     pause_broadcaster: &PauseBroadcaster,
     handler: &Arc<Mutex<FocusHandler>>,
@@ -3714,14 +3744,15 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     };
 
     if let Some(handler) = focus_handler.clone() {
-        start_logind_session_monitor(
+        start_logind_session_monitor_best_effort(
             env,
             handler,
             status_broadcaster.clone(),
             pause_broadcaster.clone(),
             kanata.clone(),
+            start_logind_session_monitor,
         )
-        .await?;
+        .await;
     }
 
     // Create shutdown guard - will switch to default layer when dropped
