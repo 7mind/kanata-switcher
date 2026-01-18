@@ -1545,3 +1545,42 @@ async fn test_wait_for_restart_or_shutdown_shutdown_wins() {
     let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
     assert_eq!(outcome, RunOutcome::Exit);
 }
+
+#[test]
+fn test_logind_no_session_error_detection() {
+    use zbus::names::OwnedErrorName;
+    use zbus::{Error as ZbusError, Message};
+
+    let name = OwnedErrorName::try_from(LOGIND_ERROR_NO_SESSION_FOR_PID).unwrap();
+    let reply = Message::method_call("/org/freedesktop/login1", "GetSessionByPID")
+        .unwrap()
+        .build(&())
+        .unwrap();
+    let error = ZbusError::MethodError(name, Some("no session".to_string()), reply);
+
+    assert!(is_logind_no_session_error(&error));
+}
+
+#[test]
+fn test_logind_no_session_error_detection_false() {
+    use zbus::names::OwnedErrorName;
+    use zbus::{Error as ZbusError, Message};
+
+    let name = OwnedErrorName::try_from("org.freedesktop.login1.NoSuchSession").unwrap();
+    let reply = Message::method_call("/org/freedesktop/login1", "GetSession")
+        .unwrap()
+        .build(&())
+        .unwrap();
+    let error = ZbusError::MethodError(name, Some("no session".to_string()), reply);
+
+    assert!(!is_logind_no_session_error(&error));
+}
+
+#[test]
+fn test_logind_empty_object_path_detection() {
+    let empty = OwnedObjectPath::try_from(LOGIND_EMPTY_OBJECT_PATH).unwrap();
+    let non_empty = OwnedObjectPath::try_from("/org/freedesktop/login1/session/_1").unwrap();
+
+    assert!(is_logind_empty_object_path(&empty));
+    assert!(!is_logind_empty_object_path(&non_empty));
+}

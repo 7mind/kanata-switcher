@@ -38,3 +38,4 @@ The project daemon is located at `src/daemon/` (Rust).
 
 # Notes
 - 2026-01-18: logind session monitoring failure is non-fatal; daemon continues without native terminal switching.
+- 2026-01-18: logind session resolution now falls back to the user’s `Display` session when `GetSessionByPID` reports no session (systemd user service with lingering).

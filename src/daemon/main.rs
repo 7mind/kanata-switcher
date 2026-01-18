@@ -91,6 +91,9 @@ const LOGIND_BUS_NAME: &str = "org.freedesktop.login1";
 const LOGIND_MANAGER_PATH: &str = "/org/freedesktop/login1";
 const LOGIND_MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
 const LOGIND_SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
+const LOGIND_USER_INTERFACE: &str = "org.freedesktop.login1.User";
+const LOGIND_ERROR_NO_SESSION_FOR_PID: &str = "org.freedesktop.login1.NoSessionForPID";
+const LOGIND_EMPTY_OBJECT_PATH: &str = "/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlCommand {
@@ -1834,8 +1837,46 @@ async fn resolve_logind_session_path(
     }
 
     let pid = std::process::id();
-    let path: OwnedObjectPath = manager.call("GetSessionByPID", &(pid)).await?;
-    Ok(path)
+    match manager.call("GetSessionByPID", &(pid)).await {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            if is_logind_no_session_error(&error) {
+                return resolve_logind_display_session_path(&manager, connection, pid).await;
+            }
+            Err(error.into())
+        }
+    }
+}
+
+fn is_logind_no_session_error(error: &zbus::Error) -> bool {
+    match error {
+        zbus::Error::MethodError(name, _, _) => name.as_ref() == LOGIND_ERROR_NO_SESSION_FOR_PID,
+        _ => false,
+    }
+}
+
+fn is_logind_empty_object_path(path: &OwnedObjectPath) -> bool {
+    path.as_str() == LOGIND_EMPTY_OBJECT_PATH
+}
+
+async fn resolve_logind_display_session_path(
+    manager: &zbus::Proxy<'_>,
+    connection: &Connection,
+    pid: u32,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    let user_path: OwnedObjectPath = manager.call("GetUserByPID", &(pid)).await?;
+    let user_proxy = zbus::Proxy::new(
+        connection,
+        LOGIND_BUS_NAME,
+        user_path,
+        LOGIND_USER_INTERFACE,
+    )
+    .await?;
+    let display: OwnedObjectPath = user_proxy.get_property("Display").await?;
+    if is_logind_empty_object_path(&display) {
+        return Err("logind user has no display session".into());
+    }
+    Ok(display)
 }
 
 async fn start_logind_session_monitor(
