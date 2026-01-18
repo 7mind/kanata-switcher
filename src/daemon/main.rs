@@ -2835,6 +2835,8 @@ const EMBEDDED_PREFS_JS: &str = include_str!(gnome_ext_file!("prefs.js"));
 #[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_FORMAT_JS: &str = include_str!(gnome_ext_file!("format.js"));
 #[cfg(feature = "embed-gnome-extension")]
+const EMBEDDED_DBUS_JS: &str = include_str!(gnome_ext_file!("dbus.js"));
+#[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_GSETTINGS_SCHEMA: &str = include_str!(gnome_ext_file!(
     "schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"
 ));
@@ -2851,6 +2853,7 @@ fn gnome_extension_fs_exists() -> bool {
         && path.join("metadata.json").exists()
         && path.join("prefs.js").exists()
         && path.join("format.js").exists()
+        && path.join("dbus.js").exists()
         && path.join(GNOME_EXTENSION_SCHEMA_FILE).exists()
         && path.join(GNOME_EXTENSION_SCHEMA_COMPILED).exists()
 }
@@ -2877,6 +2880,7 @@ fn write_embedded_extension_to_dir(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join("metadata.json"), EMBEDDED_METADATA_JSON)?;
     fs::write(dir.join("prefs.js"), EMBEDDED_PREFS_JS)?;
     fs::write(dir.join("format.js"), EMBEDDED_FORMAT_JS)?;
+    fs::write(dir.join("dbus.js"), EMBEDDED_DBUS_JS)?;
     let schema_dir = dir.join("schemas");
     fs::create_dir_all(&schema_dir)?;
     fs::write(dir.join(GNOME_EXTENSION_SCHEMA_FILE), EMBEDDED_GSETTINGS_SCHEMA)?;

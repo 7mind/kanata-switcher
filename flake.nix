@@ -37,7 +37,7 @@
 
               extensionDir=$out/share/gnome-shell/extensions/kanata-switcher@7mind.io
               mkdir -p $extensionDir/schemas
-              cp extension.js metadata.json prefs.js format.js $extensionDir/
+              cp *.js metadata.json $extensionDir/
               cp schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml $extensionDir/schemas/
               ${pkgs.buildPackages.glib.dev}/bin/glib-compile-schemas $extensionDir/schemas
 
@@ -81,10 +81,8 @@
             postInstall = ''
               mkdir -p $out/bin/gnome
               mkdir -p $out/bin/gnome/schemas
-              cp ${./src/gnome-extension}/extension.js $out/bin/gnome/
+              cp ${./src/gnome-extension}/*.js $out/bin/gnome/
               cp ${./src/gnome-extension}/metadata.json $out/bin/gnome/
-              cp ${./src/gnome-extension}/prefs.js $out/bin/gnome/
-              cp ${./src/gnome-extension}/format.js $out/bin/gnome/
               cp ${./src/gnome-extension}/schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml $out/bin/gnome/schemas/
               ${pkgs.buildPackages.glib.dev}/bin/glib-compile-schemas $out/bin/gnome/schemas
             '';
@@ -145,6 +143,46 @@
             tests = kanata-switcher-tests;
             gnome-schema = pkgs.runCommand "kanata-switcher-gnome-schema-check" {} ''
               test -f ${kanata-switcher-gnome-extension}/share/gnome-shell/extensions/kanata-switcher@7mind.io/schemas/gschemas.compiled
+              touch $out
+            '';
+            gnome-extension-files = pkgs.runCommand "kanata-switcher-gnome-extension-files-check" {} ''
+              set -euo pipefail
+
+              expected_js=$(
+                cd ${./src/gnome-extension}
+                find . -maxdepth 1 -type f -name "*.js" -printf "%f\n" | sort
+              )
+
+              extension_dir=${kanata-switcher-gnome-extension}/share/gnome-shell/extensions/kanata-switcher@7mind.io
+              actual_js_extension=$(
+                cd "$extension_dir"
+                find . -maxdepth 1 -type f -name "*.js" -printf "%f\n" | sort
+              )
+              if [ "$expected_js" != "$actual_js_extension" ]; then
+                echo "GNOME extension JS mismatch in gnome-extension package"
+                echo "expected:"
+                echo "$expected_js"
+                echo "actual:"
+                echo "$actual_js_extension"
+                exit 1
+              fi
+
+              daemon_gnome_dir=${kanata-switcher-daemon}/bin/gnome
+              actual_js_daemon=$(
+                cd "$daemon_gnome_dir"
+                find . -maxdepth 1 -type f -name "*.js" -printf "%f\n" | sort
+              )
+              if [ "$expected_js" != "$actual_js_daemon" ]; then
+                echo "GNOME extension JS mismatch in daemon package"
+                echo "expected:"
+                echo "$expected_js"
+                echo "actual:"
+                echo "$actual_js_daemon"
+                exit 1
+              fi
+
+              test -f "$extension_dir/metadata.json"
+              test -f "$daemon_gnome_dir/metadata.json"
               touch $out
             '';
             gnome-format = pkgs.runCommand "kanata-switcher-gnome-format-check" {

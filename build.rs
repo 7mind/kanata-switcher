@@ -4,13 +4,23 @@ use std::path::Path;
 use std::process::Command;
 
 const GNOME_EXTENSION_SRC: &str = "src/gnome-extension";
-const GNOME_EXTENSION_FILES: &[&str] = &["extension.js", "metadata.json", "prefs.js", "format.js"];
+const GNOME_EXTENSION_FILES: &[&str] = &["metadata.json"];
 const GNOME_EXTENSION_SCHEMA_FILES: &[&str] =
     &["schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"];
 
 fn main() {
     for file in GNOME_EXTENSION_FILES {
         println!("cargo:rerun-if-changed={}/{}", GNOME_EXTENSION_SRC, file);
+    }
+    let src_dir = Path::new(GNOME_EXTENSION_SRC);
+    let entries = fs::read_dir(src_dir).expect("Failed to read GNOME extension directory");
+    for entry in entries {
+        let entry = entry.expect("Failed to read GNOME extension directory entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("js") {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
     }
     for file in GNOME_EXTENSION_SCHEMA_FILES {
         println!("cargo:rerun-if-changed={}/{}", GNOME_EXTENSION_SRC, file);
@@ -30,13 +40,28 @@ fn main() {
 
     fs::create_dir_all(&target_gnome_dir).expect("Failed to create gnome directory");
 
-    let src_dir = Path::new(GNOME_EXTENSION_SRC);
-
     for file in GNOME_EXTENSION_FILES {
         let src = src_dir.join(file);
         let dst = target_gnome_dir.join(file);
         fs::copy(&src, &dst).unwrap_or_else(|e| {
             panic!("Failed to copy {} to {}: {}", src.display(), dst.display(), e)
+        });
+    }
+
+    let entries = fs::read_dir(src_dir).expect("Failed to read GNOME extension directory");
+    for entry in entries {
+        let entry = entry.expect("Failed to read GNOME extension directory entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("js") {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("GNOME extension JS filename must be valid UTF-8");
+        let dst = target_gnome_dir.join(filename);
+        fs::copy(&path, &dst).unwrap_or_else(|e| {
+            panic!("Failed to copy {} to {}: {}", path.display(), dst.display(), e)
         });
     }
 
