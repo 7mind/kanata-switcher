@@ -356,6 +356,8 @@ struct FocusHandler {
     rules: Vec<Rule>,
     last_class: String,
     last_title: String,
+    last_matched_rules: Vec<usize>,
+    last_effective_layer: String,
     /// Currently held virtual keys, in order they were pressed (top-to-bottom rule order)
     current_virtual_keys: Vec<String>,
     quiet_focus: bool,
@@ -367,6 +369,8 @@ impl FocusHandler {
             rules,
             last_class: String::new(),
             last_title: String::new(),
+            last_matched_rules: Vec::new(),
+            last_effective_layer: String::new(),
             current_virtual_keys: Vec::new(),
             quiet_focus,
         }
@@ -376,13 +380,6 @@ impl FocusHandler {
     /// With fallthrough, ALL matching actions are collected and executed in order.
     /// All matched virtual_keys are pressed and held simultaneously.
     fn handle(&mut self, win: &WindowInfo, default_layer: &str) -> Option<FocusActions> {
-        if win.class == self.last_class && win.title == self.last_title {
-            return None;
-        }
-
-        self.last_class = win.class.clone();
-        self.last_title = win.title.clone();
-
         let mut result = FocusActions::default();
 
         // Handle unfocused state (no window has focus)
@@ -395,11 +392,15 @@ impl FocusHandler {
                 result.actions.push(FocusAction::ReleaseVk(vk.clone()));
             }
             // Switch to default layer
-            if !default_layer.is_empty() {
+            if !default_layer.is_empty() && self.last_effective_layer != default_layer {
                 result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
             }
             result.new_managed_vks = Vec::new();
             self.current_virtual_keys = Vec::new();
+            self.last_matched_rules.clear();
+            self.last_effective_layer = default_layer.to_string();
+            self.last_class = win.class.clone();
+            self.last_title = win.title.clone();
             return if result.is_empty() { None } else { Some(result) };
         }
 
@@ -409,6 +410,7 @@ impl FocusHandler {
 
         // Match rules with fallthrough support
         struct MatchedRule {
+            index: usize,
             layer: Option<String>,
             virtual_key: Option<String>,
             raw_vk_actions: Vec<(String, String)>,
@@ -416,11 +418,12 @@ impl FocusHandler {
 
         let mut matched_rules: Vec<MatchedRule> = Vec::new();
 
-        for rule in &self.rules {
+        for (index, rule) in self.rules.iter().enumerate() {
             if match_pattern(rule.class.as_deref(), &win.class)
                 && match_pattern(rule.title.as_deref(), &win.title)
             {
                 matched_rules.push(MatchedRule {
+                    index,
                     layer: rule.layer.clone(),
                     virtual_key: rule.virtual_key.clone(),
                     raw_vk_actions: rule.raw_vk_action.clone().unwrap_or_default(),
@@ -431,6 +434,8 @@ impl FocusHandler {
                 }
             }
         }
+
+        let matched_indices: Vec<usize> = matched_rules.iter().map(|rule| rule.index).collect();
 
         // Collect all VKs from matched rules in order (for holding)
         let new_vks: Vec<String> = matched_rules
@@ -447,34 +452,73 @@ impl FocusHandler {
 
         // If no rules matched, use default layer
         if matched_rules.is_empty() {
-            if !default_layer.is_empty() {
+            if !default_layer.is_empty() && self.last_effective_layer != default_layer {
                 result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
             }
             result.new_managed_vks = Vec::new();
+            self.last_effective_layer = default_layer.to_string();
         } else {
-            // Process matched rules in order, building action list
-            for matched in matched_rules {
-                // Layer change
-                if let Some(layer) = matched.layer {
-                    result.actions.push(FocusAction::ChangeLayer(layer));
-                }
-
-                // Virtual key: press if not already held
-                if let Some(ref vk) = matched.virtual_key {
-                    if !self.current_virtual_keys.contains(vk) {
-                        result.actions.push(FocusAction::PressVk(vk.clone()));
-                    }
-                }
-
-                // Raw VK actions
-                for (name, action) in matched.raw_vk_actions {
-                    result.actions.push(FocusAction::RawVkAction(name, action));
+            let matched_changed = matched_indices != self.last_matched_rules;
+            let mut matched_layers: Vec<String> = Vec::new();
+            for matched in &matched_rules {
+                if let Some(layer) = matched.layer.clone() {
+                    matched_layers.push(layer);
                 }
             }
+            let new_rules: Vec<usize> = matched_indices
+                .iter()
+                .cloned()
+                .filter(|idx| !self.last_matched_rules.contains(idx))
+                .collect();
+
+            // Process matched rules in order, building action list
+            for matched in matched_rules {
+                let is_new = new_rules.contains(&matched.index);
+                if is_new {
+                    // Layer change
+                    if let Some(layer) = matched.layer {
+                        result.actions.push(FocusAction::ChangeLayer(layer));
+                    }
+
+                    // Virtual key: press if not already held
+                    if let Some(ref vk) = matched.virtual_key {
+                        if !self.current_virtual_keys.contains(vk) {
+                            result.actions.push(FocusAction::PressVk(vk.clone()));
+                        }
+                    }
+
+                    // Raw VK actions
+                    for (name, action) in matched.raw_vk_actions {
+                        result.actions.push(FocusAction::RawVkAction(name, action));
+                    }
+                }
+            }
+
+            if matched_changed {
+                if let Some(new_layer) = matched_layers.last().cloned() {
+                    if self.last_effective_layer != new_layer {
+                        let has_new_layer = result.actions.iter().rev().find_map(|action| {
+                            if let FocusAction::ChangeLayer(layer) = action {
+                                Some(layer == &new_layer)
+                            } else {
+                                None
+                            }
+                        });
+                        if has_new_layer != Some(true) {
+                            result.actions.push(FocusAction::ChangeLayer(new_layer.clone()));
+                        }
+                    }
+                    self.last_effective_layer = new_layer;
+                }
+            }
+
             result.new_managed_vks = new_vks;
         }
 
         // Update state
+        self.last_class = win.class.clone();
+        self.last_title = win.title.clone();
+        self.last_matched_rules = matched_indices;
         self.current_virtual_keys = result.new_managed_vks.clone();
 
         if result.is_empty() {
@@ -491,6 +535,8 @@ impl FocusHandler {
     fn reset(&mut self) {
         self.last_class.clear();
         self.last_title.clear();
+        self.last_matched_rules.clear();
+        self.last_effective_layer.clear();
         self.current_virtual_keys.clear();
     }
 }

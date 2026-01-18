@@ -102,6 +102,43 @@ fn test_same_window_no_action() {
 }
 
 #[test]
+fn test_same_rule_different_window_no_action() {
+    let rules = vec![rule(None, None, Some("global"))];
+    let mut handler = FocusHandler::new(rules, true);
+
+    let actions = handler.handle(&win("firefox", "tab1"), "default").unwrap();
+    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("global".to_string())]);
+
+    let actions = handler.handle(&win("kitty", "tab2"), "default");
+    assert_eq!(actions, None);
+}
+
+#[test]
+fn test_same_rule_different_window_no_action_with_vk_and_raw() {
+    let rules = vec![Rule {
+        class: None,
+        title: None,
+        layer: Some("global".to_string()),
+        virtual_key: Some("vk_global".to_string()),
+        raw_vk_action: Some(vec![("vk_raw".to_string(), "Tap".to_string())]),
+        fallthrough: false,
+    }];
+    let mut handler = FocusHandler::new(rules, true);
+
+    let actions = handler.handle(&win("firefox", "tab1"), "default").unwrap();
+    assert_eq!(
+        actions.actions,
+        vec![
+            FocusAction::ChangeLayer("global".to_string()),
+            FocusAction::PressVk("vk_global".to_string()),
+            FocusAction::RawVkAction("vk_raw".to_string(), "Tap".to_string()),
+        ]
+    );
+
+    let actions = handler.handle(&win("kitty", "tab2"), "default");
+    assert_eq!(actions, None);
+}
+#[test]
 fn test_title_change_triggers_action() {
     let rules = vec![
         rule(Some("kitty"), Some("vim"), Some("vim")),
@@ -386,6 +423,63 @@ fn test_update_status_for_focus_updates_snapshot() {
 }
 
 #[test]
+fn test_handle_focus_event_ignored_when_paused_no_status_change() {
+    let rules = vec![rule(Some("firefox"), None, Some("browser"))];
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+
+    pause_broadcaster.set_paused(true);
+    let win = win("firefox", "");
+    let actions = handle_focus_event(
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &win,
+        "default",
+    );
+    assert!(actions.is_none());
+    let snapshot = status_broadcaster.snapshot();
+    assert!(snapshot.layer.is_empty());
+
+    pause_broadcaster.set_paused(false);
+    let actions = handle_focus_event(
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &win,
+        "default",
+    );
+    assert!(actions.is_some());
+    let snapshot = status_broadcaster.snapshot();
+    assert_eq!(snapshot.layer, "browser");
+    assert_eq!(snapshot.layer_source, LayerSource::Focus);
+}
+
+#[test]
+fn test_handle_focus_event_unfocus_paused_does_not_switch_layer() {
+    let rules = vec![rule(Some("firefox"), None, Some("browser"))];
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+
+    status_broadcaster.update_layer("current".to_string(), LayerSource::External);
+    pause_broadcaster.set_paused(true);
+
+    let actions = handle_focus_event(
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &WindowInfo::default(),
+        "default",
+    );
+    assert!(actions.is_none());
+    let snapshot = status_broadcaster.snapshot();
+    assert_eq!(snapshot.layer, "current");
+    assert_eq!(snapshot.layer_source, LayerSource::External);
+}
+
+#[test]
 fn test_paused_status_resets_virtual_keys_and_source() {
     let status_broadcaster = StatusBroadcaster::new();
     status_broadcaster.update_layer("external".to_string(), LayerSource::External);
@@ -549,6 +643,21 @@ fn test_fallthrough_collects_all_layers() {
 }
 
 #[test]
+fn test_fallthrough_add_remove_rule_only_new_actions() {
+    let rules = vec![
+        rule_with_fallthrough(rule(Some("app"), None, Some("base"))),
+        rule(Some("app"), Some("special"), Some("special")),
+    ];
+    let mut handler = FocusHandler::new(rules, true);
+
+    let actions = handler.handle(&win("app", "special"), "default").unwrap();
+    assert_eq!(get_layers(&actions), vec!["base".to_string(), "special".to_string()]);
+
+    let actions = handler.handle(&win("app", "other"), "default").unwrap();
+    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("base".to_string())]);
+}
+
+#[test]
 fn test_fallthrough_collects_all_raw_vk_actions() {
     let rules = vec![
         rule_with_fallthrough(rule_raw_vk(Some("kitty"), vec![("vk1", "Press")])),
@@ -667,7 +776,7 @@ fn test_regex_pattern() {
     let mut handler = FocusHandler::new(rules, true);
 
     assert_eq!(get_layers(&handler.handle(&win("firefox", ""), "default").unwrap()), vec!["browser".to_string()]);
-    assert_eq!(get_layers(&handler.handle(&win("chrome", ""), "default").unwrap()), vec!["browser".to_string()]);
+    assert_eq!(handler.handle(&win("chrome", ""), "default"), None);
     assert_eq!(get_layers(&handler.handle(&win("chromium", ""), "default").unwrap()), vec!["default".to_string()]);
 }
 
@@ -789,6 +898,10 @@ fn arb_class() -> impl Strategy<Value = String> {
         Just("".to_string()),
         "[a-z]{1,10}".prop_map(String::from),
     ]
+}
+
+fn arb_nonempty_class() -> impl Strategy<Value = String> {
+    arb_class().prop_filter("non-empty class", |class| !class.is_empty())
 }
 
 fn arb_title() -> impl Strategy<Value = String> {
@@ -914,7 +1027,7 @@ proptest! {
 
     #[test]
     fn prop_fallthrough_collects_all_raw_vk(
-        base_class in arb_class(),
+        base_class in arb_nonempty_class(),
         raw_vk1 in prop::collection::vec((arb_vk_name(), arb_vk_action()), 0..2),
         raw_vk2 in prop::collection::vec((arb_vk_name(), arb_vk_action()), 0..2),
     ) {
@@ -948,7 +1061,7 @@ proptest! {
 
     #[test]
     fn prop_fallthrough_collects_all_layers(
-        base_class in arb_class(),
+        base_class in arb_nonempty_class(),
         layer1 in arb_layer(),
         layer2 in arb_layer(),
     ) {
@@ -982,7 +1095,7 @@ proptest! {
 
     #[test]
     fn prop_all_matched_vks_pressed_and_held(
-        base_class in arb_class(),
+        base_class in arb_nonempty_class(),
         vk1 in arb_vk_name(),
         vk2 in arb_vk_name(),
     ) {

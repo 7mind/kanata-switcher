@@ -1105,6 +1105,257 @@ async fn test_dbus_pause_unpause() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_paused_changed_signal() {
+    use futures_util::StreamExt;
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+    .await
+    .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    })
+    .await
+    .expect("Timeout waiting for service registration");
+
+    let proxy = zbus::Proxy::new(
+        &client,
+        "com.github.kanata.Switcher",
+        "/com/github/kanata/Switcher",
+        "com.github.kanata.Switcher",
+    )
+    .await
+    .expect("Failed to create proxy");
+    let mut paused_stream = proxy
+        .receive_signal("PausedChanged")
+        .await
+        .expect("Failed to subscribe to PausedChanged");
+
+    let pause_result = client
+        .call_method(
+            Some("com.github.kanata.Switcher"),
+            "/com/github/kanata/Switcher",
+            Some("com.github.kanata.Switcher"),
+            "Pause",
+            &(),
+        )
+        .await;
+    assert!(pause_result.is_ok(), "DBus Pause failed: {:?}", pause_result.err());
+
+    let paused_msg = tokio::time::timeout(Duration::from_secs(2), paused_stream.next())
+        .await
+        .expect("PausedChanged signal timed out")
+        .expect("PausedChanged stream closed");
+    let paused: bool = paused_msg
+        .body()
+        .deserialize()
+        .expect("Failed to deserialize PausedChanged");
+    assert!(paused, "Expected paused=true");
+
+    let unpause_result = client
+        .call_method(
+            Some("com.github.kanata.Switcher"),
+            "/com/github/kanata/Switcher",
+            Some("com.github.kanata.Switcher"),
+            "Unpause",
+            &(),
+        )
+        .await;
+    assert!(unpause_result.is_ok(), "DBus Unpause failed: {:?}", unpause_result.err());
+
+    let unpaused_msg = tokio::time::timeout(Duration::from_secs(2), paused_stream.next())
+        .await
+        .expect("PausedChanged signal timed out")
+        .expect("PausedChanged stream closed");
+    let paused: bool = unpaused_msg
+        .body()
+        .deserialize()
+        .expect("Failed to deserialize PausedChanged");
+    assert!(!paused, "Expected paused=false");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_status_changed_focus_signal() {
+    use futures_util::StreamExt;
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+
+    let restart_handle = RestartHandle::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    register_dbus_service(
+        &service_connection,
+        kanata,
+        rules,
+        true,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+    )
+    .await
+    .expect("Failed to register service");
+
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&client).await.expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy.name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    })
+    .await
+    .expect("Timeout waiting for service registration");
+
+    let proxy = zbus::Proxy::new(
+        &client,
+        "com.github.kanata.Switcher",
+        "/com/github/kanata/Switcher",
+        "com.github.kanata.Switcher",
+    )
+    .await
+    .expect("Failed to create proxy");
+    let mut status_stream = proxy
+        .receive_signal("StatusChanged")
+        .await
+        .expect("Failed to subscribe to StatusChanged");
+
+    let focus_result = client
+        .call_method(
+            Some("com.github.kanata.Switcher"),
+            "/com/github/kanata/Switcher",
+            Some("com.github.kanata.Switcher"),
+            "WindowFocus",
+            &("test-app", "Test Window"),
+        )
+        .await;
+    assert!(focus_result.is_ok(), "DBus WindowFocus failed: {:?}", focus_result.err());
+
+    let mut focus_signal: Option<(String, Vec<String>, String)> = None;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let msg = tokio::time::timeout(Duration::from_secs(2), status_stream.next())
+            .await
+            .ok()
+            .flatten();
+        if let Some(message) = msg {
+            let (layer, virtual_keys, source): (String, Vec<String>, String) = message
+                .body()
+                .deserialize()
+                .expect("Failed to deserialize StatusChanged");
+            if source == "focus" {
+                focus_signal = Some((layer, virtual_keys, source));
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    let (layer, _virtual_keys, source) =
+        focus_signal.expect("Expected a StatusChanged signal with focus source");
+    assert_eq!(layer, "browser");
+    assert_eq!(source, "focus");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_handle_focus_event_ignored_when_paused() {
     let mock_server = MockKanataServer::start();
 
