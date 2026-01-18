@@ -10,6 +10,8 @@ Environment: (GNOME version, session type)
 - [ ] Indicator hides when disabled in prefs
 
 ## Menu actions
+- [ ] Pause toggle reflects daemon state on startup for a fresh daemon (switch to a native terminal, export `XDG_CURRENT_DESKTOP=GNOME`, `XDG_RUNTIME_DIR=/run/user/$(id -u)`, and `DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus`, start daemon, restart GNOME Shell, enable extension, open menu and confirm it shows unpaused without toggling)
+- [ ] Pause toggle reflects daemon state on startup for a pre-paused daemon (switch to a native terminal, export `XDG_CURRENT_DESKTOP=GNOME`, `XDG_RUNTIME_DIR=/run/user/$(id -u)`, and `DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus`, start daemon, run `kanata-switcher --pause`, restart GNOME Shell, enable extension, open menu and confirm it shows paused without toggling)
 - [ ] Pause toggle pauses daemon and updates indicator state
 - [ ] Unpause resumes processing
 - [ ] Settings opens extension preferences
