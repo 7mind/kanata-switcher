@@ -314,7 +314,7 @@
         };
       });
 
-      homeManagerModules.default = mkModule (cfg: lib: execArgs: {
+      homeModules.default = mkModule (cfg: lib: execArgs: {
         home.packages = [ cfg.package ]
           ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
 

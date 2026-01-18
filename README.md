@@ -213,7 +213,7 @@ Add flake input and import module:
   outputs = { nixpkgs, home-manager, kanata-switcher, ... }: {
     homeConfigurations."user" = home-manager.lib.homeManagerConfiguration {
       modules = [
-        kanata-switcher.homeManagerModules.default
+        kanata-switcher.homeModules.default
         # ...
       ];
     };
