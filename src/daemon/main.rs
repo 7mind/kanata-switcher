@@ -1,4 +1,7 @@
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
+use font8x8::{BASIC_FONTS, UnicodeFonts};
+use ksni::menu::{CheckmarkItem, StandardItem};
+use ksni::{Icon as SniIcon, MenuItem, Status as SniStatus, ToolTip, Tray, TrayService};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -7,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::tcp::OwnedWriteHalf;
@@ -130,6 +134,10 @@ struct Args {
     /// Do not auto-install GNOME extension
     #[arg(long)]
     no_install_gnome_extension: bool,
+
+    /// Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
+    #[arg(long)]
+    no_indicator: bool,
 
     /// Send a Restart request to an existing daemon and exit
     #[arg(long, conflicts_with_all = ["pause", "unpause"])]
@@ -623,6 +631,422 @@ impl StatusBroadcaster {
     }
 }
 
+// === SNI Indicator ===
+
+const SNI_ICON_SIZE: usize = 24;
+const SNI_GLYPH_SIZE: usize = 8;
+const SNI_GLYPH_Y: usize = (SNI_ICON_SIZE - SNI_GLYPH_SIZE) / 2;
+const SNI_GLYPH_MARGIN: usize = 3;
+const SNI_LAYER_X_SINGLE: usize = (SNI_ICON_SIZE - SNI_GLYPH_SIZE) / 2;
+const SNI_LAYER_X_DOUBLE: usize = SNI_GLYPH_MARGIN;
+const SNI_VK_X_DOUBLE: usize = SNI_ICON_SIZE - SNI_GLYPH_SIZE - SNI_GLYPH_MARGIN;
+const SNI_COLOR_LAYER: [u8; 4] = [255, 255, 255, 255];
+const SNI_COLOR_VK: [u8; 4] = [255, 0, 255, 255];
+const SNI_INFINITY_SYMBOL: char = '∞';
+const SNI_MAX_VK_COUNT_DIGIT: usize = 9;
+const SNI_MIN_MULTI_VK_COUNT: usize = 2;
+const SNI_INDICATOR_TITLE: &str = "Kanata Switcher";
+const SNI_INDICATOR_ID: &str = "kanata-switcher";
+
+#[derive(Clone, Debug)]
+struct SniIndicatorState {
+    last_status: StatusSnapshot,
+    focus_status: StatusSnapshot,
+    paused: bool,
+    show_focus_only: bool,
+}
+
+impl SniIndicatorState {
+    fn new(initial: StatusSnapshot) -> Self {
+        Self {
+            last_status: initial.clone(),
+            focus_status: initial,
+            paused: false,
+            show_focus_only: true,
+        }
+    }
+
+    fn update_status(&mut self, snapshot: StatusSnapshot) {
+        if snapshot.layer_source == LayerSource::Focus {
+            self.focus_status = snapshot.clone();
+        }
+        self.last_status = snapshot;
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    fn toggle_focus_only(&mut self) {
+        self.show_focus_only = !self.show_focus_only;
+    }
+
+    fn display_status(&self) -> StatusSnapshot {
+        if self.paused {
+            return self.last_status.clone();
+        }
+        if self.show_focus_only {
+            return self.focus_status.clone();
+        }
+        self.last_status.clone()
+    }
+}
+
+#[derive(Clone)]
+struct SniLocalControl {
+    runtime_handle: tokio::runtime::Handle,
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
+    restart_handle: RestartHandle,
+}
+
+#[derive(Clone)]
+struct SniDbusControl {
+    runtime_handle: tokio::runtime::Handle,
+    connection: Connection,
+    restart_handle: RestartHandle,
+}
+
+#[derive(Clone)]
+enum SniControl {
+    Local(SniLocalControl),
+    Dbus(SniDbusControl),
+}
+
+trait SniControlOps: Send + Sync {
+    fn restart(&self);
+    fn pause(&self);
+    fn unpause(&self);
+}
+
+impl SniControlOps for SniControl {
+    fn restart(&self) {
+        println!("[SNI] Restart requested");
+        match self {
+            SniControl::Local(control) => {
+                control.restart_handle.request();
+            }
+            SniControl::Dbus(control) => {
+                control.runtime_handle.block_on(async {
+                    if let Err(error) = send_control_command_with_connection(
+                        &control.connection,
+                        ControlCommand::Restart,
+                    )
+                    .await
+                    {
+                        eprintln!("[SNI] Failed to send restart: {}", error);
+                    }
+                });
+                control.restart_handle.request();
+            }
+        }
+    }
+
+    fn pause(&self) {
+        println!("[SNI] Pause requested");
+        match self {
+            SniControl::Local(control) => {
+                pause_daemon(
+                    &control.pause_broadcaster,
+                    &control.handler,
+                    &control.status_broadcaster,
+                    &control.kanata,
+                    &control.runtime_handle,
+                    "via SNI",
+                );
+            }
+            SniControl::Dbus(control) => {
+                control.runtime_handle.block_on(async {
+                    if let Err(error) = send_control_command_with_connection(
+                        &control.connection,
+                        ControlCommand::Pause,
+                    )
+                    .await
+                    {
+                        eprintln!("[SNI] Failed to send pause: {}", error);
+                    }
+                });
+            }
+        }
+    }
+
+    fn unpause(&self) {
+        println!("[SNI] Unpause requested");
+        match self {
+            SniControl::Local(control) => {
+                unpause_daemon(
+                    &control.pause_broadcaster,
+                    &control.kanata,
+                    &control.runtime_handle,
+                    "via SNI",
+                );
+            }
+            SniControl::Dbus(control) => {
+                control.runtime_handle.block_on(async {
+                    if let Err(error) = send_control_command_with_connection(
+                        &control.connection,
+                        ControlCommand::Unpause,
+                    )
+                    .await
+                    {
+                        eprintln!("[SNI] Failed to send unpause: {}", error);
+                    }
+                });
+            }
+        }
+    }
+}
+
+struct SniIndicator {
+    state: SniIndicatorState,
+    control: Arc<dyn SniControlOps>,
+}
+
+impl SniIndicator {
+    fn update_status(&mut self, snapshot: StatusSnapshot) {
+        self.state.update_status(snapshot);
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        self.state.set_paused(paused);
+    }
+
+    fn toggle_focus_only(&mut self) {
+        self.state.toggle_focus_only();
+    }
+
+    fn request_pause(&self) {
+        if self.state.paused {
+            self.control.unpause();
+        } else {
+            self.control.pause();
+        }
+    }
+
+    fn request_restart(&self) {
+        self.control.restart();
+    }
+
+    fn format_layer_letter(layer_name: &str) -> String {
+        let trimmed = layer_name.trim();
+        if trimmed.is_empty() {
+            return "?".to_string();
+        }
+        trimmed
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_else(|| "?".to_string())
+    }
+
+    fn format_virtual_keys(virtual_keys: &[String]) -> String {
+        let count = virtual_keys.len();
+        if count == 0 {
+            return String::new();
+        }
+        if count == 1 {
+            let name = virtual_keys[0].trim();
+            if name.is_empty() {
+                return String::new();
+            }
+            return name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_default();
+        }
+        if count < SNI_MIN_MULTI_VK_COUNT {
+            return String::new();
+        }
+        if count > SNI_MAX_VK_COUNT_DIGIT {
+            return SNI_INFINITY_SYMBOL.to_string();
+        }
+        count.to_string()
+    }
+
+    fn glyph_for_char(ch: char) -> [u8; 8] {
+        const INFINITY_GLYPH: [u8; 8] = [
+            0b00000000,
+            0b00111100,
+            0b01000010,
+            0b10011001,
+            0b10011001,
+            0b01000010,
+            0b00111100,
+            0b00000000,
+        ];
+        if ch == SNI_INFINITY_SYMBOL {
+            return INFINITY_GLYPH;
+        }
+        BASIC_FONTS
+            .get(ch)
+            .unwrap_or_else(|| BASIC_FONTS.get('?').unwrap_or([0; 8]))
+    }
+
+    fn draw_glyph(
+        buffer: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        glyph: [u8; 8],
+        color: [u8; 4],
+    ) {
+        for (row_index, row) in glyph.iter().enumerate() {
+            let dest_y = y + row_index;
+            if dest_y >= height {
+                continue;
+            }
+            for col_index in 0..SNI_GLYPH_SIZE {
+                let dest_x = x + col_index;
+                if dest_x >= width {
+                    continue;
+                }
+                if row & (1 << col_index) == 0 {
+                    continue;
+                }
+                let offset = (dest_y * width + dest_x) * 4;
+                buffer[offset] = color[0];
+                buffer[offset + 1] = color[1];
+                buffer[offset + 2] = color[2];
+                buffer[offset + 3] = color[3];
+            }
+        }
+    }
+
+    fn render_icon(layer_text: &str, vk_text: &str) -> SniIcon {
+        let mut buffer = vec![0u8; SNI_ICON_SIZE * SNI_ICON_SIZE * 4];
+        let layer_char = layer_text.chars().next().unwrap_or('?');
+        let vk_char = vk_text.chars().next();
+
+        if let Some(vk_char) = vk_char {
+            let layer_glyph = Self::glyph_for_char(layer_char);
+            let vk_glyph = Self::glyph_for_char(vk_char);
+            Self::draw_glyph(
+                &mut buffer,
+                SNI_ICON_SIZE,
+                SNI_ICON_SIZE,
+                SNI_LAYER_X_DOUBLE,
+                SNI_GLYPH_Y,
+                layer_glyph,
+                SNI_COLOR_LAYER,
+            );
+            Self::draw_glyph(
+                &mut buffer,
+                SNI_ICON_SIZE,
+                SNI_ICON_SIZE,
+                SNI_VK_X_DOUBLE,
+                SNI_GLYPH_Y,
+                vk_glyph,
+                SNI_COLOR_VK,
+            );
+        } else {
+            let layer_glyph = Self::glyph_for_char(layer_char);
+            Self::draw_glyph(
+                &mut buffer,
+                SNI_ICON_SIZE,
+                SNI_ICON_SIZE,
+                SNI_LAYER_X_SINGLE,
+                SNI_GLYPH_Y,
+                layer_glyph,
+                SNI_COLOR_LAYER,
+            );
+        }
+
+        SniIcon {
+            width: SNI_ICON_SIZE as i32,
+            height: SNI_ICON_SIZE as i32,
+            data: buffer,
+        }
+    }
+
+    fn display_strings(&self) -> (String, String) {
+        let status = self.state.display_status();
+        let layer_text = Self::format_layer_letter(&status.layer);
+        let vk_text = Self::format_virtual_keys(&status.virtual_keys);
+        (layer_text, vk_text)
+    }
+
+    fn tooltip_text(&self) -> String {
+        let status = self.state.display_status();
+        if status.virtual_keys.is_empty() {
+            return format!("Layer: {}", status.layer);
+        }
+        format!(
+            "Layer: {}\nVirtual keys: {}",
+            status.layer,
+            status.virtual_keys.join(", ")
+        )
+    }
+}
+
+impl Tray for SniIndicator {
+    fn id(&self) -> String {
+        SNI_INDICATOR_ID.to_string()
+    }
+
+    fn title(&self) -> String {
+        SNI_INDICATOR_TITLE.to_string()
+    }
+
+    fn status(&self) -> SniStatus {
+        SniStatus::Active
+    }
+
+    fn icon_pixmap(&self) -> Vec<SniIcon> {
+        let (layer_text, vk_text) = self.display_strings();
+        vec![Self::render_icon(&layer_text, &vk_text)]
+    }
+
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: SNI_INDICATOR_TITLE.to_string(),
+            description: self.tooltip_text(),
+            ..ToolTip::default()
+        }
+    }
+
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        vec![
+            MenuItem::Checkmark(CheckmarkItem {
+                label: "Pause".to_string(),
+                checked: self.state.paused,
+                activate: Box::new(|this| {
+                    this.request_pause();
+                }),
+                ..CheckmarkItem::default()
+            }),
+            MenuItem::Checkmark(CheckmarkItem {
+                label: "Show app layer only".to_string(),
+                checked: self.state.show_focus_only,
+                activate: Box::new(|this| {
+                    this.toggle_focus_only();
+                }),
+                ..CheckmarkItem::default()
+            }),
+            MenuItem::Separator,
+            MenuItem::Standard(StandardItem {
+                label: "Restart".to_string(),
+                activate: Box::new(|this| {
+                    this.request_restart();
+                }),
+                ..StandardItem::default()
+            }),
+        ]
+    }
+
+    fn watcher_online(&self) {
+        println!("[SNI] StatusNotifierWatcher online");
+    }
+
+    fn watcher_offine(&self) -> bool {
+        eprintln!("[SNI] StatusNotifierWatcher offline");
+        true
+    }
+}
+
 /// Execute focus actions in order
 async fn execute_focus_actions(kanata: &KanataClient, actions: FocusActions) {
     for action in actions.actions {
@@ -651,6 +1075,97 @@ fn extract_focus_layer(actions: &FocusActions) -> Option<String> {
             last
         }
     })
+}
+
+fn update_status_for_focus(
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    win: &WindowInfo,
+    default_layer: &str,
+) -> Option<FocusActions> {
+    let (actions, virtual_keys, focus_layer) = {
+        let mut handler = handler.lock().unwrap();
+        let actions = handler.handle(win, default_layer);
+        let virtual_keys = handler.current_virtual_keys();
+        let focus_layer = actions
+            .as_ref()
+            .and_then(|focus_actions| extract_focus_layer(focus_actions));
+        (actions, virtual_keys, focus_layer)
+    };
+
+    status_broadcaster.update_virtual_keys(virtual_keys);
+    if let Some(layer) = focus_layer {
+        status_broadcaster.update_focus_layer(layer);
+    }
+
+    actions
+}
+
+fn handle_focus_event(
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    pause_broadcaster: &PauseBroadcaster,
+    win: &WindowInfo,
+    default_layer: &str,
+) -> Option<FocusActions> {
+    if pause_broadcaster.is_paused() {
+        return None;
+    }
+    update_status_for_focus(handler, status_broadcaster, win, default_layer)
+}
+
+fn pause_daemon(
+    pause_broadcaster: &PauseBroadcaster,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    kanata: &KanataClient,
+    runtime_handle: &tokio::runtime::Handle,
+    request_label: &str,
+) {
+    if !pause_broadcaster.set_paused(true) {
+        println!("[Pause] Pause requested {} (already paused)", request_label);
+        return;
+    }
+    println!("[Pause] Pausing daemon");
+    let virtual_keys = {
+        let mut handler = handler.lock().unwrap();
+        let keys = handler.current_virtual_keys();
+        handler.reset();
+        keys
+    };
+    let status_broadcaster = status_broadcaster.clone();
+    let kanata = kanata.clone();
+    runtime_handle.block_on(async move {
+        let default_layer = kanata.default_layer().await.unwrap_or_default();
+
+        for vk in virtual_keys.iter().rev() {
+            kanata.act_on_fake_key(vk, "Release").await;
+        }
+
+        if !default_layer.is_empty() {
+            let _ = kanata.change_layer(&default_layer).await;
+        }
+
+        status_broadcaster.set_paused_status(default_layer);
+        kanata.pause_disconnect().await;
+    });
+}
+
+fn unpause_daemon(
+    pause_broadcaster: &PauseBroadcaster,
+    kanata: &KanataClient,
+    runtime_handle: &tokio::runtime::Handle,
+    request_label: &str,
+) {
+    if !pause_broadcaster.set_paused(false) {
+        println!("[Pause] Unpause requested {} (already running)", request_label);
+        return;
+    }
+    println!("[Pause] Resuming daemon");
+    let kanata = kanata.clone();
+    runtime_handle.block_on(async move {
+        kanata.unpause_connect().await;
+    });
 }
 
 // === Kanata Client ===
@@ -1454,8 +1969,9 @@ enum WaylandProtocol {
 
 async fn run_wayland(
     kanata: KanataClient,
-    rules: Vec<Rule>,
-    quiet_focus: bool,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = WaylandConnection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
@@ -1484,12 +2000,12 @@ async fn run_wayland(
 
     println!("[Wayland] Listening for focus events...");
 
-    let mut handler = FocusHandler::new(rules, quiet_focus);
-
     // Process initial state
     let win = state.get_active_window();
     let default_layer = kanata.default_layer_sync();
-    if let Some(actions) = handler.handle(&win, &default_layer) {
+    if let Some(actions) =
+        handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
+    {
         execute_focus_actions(&kanata, actions).await;
     }
 
@@ -1506,7 +2022,9 @@ async fn run_wayland(
         let win = state.get_active_window();
         let default_layer = kanata.default_layer_sync();
 
-        if let Some(actions) = handler.handle(&win, &default_layer) {
+        if let Some(actions) =
+            handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
+        {
             execute_focus_actions(&kanata, actions).await;
         }
     }
@@ -1622,19 +2140,20 @@ impl X11State {
 
 async fn run_x11(
     kanata: KanataClient,
-    rules: Vec<Rule>,
-    quiet_focus: bool,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = X11State::new()?;
 
     println!("[X11] Connected to display");
 
-    let mut handler = FocusHandler::new(rules, quiet_focus);
-
     // Process initial state at boot
     let win = state.get_active_window();
     let default_layer = kanata.default_layer_sync();
-    if let Some(actions) = handler.handle(&win, &default_layer) {
+    if let Some(actions) =
+        handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
+    {
         execute_focus_actions(&kanata, actions).await;
     }
 
@@ -1650,7 +2169,9 @@ async fn run_x11(
                 let win = state.get_active_window();
                 let default_layer = kanata.default_layer_sync();
 
-                if let Some(actions) = handler.handle(&win, &default_layer) {
+                if let Some(actions) =
+                    handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
+                {
                     execute_focus_actions(&kanata, actions).await;
                 }
             }
@@ -1661,6 +2182,75 @@ async fn run_x11(
                 eprintln!("[X11] Connection error: {}", e);
                 return Err(e.into());
             }
+        }
+    }
+}
+
+fn start_sni_indicator(
+    control: SniControl,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
+) -> Option<ksni::Handle<SniIndicator>> {
+    println!("[SNI] Starting StatusNotifier indicator");
+    let initial_status = status_broadcaster.snapshot();
+    let control_handle: Arc<dyn SniControlOps> = Arc::new(control);
+    let indicator = SniIndicator {
+        state: SniIndicatorState::new(initial_status),
+        control: control_handle,
+    };
+    let service = TrayService::new(indicator);
+    let handle = service.handle();
+
+    let pause_initial = pause_broadcaster.is_paused();
+    handle.update(|state| state.set_paused(pause_initial));
+
+    let status_handle = handle.clone();
+    let mut status_receiver = status_broadcaster.subscribe();
+    tokio::spawn(async move {
+        loop {
+            if status_receiver.changed().await.is_err() {
+                break;
+            }
+            let snapshot = status_receiver.borrow().clone();
+            status_handle.update(|state| state.update_status(snapshot));
+        }
+    });
+
+    let pause_handle = handle.clone();
+    let mut pause_receiver = pause_broadcaster.subscribe();
+    tokio::spawn(async move {
+        loop {
+            if pause_receiver.changed().await.is_err() {
+                break;
+            }
+            let paused = *pause_receiver.borrow();
+            pause_handle.update(|state| state.set_paused(paused));
+        }
+    });
+
+    thread::spawn(move || match service.run() {
+        Ok(()) => println!("[SNI] Indicator stopped"),
+        Err(error) => eprintln!("[SNI] Failed to run indicator: {}", error),
+    });
+
+    Some(handle)
+}
+
+struct SniGuard {
+    handle: Option<ksni::Handle<SniIndicator>>,
+}
+
+impl SniGuard {
+    fn new(handle: Option<ksni::Handle<SniIndicator>>) -> Self {
+        Self { handle }
+    }
+}
+
+impl Drop for SniGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            println!("[SNI] Shutting down indicator");
+            handle.shutdown();
         }
     }
 }
@@ -2186,20 +2776,12 @@ impl DbusWindowFocusService {
             .block_on(async { self.kanata.default_layer().await })
             .unwrap_or_default();
 
-        let (actions, virtual_keys, focus_layer) = {
-            let mut handler = self.handler.lock().unwrap();
-            let actions = handler.handle(&win, &default_layer);
-            let virtual_keys = handler.current_virtual_keys();
-            let focus_layer = actions
-                .as_ref()
-                .and_then(|focus_actions| extract_focus_layer(focus_actions));
-            (actions, virtual_keys, focus_layer)
-        };
-
-        self.status_broadcaster.update_virtual_keys(virtual_keys);
-        if let Some(layer) = focus_layer {
-            self.status_broadcaster.update_focus_layer(layer);
-        }
+        let actions = update_status_for_focus(
+            &self.handler,
+            &self.status_broadcaster,
+            &win,
+            &default_layer,
+        );
 
         if let Some(actions) = actions {
             let kanata = self.kanata.clone();
@@ -2241,45 +2823,23 @@ impl DbusWindowFocusService {
     }
 
     async fn pause(&self) {
-        if !self.pause_broadcaster.set_paused(true) {
-            println!("[Pause] Pause requested via DBus (already paused)");
-            return;
-        }
-        println!("[Pause] Pausing daemon");
-        let virtual_keys = {
-            let mut handler = self.handler.lock().unwrap();
-            let keys = handler.current_virtual_keys();
-            handler.reset();
-            keys
-        };
-        let status_broadcaster = self.status_broadcaster.clone();
-        let kanata = self.kanata.clone();
-        self.runtime_handle.block_on(async move {
-            let default_layer = kanata.default_layer().await.unwrap_or_default();
-
-            for vk in virtual_keys.iter().rev() {
-                kanata.act_on_fake_key(vk, "Release").await;
-            }
-
-            if !default_layer.is_empty() {
-                let _ = kanata.change_layer(&default_layer).await;
-            }
-
-            status_broadcaster.set_paused_status(default_layer);
-            kanata.pause_disconnect().await;
-        });
+        pause_daemon(
+            &self.pause_broadcaster,
+            &self.handler,
+            &self.status_broadcaster,
+            &self.kanata,
+            &self.runtime_handle,
+            "via DBus",
+        );
     }
 
     async fn unpause(&self) {
-        if !self.pause_broadcaster.set_paused(false) {
-            println!("[Pause] Unpause requested via DBus (already running)");
-            return;
-        }
-        println!("[Pause] Resuming daemon");
-        let kanata = self.kanata.clone();
-        self.runtime_handle.block_on(async move {
-            kanata.unpause_connect().await;
-        });
+        unpause_daemon(
+            &self.pause_broadcaster,
+            &self.kanata,
+            &self.runtime_handle,
+            "via DBus",
+        );
     }
 }
 
@@ -2568,6 +3128,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     let status_broadcaster = StatusBroadcaster::new();
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let runtime_handle = tokio::runtime::Handle::current();
     let kanata = KanataClient::new(
         &args.host,
         args.port,
@@ -2576,6 +3137,14 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         status_broadcaster.clone(),
     );
     kanata.connect_with_retry().await;
+
+    let mut focus_handler: Option<Arc<Mutex<FocusHandler>>> = None;
+    if matches!(env, Environment::Wayland | Environment::X11) {
+        focus_handler = Some(Arc::new(Mutex::new(FocusHandler::new(
+            config.rules.clone(),
+            quiet_focus,
+        ))));
+    }
 
     // Create shutdown guard - will switch to default layer when dropped
     let _shutdown_guard = ShutdownGuard::new(kanata.clone());
@@ -2607,6 +3176,48 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         std::process::exit(0);
     });
 
+    let enable_indicator = !args.no_indicator && env != Environment::Gnome;
+    if args.no_indicator && env != Environment::Gnome {
+        println!("[SNI] Indicator disabled via --no-indicator");
+    }
+
+    let sni_control = if enable_indicator {
+        match env {
+            Environment::Kde => match Connection::session().await {
+                Ok(connection) => Some(SniControl::Dbus(SniDbusControl {
+                    runtime_handle: runtime_handle.clone(),
+                    connection,
+                    restart_handle: restart_handle.clone(),
+                })),
+                Err(error) => {
+                    eprintln!("[SNI] Failed to connect to session bus: {}", error);
+                    None
+                }
+            },
+            Environment::Wayland | Environment::X11 => {
+                let handler = focus_handler
+                    .clone()
+                    .expect("Focus handler missing for non-GNOME backend");
+                Some(SniControl::Local(SniLocalControl {
+                    runtime_handle: runtime_handle.clone(),
+                    kanata: kanata.clone(),
+                    handler,
+                    status_broadcaster: status_broadcaster.clone(),
+                    pause_broadcaster: pause_broadcaster.clone(),
+                    restart_handle: restart_handle.clone(),
+                }))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let sni_handle = sni_control.and_then(|control| {
+        start_sni_indicator(control, status_broadcaster.clone(), pause_broadcaster.clone())
+    });
+    let _sni_guard = SniGuard::new(sni_handle);
+
     match env {
         Environment::Gnome => {
             return run_gnome(
@@ -2631,10 +3242,12 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             .await;
         }
         Environment::Wayland => {
-            run_wayland(kanata, config.rules, quiet_focus).await?;
+            let handler = focus_handler.expect("Focus handler missing for Wayland backend");
+            run_wayland(kanata, handler, status_broadcaster, pause_broadcaster).await?;
         }
         Environment::X11 => {
-            run_x11(kanata, config.rules, quiet_focus).await?;
+            let handler = focus_handler.expect("Focus handler missing for X11 backend");
+            run_x11(kanata, handler, status_broadcaster, pause_broadcaster).await?;
         }
         Environment::Unknown => {
             eprintln!("[Error] Could not detect display environment");

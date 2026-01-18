@@ -8,6 +8,7 @@
 4. **Auto-detect default layer** - On connect, Kanata sends initial `LayerChange`; daemon stores this as fallback when no rule matches
 5. **GNOME extension auto-install by default** - Controlled by `--[no-]install-gnome-extension` flags
 6. **CLI control commands** - `--restart`, `--pause`, `--unpause` send DBus requests to an existing daemon and exit
+7. **SNI indicator for non-GNOME** - StatusNotifier item with Pause/Restart and “Show app layer only” menu toggle (disable with `--no-indicator`)
 
 ## Rust Dependencies
 
@@ -129,6 +130,10 @@ Top bar indicator:
 - Indicator menu includes Pause, Settings, and Restart; Pause calls daemon DBus `Pause`/`Unpause`
 - Pause handling releases managed virtual keys, switches to the default layer, disconnects from kanata, clears handler state, and ignores focus events until unpaused
 - GJS test also validates focus-only selection logic via `selectStatus()`
+
+SNI indicator (non-GNOME):
+- Optional StatusNotifier item for KDE/wlroots/COSMIC/X11; menu includes Pause/Restart and “Show app layer only”
+- Uses the same layer + virtual key formatting as GNOME; pause toggles through local handlers on non-DBus backends
 
 ## Virtual Key Support
 

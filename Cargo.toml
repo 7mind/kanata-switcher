@@ -29,6 +29,8 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-backend = "0.3"
 wayland-scanner = "0.31"
 x11rb = "0.13"
+ksni = "0.2.2"
+font8x8 = "0.3.1"
 
 [dev-dependencies]
 proptest = "1"

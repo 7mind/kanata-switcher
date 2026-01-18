@@ -1,5 +1,6 @@
 use super::*;
 use clap::Parser;
+use std::sync::{Arc, Mutex};
 use proptest::prelude::*;
 
 fn win(class: &str, title: &str) -> WindowInfo {
@@ -159,6 +160,216 @@ fn test_control_command_unpause() {
 fn test_control_command_none() {
     let args = Args::parse_from(["kanata-switcher"]);
     assert_eq!(resolve_control_command(&args), None);
+}
+
+#[test]
+fn test_sni_format_layer_letter() {
+    assert_eq!(SniIndicator::format_layer_letter("base"), "B");
+    assert_eq!(SniIndicator::format_layer_letter(""), "?");
+    assert_eq!(SniIndicator::format_layer_letter("  "), "?");
+}
+
+#[test]
+fn test_sni_format_virtual_keys() {
+    assert_eq!(SniIndicator::format_virtual_keys(&[]), "");
+    assert_eq!(
+        SniIndicator::format_virtual_keys(&[String::from("vk_media")]),
+        "V"
+    );
+    assert_eq!(
+        SniIndicator::format_virtual_keys(&[String::from("a"), String::from("b")]),
+        "2"
+    );
+    let keys = vec![
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    assert_eq!(SniIndicator::format_virtual_keys(&keys), "∞");
+}
+
+#[derive(Clone, Default)]
+struct MockSniControlCounts {
+    restart: usize,
+    pause: usize,
+    unpause: usize,
+}
+
+#[derive(Clone)]
+struct MockSniControl {
+    counts: Arc<Mutex<MockSniControlCounts>>,
+}
+
+impl MockSniControl {
+    fn new() -> Self {
+        Self {
+            counts: Arc::new(Mutex::new(MockSniControlCounts::default())),
+        }
+    }
+
+    fn counts(&self) -> MockSniControlCounts {
+        self.counts.lock().unwrap().clone()
+    }
+}
+
+impl SniControlOps for MockSniControl {
+    fn restart(&self) {
+        self.counts.lock().unwrap().restart += 1;
+    }
+
+    fn pause(&self) {
+        self.counts.lock().unwrap().pause += 1;
+    }
+
+    fn unpause(&self) {
+        self.counts.lock().unwrap().unpause += 1;
+    }
+}
+
+#[test]
+fn test_sni_indicator_state_focus_only() {
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let mut state = SniIndicatorState::new(initial.clone());
+    assert_eq!(state.display_status().layer, "base");
+
+    let focus_status = StatusSnapshot {
+        layer: "browser".to_string(),
+        virtual_keys: vec!["vk_browser".to_string()],
+        layer_source: LayerSource::Focus,
+    };
+    state.update_status(focus_status.clone());
+    assert_eq!(state.display_status().layer, "browser");
+
+    state.toggle_focus_only();
+    assert_eq!(state.display_status().layer, "browser");
+
+    let external_status = StatusSnapshot {
+        layer: "external".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    state.update_status(external_status.clone());
+    assert_eq!(state.display_status().layer, "external");
+
+    state.toggle_focus_only();
+    assert_eq!(state.display_status().layer, "browser");
+
+    state.set_paused(true);
+    assert_eq!(state.display_status().layer, "external");
+}
+
+#[test]
+fn test_sni_menu_actions_dispatch_control() {
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let control = MockSniControl::new();
+    let control_counts = control.clone();
+    let mut indicator = SniIndicator {
+        state: SniIndicatorState::new(initial),
+        control: Arc::new(control),
+    };
+
+    let menu = indicator.menu();
+    let mut found_pause = false;
+    let mut found_restart = false;
+    for item in menu {
+        match item {
+            MenuItem::Checkmark(check) if check.label == "Pause" => {
+                found_pause = true;
+                (check.activate)(&mut indicator);
+            }
+            MenuItem::Standard(standard) if standard.label == "Restart" => {
+                found_restart = true;
+                (standard.activate)(&mut indicator);
+            }
+            _ => {}
+        }
+    }
+
+    assert!(found_pause);
+    assert!(found_restart);
+    let counts = control_counts.counts();
+    assert_eq!(counts.pause, 1);
+    assert_eq!(counts.restart, 1);
+}
+
+#[test]
+fn test_sni_menu_toggle_affects_display() {
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let control = MockSniControl::new();
+    let mut indicator = SniIndicator {
+        state: SniIndicatorState::new(initial),
+        control: Arc::new(control),
+    };
+
+    let focus_status = StatusSnapshot {
+        layer: "browser".to_string(),
+        virtual_keys: vec!["vk_browser".to_string()],
+        layer_source: LayerSource::Focus,
+    };
+    indicator.update_status(focus_status);
+
+    let (layer_text, _) = indicator.display_strings();
+    assert_eq!(layer_text, "B");
+
+    let external_status = StatusSnapshot {
+        layer: "external".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    indicator.update_status(external_status);
+
+    indicator.toggle_focus_only();
+    let (layer_text, vk_text) = indicator.display_strings();
+    assert_eq!(layer_text, "E");
+    assert!(vk_text.is_empty());
+
+    indicator.toggle_focus_only();
+    let (layer_text, vk_text) = indicator.display_strings();
+    assert_eq!(layer_text, "B");
+    assert_eq!(vk_text, "V");
+
+    let tooltip = indicator.tooltip_text();
+    assert!(tooltip.contains("Layer:"));
+}
+
+#[test]
+fn test_update_status_for_focus_updates_snapshot() {
+    let rules = vec![rule(Some("firefox"), None, Some("browser"))];
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+
+    let win = win("firefox", "");
+    let actions = update_status_for_focus(&handler, &status_broadcaster, &win, "default");
+    assert!(actions.is_some());
+
+    let snapshot = status_broadcaster.snapshot();
+    assert_eq!(snapshot.layer, "browser");
+    assert_eq!(snapshot.layer_source, LayerSource::Focus);
+}
+
+#[test]
+fn test_paused_status_resets_virtual_keys_and_source() {
+    let status_broadcaster = StatusBroadcaster::new();
+    status_broadcaster.update_layer("external".to_string(), LayerSource::External);
+    status_broadcaster.update_virtual_keys(vec!["vk_browser".to_string()]);
+    status_broadcaster.set_paused_status("base".to_string());
+    let snapshot = status_broadcaster.snapshot();
+    assert_eq!(snapshot.layer, "base");
+    assert!(snapshot.virtual_keys.is_empty());
+    assert_eq!(snapshot.layer_source, LayerSource::External);
 }
 
 #[test]

@@ -35,6 +35,7 @@ GNOME Shell now supports an optional top bar indicator for the active layer and 
 Extension settings also include a focus-only mode so the indicator reflects kanata-switcher focus rules instead of external kanata layer changes.
 The GNOME indicator menu now includes Settings and Restart (re-initializes the daemon).
 The GNOME indicator menu includes a Pause toggle that suspends focus processing until unpaused.
+Non-GNOME environments now show an optional StatusNotifier (SNI) indicator with Pause/Restart and a “Show app layer only” toggle in the menu (disable with `--no-indicator`).
 
 ---
 
@@ -374,6 +375,7 @@ For non-Nix / NixOS systems, install the binary and configure the systemd user s
 --quiet-focus                Suppress focus messages only
 --install-gnome-extension    Auto-install GNOME extension if missing (default)
 --no-install-gnome-extension Do not auto-install GNOME extension
+--no-indicator               Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
 --restart                    Send a Restart request to an existing daemon and exit
 --pause                      Send a Pause request to an existing daemon and exit
 --unpause                    Send an Unpause request to an existing daemon and exit

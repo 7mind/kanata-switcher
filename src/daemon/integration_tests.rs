@@ -1103,6 +1103,124 @@ async fn test_dbus_pause_unpause() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_handle_focus_event_ignored_when_paused() {
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    pause_broadcaster.set_paused(true);
+    let win = WindowInfo {
+        class: "test-app".to_string(),
+        title: "Test Window".to_string(),
+    };
+    let actions = handle_focus_event(
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &win,
+        "default",
+    );
+    assert!(actions.is_none(), "Expected no actions while paused");
+    let msg = mock_server.recv_timeout(Duration::from_millis(500));
+    assert!(msg.is_none(), "Expected no Kanata messages while paused");
+
+    pause_broadcaster.set_paused(false);
+    let actions = handle_focus_event(
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &win,
+        "default",
+    );
+    assert!(actions.is_some(), "Expected actions after unpause");
+    if let Some(actions) = actions {
+        execute_focus_actions(&kanata, actions).await;
+    }
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "browser".to_string() }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_returns_error_without_service() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+    let client = Builder::address(address)
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    let result = send_control_command_with_connection(&client, ControlCommand::Restart).await;
+    assert!(result.is_err(), "Expected error when service is missing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_unfocus_ignored_when_paused() {
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: Some("browser".to_string()),
+        virtual_key: Some("vk_browser".to_string()),
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    pause_broadcaster.set_paused(true);
+    let unfocus = WindowInfo::default();
+    let actions = handle_focus_event(
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &unfocus,
+        "default",
+    );
+    assert!(actions.is_none(), "Expected no actions while paused");
+    let msg = mock_server.recv_timeout(Duration::from_millis(500));
+    assert!(msg.is_none(), "Expected no Kanata messages while paused");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_control_command_pause_unpause_private_dbus() {
     use zbus::connection::Builder;
 
