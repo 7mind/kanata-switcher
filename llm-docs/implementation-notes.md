@@ -9,6 +9,7 @@
 5. **GNOME extension auto-install by default** - Controlled by `--[no-]install-gnome-extension` flags
 6. **CLI control commands** - `--restart`, `--pause`, `--unpause` send DBus requests to an existing daemon and exit
 7. **SNI indicator for non-GNOME** - StatusNotifier item with Pause/Restart and “Show app layer only” menu toggle (disable with `--no-indicator`)
+8. **Autostart fallback** - `--install-autostart` writes a user autostart `.desktop` entry with the daemon args you passed (absolute Exec path); `--uninstall-autostart` removes it
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 

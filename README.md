@@ -377,6 +377,21 @@ For non-Nix / NixOS systems, install the binary and configure the systemd user s
    systemctl --user enable --now kanata-switcher
    ```
 
+#### Autostart (non-systemd)
+
+If you don't use systemd user services or prefer GUI-managed autostart entries, install a user-level autostart entry:
+
+```bash
+~/.cargo/bin/kanata-switcher --quiet-focus -p 10000 --install-autostart
+```
+
+This writes `~/.config/autostart/kanata-switcher.desktop` with an absolute `Exec` path and the same daemon options you
+passed on the command line. To update the entry, rerun the install command with new options. To remove it:
+
+```bash
+kanata-switcher --uninstall-autostart
+```
+
 ### Daemon Options
 
 ```
@@ -385,6 +400,8 @@ For non-Nix / NixOS systems, install the binary and configure the systemd user s
 -c, --config PATH            Config file path
 -q, --quiet                  Suppress focus/layer-switch messages
 --quiet-focus                Suppress focus messages only
+--install-autostart          Install autostart desktop entry and exit
+--uninstall-autostart        Uninstall autostart desktop entry and exit
 --install-gnome-extension    Auto-install GNOME extension if missing (default)
 --no-install-gnome-extension Do not auto-install GNOME extension
 --no-indicator               Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
