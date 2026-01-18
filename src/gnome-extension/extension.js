@@ -10,6 +10,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { formatLayerLetter, formatVirtualKeys, selectStatus } from './format.js';
+import { unpackSingleBoolean } from './dbus.js';
 
 const DBUS_NAME = 'com.github.kanata.Switcher';
 const DBUS_PATH = '/com/github/kanata/Switcher';
@@ -326,7 +327,7 @@ export default class KanataSwitcherExtension extends Extension {
         -1,
         null
       );
-      const paused = result.deep_unpack();
+      const paused = unpackSingleBoolean(result);
       this._setPaused(paused);
     } catch (error) {
       console.error(`[KanataSwitcher] Failed to read pause state: ${error}`);

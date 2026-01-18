@@ -151,6 +151,7 @@
               nativeBuildInputs = [ pkgs.gjs ];
             } ''
               KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-format.js}
+              KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-dbus.js}
               touch $out
             '';
           };

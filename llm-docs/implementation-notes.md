@@ -132,6 +132,7 @@ Top bar indicator:
 - Schemas must be compiled (`schemas/gschemas.compiled`) for `getSettings()` to work; build/install paths run `glib-compile-schemas`
 - Preferences UI imports `ExtensionPreferences` from `resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js`
 - Character formatting lives in `src/gnome-extension/format.js` with a GJS test in `tests/gnome-extension-format.js`
+- DBus unpacking helper lives in `src/gnome-extension/dbus.js` with a GJS test in `tests/gnome-extension-dbus.js`
 - Display format (GNOME + SNI):
   - Layer glyph: first letter of current layer (uppercase), `?` if empty/unknown.
   - Virtual keys glyph:

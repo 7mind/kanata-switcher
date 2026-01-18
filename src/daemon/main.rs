@@ -153,15 +153,15 @@ struct Args {
     #[arg(long, conflicts_with_all = ["install_autostart", "restart", "pause", "unpause"])]
     uninstall_autostart: bool,
 
-    /// Send a Restart request to an existing daemon and exit
+    /// Send Restart request to an existing daemon and exit
     #[arg(long, conflicts_with_all = ["pause", "unpause"])]
     restart: bool,
 
-    /// Send a Pause request to an existing daemon and exit
+    /// Send Pause request to an existing daemon and exit
     #[arg(long, conflicts_with_all = ["restart", "unpause"])]
     pause: bool,
 
-    /// Send an Unpause request to an existing daemon and exit
+    /// Send Unpause request to an existing daemon and exit
     #[arg(long, conflicts_with_all = ["restart", "pause"])]
     unpause: bool,
 }
