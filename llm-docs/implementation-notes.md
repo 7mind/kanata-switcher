@@ -10,6 +10,8 @@
 6. **CLI control commands** - `--restart`, `--pause`, `--unpause` send DBus requests to an existing daemon and exit
 7. **SNI indicator for non-GNOME** - StatusNotifier item with Pause/Restart and “Show app layer only” menu toggle (disable with `--no-indicator`)
 
+QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
+
 ## Rust Dependencies
 
 Key crates:
