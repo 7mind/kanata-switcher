@@ -7,6 +7,7 @@ fn win(class: &str, title: &str) -> WindowInfo {
     WindowInfo {
         class: class.to_string(),
         title: title.to_string(),
+        is_native_terminal: false,
     }
 }
 
@@ -14,6 +15,7 @@ fn rule(class: Option<&str>, title: Option<&str>, layer: Option<&str>) -> Rule {
     Rule {
         class: class.map(String::from),
         title: title.map(String::from),
+        on_native_terminal: None,
         layer: layer.map(String::from),
         virtual_key: None,
         raw_vk_action: None,
@@ -25,6 +27,7 @@ fn rule_vk(class: Option<&str>, virtual_key: &str) -> Rule {
     Rule {
         class: class.map(String::from),
         title: None,
+        on_native_terminal: None,
         layer: None,
         virtual_key: Some(virtual_key.to_string()),
         raw_vk_action: None,
@@ -36,6 +39,7 @@ fn rule_raw_vk(class: Option<&str>, raw_vk_action: Vec<(&str, &str)>) -> Rule {
     Rule {
         class: class.map(String::from),
         title: None,
+        on_native_terminal: None,
         layer: None,
         virtual_key: None,
         raw_vk_action: Some(
@@ -76,7 +80,7 @@ fn get_raw_vk_actions(actions: &FocusActions) -> Vec<(String, String)> {
 #[test]
 fn test_basic_layer_match() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
     assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("browser".to_string())]);
@@ -85,7 +89,7 @@ fn test_basic_layer_match() {
 #[test]
 fn test_no_match_uses_default() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("default".to_string())]);
@@ -94,7 +98,7 @@ fn test_no_match_uses_default() {
 #[test]
 fn test_same_window_no_action() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     handler.handle(&win("firefox", "tab1"), "default");
     let actions = handler.handle(&win("firefox", "tab1"), "default");
@@ -104,7 +108,7 @@ fn test_same_window_no_action() {
 #[test]
 fn test_same_rule_different_window_no_action() {
     let rules = vec![rule(None, None, Some("global"))];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", "tab1"), "default").unwrap();
     assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("global".to_string())]);
@@ -118,12 +122,13 @@ fn test_same_rule_different_window_no_action_with_vk_and_raw() {
     let rules = vec![Rule {
         class: None,
         title: None,
+        on_native_terminal: None,
         layer: Some("global".to_string()),
         virtual_key: Some("vk_global".to_string()),
         raw_vk_action: Some(vec![("vk_raw".to_string(), "Tap".to_string())]),
         fallthrough: false,
     }];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", "tab1"), "default").unwrap();
     assert_eq!(
@@ -144,7 +149,7 @@ fn test_title_change_triggers_action() {
         rule(Some("kitty"), Some("vim"), Some("vim")),
         rule(Some("kitty"), None, Some("terminal")),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", "bash"), "default").unwrap();
     assert_eq!(get_layers(&actions), vec!["terminal".to_string()]);
@@ -158,12 +163,13 @@ fn test_unfocus_releases_vk_and_switches_to_default() {
     let rules = vec![Rule {
         class: Some("firefox".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: Some("vk_browser".to_string()),
         raw_vk_action: None,
         fallthrough: false,
     }];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     handler.handle(&win("firefox", ""), "default");
     let actions = handler.handle(&win("", ""), "default").unwrap();
@@ -173,6 +179,54 @@ fn test_unfocus_releases_vk_and_switches_to_default() {
         FocusAction::ChangeLayer("default".to_string()),
     ]);
     assert_eq!(actions.new_managed_vks, Vec::<String>::new());
+}
+
+#[test]
+fn test_native_terminal_rule_applies_actions() {
+    let rules = vec![rule(Some("kitty"), None, Some("terminal"))];
+    let native_rule = Some(NativeTerminalRule {
+        layer: "tty".to_string(),
+        virtual_key: Some("vk_tty".to_string()),
+        raw_vk_action: vec![("vk_notify".to_string(), "Tap".to_string())],
+    });
+    let mut handler = FocusHandler::new(rules, native_rule, true);
+
+    let actions = handler
+        .handle(
+            &WindowInfo {
+                class: String::new(),
+                title: String::new(),
+                is_native_terminal: true,
+            },
+            "default",
+        )
+        .unwrap();
+
+    assert!(has_action(&actions, &FocusAction::ChangeLayer("tty".to_string())));
+    assert!(has_action(&actions, &FocusAction::PressVk("vk_tty".to_string())));
+    assert!(has_action(
+        &actions,
+        &FocusAction::RawVkAction("vk_notify".to_string(), "Tap".to_string())
+    ));
+}
+
+#[test]
+fn test_native_terminal_without_rule_uses_default() {
+    let rules = vec![rule(Some("kitty"), None, Some("terminal"))];
+    let mut handler = FocusHandler::new(rules, None, true);
+
+    let actions = handler
+        .handle(
+            &WindowInfo {
+                class: String::new(),
+                title: String::new(),
+                is_native_terminal: true,
+            },
+            "default",
+        )
+        .unwrap();
+
+    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("default".to_string())]);
 }
 
 #[test]
@@ -410,7 +464,7 @@ fn test_sni_tooltip_includes_virtual_keys() {
 #[test]
 fn test_update_status_for_focus_updates_snapshot() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let status_broadcaster = StatusBroadcaster::new();
 
     let win = win("firefox", "");
@@ -425,7 +479,7 @@ fn test_update_status_for_focus_updates_snapshot() {
 #[test]
 fn test_handle_focus_event_ignored_when_paused_no_status_change() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
 
@@ -459,7 +513,7 @@ fn test_handle_focus_event_ignored_when_paused_no_status_change() {
 #[test]
 fn test_handle_focus_event_unfocus_paused_does_not_switch_layer() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
 
@@ -494,7 +548,7 @@ fn test_paused_status_resets_virtual_keys_and_source() {
 #[test]
 fn test_virtual_key_press_on_focus() {
     let rules = vec![rule_vk(Some("firefox"), "vk_browser")];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
     assert!(has_action(&actions, &FocusAction::PressVk("vk_browser".to_string())));
@@ -508,7 +562,7 @@ fn test_virtual_key_release_on_switch() {
         rule_vk(Some("firefox"), "vk_browser"),
         rule_vk(Some("kitty"), "vk_terminal"),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     handler.handle(&win("firefox", ""), "default");
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
@@ -525,7 +579,7 @@ fn test_virtual_key_release_on_switch() {
 #[test]
 fn test_virtual_key_no_change_no_press() {
     let rules = vec![rule_vk(Some("firefox"), "vk_browser")];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     handler.handle(&win("firefox", "tab1"), "default");
     let actions = handler.handle(&win("firefox", "tab2"), "default");
@@ -544,6 +598,7 @@ fn test_partial_vk_set_change_only_releases_removed() {
         Rule {
             class: Some("app".to_string()),
             title: Some("both".to_string()),
+            on_native_terminal: None,
             layer: None,
             virtual_key: Some("vk1".to_string()),
             raw_vk_action: None,
@@ -552,13 +607,14 @@ fn test_partial_vk_set_change_only_releases_removed() {
         Rule {
             class: Some("app".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: None,
             virtual_key: Some("vk2".to_string()),
             raw_vk_action: None,
             fallthrough: false,
         },
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     // Focus window that matches both rules - both VKs pressed
     let actions = handler.handle(&win("app", "both"), "default").unwrap();
@@ -581,6 +637,7 @@ fn test_unfocus_releases_multiple_vks_in_reverse_order() {
         Rule {
             class: Some("app".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: None,
             virtual_key: Some("vk1".to_string()),
             raw_vk_action: None,
@@ -589,6 +646,7 @@ fn test_unfocus_releases_multiple_vks_in_reverse_order() {
         Rule {
             class: Some("app".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: None,
             virtual_key: Some("vk2".to_string()),
             raw_vk_action: None,
@@ -597,13 +655,14 @@ fn test_unfocus_releases_multiple_vks_in_reverse_order() {
         Rule {
             class: Some("app".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: None,
             virtual_key: Some("vk3".to_string()),
             raw_vk_action: None,
             fallthrough: false,
         },
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     // Focus window - all three VKs pressed in order
     let actions = handler.handle(&win("app", ""), "default").unwrap();
@@ -620,7 +679,7 @@ fn test_unfocus_releases_multiple_vks_in_reverse_order() {
 #[test]
 fn test_raw_vk_action_fires_on_focus() {
     let rules = vec![rule_raw_vk(Some("firefox"), vec![("vk1", "Tap"), ("vk2", "Toggle")])];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
     assert_eq!(get_raw_vk_actions(&actions), vec![
@@ -635,7 +694,7 @@ fn test_fallthrough_collects_all_layers() {
         rule_with_fallthrough(rule(Some("kitty"), None, Some("layer1"))),
         rule(Some("kitty"), None, Some("layer2")),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     // Both layers should be in the action list, in order
@@ -648,7 +707,7 @@ fn test_fallthrough_add_remove_rule_only_new_actions() {
         rule_with_fallthrough(rule(Some("app"), None, Some("base"))),
         rule(Some("app"), Some("special"), Some("special")),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", "special"), "default").unwrap();
     assert_eq!(get_layers(&actions), vec!["base".to_string(), "special".to_string()]);
@@ -663,7 +722,7 @@ fn test_fallthrough_collects_all_raw_vk_actions() {
         rule_with_fallthrough(rule_raw_vk(Some("kitty"), vec![("vk1", "Press")])),
         rule_raw_vk(Some("kitty"), vec![("vk2", "Tap")]),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     assert_eq!(get_raw_vk_actions(&actions), vec![
@@ -678,7 +737,7 @@ fn test_fallthrough_all_vks_pressed_and_held() {
         rule_with_fallthrough(rule_vk(Some("kitty"), "vk1")),
         rule_vk(Some("kitty"), "vk2"),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     // Both vk1 and vk2 should be pressed (all matched VKs are held)
@@ -694,7 +753,7 @@ fn test_fallthrough_multiple_vks_all_pressed_and_held() {
         rule_with_fallthrough(rule_vk(Some("kitty"), "vk2")),
         rule_vk(Some("kitty"), "vk3"),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     // All three VKs should be pressed and held
@@ -711,6 +770,7 @@ fn test_fallthrough_action_order_preserved() {
         Rule {
             class: Some("kitty".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("layer1".to_string()),
             virtual_key: Some("vk1".to_string()),
             raw_vk_action: Some(vec![("raw1".to_string(), "Tap".to_string())]),
@@ -719,13 +779,14 @@ fn test_fallthrough_action_order_preserved() {
         Rule {
             class: Some("kitty".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("layer2".to_string()),
             virtual_key: Some("vk2".to_string()),
             raw_vk_action: Some(vec![("raw2".to_string(), "Toggle".to_string())]),
             fallthrough: false,
         },
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
 
@@ -746,12 +807,13 @@ fn test_combined_virtual_key_and_raw_vk_action() {
     let rules = vec![Rule {
         class: Some("firefox".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: Some("vk_browser".to_string()),
         raw_vk_action: Some(vec![("vk_notify".to_string(), "Tap".to_string())]),
         fallthrough: false,
     }];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
     assert_eq!(actions.actions, vec![
@@ -764,7 +826,7 @@ fn test_combined_virtual_key_and_raw_vk_action() {
 #[test]
 fn test_wildcard_pattern() {
     let rules = vec![rule(Some("*"), None, Some("any"))];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("anything", ""), "default").unwrap();
     assert_eq!(get_layers(&actions), vec!["any".to_string()]);
@@ -773,7 +835,7 @@ fn test_wildcard_pattern() {
 #[test]
 fn test_regex_pattern() {
     let rules = vec![rule(Some("^(firefox|chrome)$"), None, Some("browser"))];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     assert_eq!(get_layers(&handler.handle(&win("firefox", ""), "default").unwrap()), vec!["browser".to_string()]);
     assert_eq!(handler.handle(&win("chrome", ""), "default"), None);
@@ -787,7 +849,7 @@ fn test_three_rules_fallthrough_all_layers_execute() {
         rule_with_fallthrough(rule(Some("app"), None, Some("layer2"))),
         rule(Some("app"), None, Some("layer3")),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     assert_eq!(get_layers(&actions), vec![
@@ -803,7 +865,7 @@ fn test_multiple_raw_vk_actions_per_rule_all_execute() {
         rule_with_fallthrough(rule_raw_vk(Some("app"), vec![("a1", "Press"), ("a2", "Release")])),
         rule_raw_vk(Some("app"), vec![("b1", "Tap"), ("b2", "Toggle")]),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     assert_eq!(get_raw_vk_actions(&actions), vec![
@@ -822,7 +884,7 @@ fn test_non_fallthrough_stops_chain() {
         rule(Some("app"), None, Some("layer2")),  // would match but shouldn't be reached
         rule(Some("app"), None, Some("layer3")),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     // Only layer1 should be collected
@@ -838,7 +900,7 @@ fn test_fallthrough_stops_at_non_fallthrough() {
         rule(Some("app"), None, Some("layer3")),  // fallthrough=false, stops here
         rule(Some("app"), None, Some("layer4")),  // should not be reached
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     assert_eq!(get_layers(&actions), vec![
@@ -857,7 +919,7 @@ fn test_non_matching_rules_skipped_in_fallthrough() {
         rule_with_fallthrough(rule(Some("other"), None, Some("layer2"))),  // doesn't match
         rule(Some("app"), None, Some("layer3")),
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     // layer2 should be skipped because "other" doesn't match "app"
@@ -876,7 +938,7 @@ fn test_non_matching_non_fallthrough_rule_does_not_stop_chain() {
         rule(Some("other"), None, Some("layer2")),  // doesn't match, fallthrough=false
         rule(Some("app"), None, Some("layer3")),    // should still be reached
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     // layer1 and layer3 should be collected; layer2 skipped (doesn't match)
@@ -953,6 +1015,7 @@ fn arb_rule() -> impl Strategy<Value = Rule> {
         .prop_map(|(class, title, layer, vk, raw_vk, fallthrough)| Rule {
             class,
             title,
+            on_native_terminal: None,
             layer,
             virtual_key: vk,
             raw_vk_action: raw_vk,
@@ -961,7 +1024,11 @@ fn arb_rule() -> impl Strategy<Value = Rule> {
 }
 
 fn arb_window() -> impl Strategy<Value = WindowInfo> {
-    (arb_class(), arb_title()).prop_map(|(class, title)| WindowInfo { class, title })
+    (arb_class(), arb_title()).prop_map(|(class, title)| WindowInfo {
+        class,
+        title,
+        is_native_terminal: false,
+    })
 }
 
 proptest! {
@@ -970,7 +1037,7 @@ proptest! {
         rules in prop::collection::vec(arb_rule(), 1..5),
         windows in prop::collection::vec(arb_window(), 1..10),
     ) {
-        let mut handler = FocusHandler::new(rules, true);
+        let mut handler = FocusHandler::new(rules, None, true);
 
         for win in &windows {
             let _ = handler.handle(win, "default");
@@ -984,7 +1051,7 @@ proptest! {
         rules in prop::collection::vec(arb_rule(), 1..5),
         windows in prop::collection::vec(arb_window(), 2..10),
     ) {
-        let mut handler = FocusHandler::new(rules, true);
+        let mut handler = FocusHandler::new(rules, None, true);
 
         for win in &windows {
             if let Some(actions) = handler.handle(win, "default") {
@@ -1004,14 +1071,21 @@ proptest! {
         rules in prop::collection::vec(arb_rule(), 1..5),
         win in arb_window(),
     ) {
-        let mut handler = FocusHandler::new(rules, true);
+        let mut handler = FocusHandler::new(rules, None, true);
 
         // Focus a window first
         let _ = handler.handle(&win, "default");
         let vks_before = handler.current_virtual_keys.clone();
 
         // Unfocus (empty class and title)
-        let actions = handler.handle(&WindowInfo { class: String::new(), title: String::new() }, "default");
+        let actions = handler.handle(
+            &WindowInfo {
+                class: String::new(),
+                title: String::new(),
+                is_native_terminal: false,
+            },
+            "default",
+        );
 
         // All previously active VKs must be released
         if !vks_before.is_empty() {
@@ -1035,6 +1109,7 @@ proptest! {
             Rule {
                 class: Some(base_class.clone()),
                 title: None,
+                on_native_terminal: None,
                 layer: None,
                 virtual_key: None,
                 raw_vk_action: if raw_vk1.is_empty() { None } else { Some(raw_vk1.clone()) },
@@ -1043,6 +1118,7 @@ proptest! {
             Rule {
                 class: Some(base_class.clone()),
                 title: None,
+                on_native_terminal: None,
                 layer: None,
                 virtual_key: None,
                 raw_vk_action: if raw_vk2.is_empty() { None } else { Some(raw_vk2.clone()) },
@@ -1050,8 +1126,12 @@ proptest! {
             },
         ];
 
-        let mut handler = FocusHandler::new(rules, true);
-        let win = WindowInfo { class: base_class, title: String::new() };
+        let mut handler = FocusHandler::new(rules, None, true);
+        let win = WindowInfo {
+            class: base_class,
+            title: String::new(),
+            is_native_terminal: false,
+        };
 
         if let Some(actions) = handler.handle(&win, "default") {
             let expected: Vec<_> = raw_vk1.into_iter().chain(raw_vk2).collect();
@@ -1069,6 +1149,7 @@ proptest! {
             Rule {
                 class: Some(base_class.clone()),
                 title: None,
+                on_native_terminal: None,
                 layer: Some(layer1.clone()),
                 virtual_key: None,
                 raw_vk_action: None,
@@ -1077,6 +1158,7 @@ proptest! {
             Rule {
                 class: Some(base_class.clone()),
                 title: None,
+                on_native_terminal: None,
                 layer: Some(layer2.clone()),
                 virtual_key: None,
                 raw_vk_action: None,
@@ -1084,8 +1166,12 @@ proptest! {
             },
         ];
 
-        let mut handler = FocusHandler::new(rules, true);
-        let win = WindowInfo { class: base_class, title: String::new() };
+        let mut handler = FocusHandler::new(rules, None, true);
+        let win = WindowInfo {
+            class: base_class,
+            title: String::new(),
+            is_native_terminal: false,
+        };
 
         if let Some(actions) = handler.handle(&win, "default") {
             // Both layers should be collected
@@ -1103,6 +1189,7 @@ proptest! {
             Rule {
                 class: Some(base_class.clone()),
                 title: None,
+                on_native_terminal: None,
                 layer: None,
                 virtual_key: Some(vk1.clone()),
                 raw_vk_action: None,
@@ -1111,6 +1198,7 @@ proptest! {
             Rule {
                 class: Some(base_class.clone()),
                 title: None,
+                on_native_terminal: None,
                 layer: None,
                 virtual_key: Some(vk2.clone()),
                 raw_vk_action: None,
@@ -1118,8 +1206,12 @@ proptest! {
             },
         ];
 
-        let mut handler = FocusHandler::new(rules, true);
-        let win = WindowInfo { class: base_class, title: String::new() };
+        let mut handler = FocusHandler::new(rules, None, true);
+        let win = WindowInfo {
+            class: base_class,
+            title: String::new(),
+            is_native_terminal: false,
+        };
 
         if let Some(actions) = handler.handle(&win, "default") {
             // Both vk1 and vk2 should be pressed (all matched VKs are held)

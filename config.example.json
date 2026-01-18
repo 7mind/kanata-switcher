@@ -3,6 +3,9 @@
     "default": "default"
   },
   {
+    "on_native_terminal": "tty"
+  },
+  {
     "class": "^firefox$",
     "layer": "browser"
   },

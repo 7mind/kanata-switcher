@@ -109,6 +109,7 @@ Daemon switches to default layer on exit (any cause):
 **Rule entries:**
 - `class`: regex against window class (optional)
 - `title`: regex against window title (optional)
+- `on_native_terminal`: layer to switch to when active session is a native terminal (optional)
 - `layer`: kanata layer name (optional)
 - `virtual_key`: auto-managed VK - press on focus, release on unfocus (optional)
 - `raw_vk_action`: array of `[name, action]` pairs, fire-and-forget on focus (optional)
@@ -124,6 +125,12 @@ Daemon switches to default layer on exit (any cause):
 - Disables auto-detection from Kanata
 - Can appear 0 or 1 times (multiple = error)
 - Position in array doesn't matter
+
+**Native terminal rule (optional):**
+- `{"on_native_terminal": "layer_name"}`: applies when session switches to a native terminal (Ctrl+Alt+F*)
+- Can appear 0 or 1 times (multiple = error)
+- Must not include `class`, `title`, or `layer`
+- Can include `virtual_key` and `raw_vk_action`
 
 **Virtual key modes:**
 - Simple (`virtual_key`): at most one VK active, auto-released on unfocus/switch

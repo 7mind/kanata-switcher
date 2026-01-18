@@ -22,6 +22,10 @@ These apply __ONLY__ to editing llm-docs:
 - When editing README.md, do not overwrite sections written by author. Write in your own section: `Machine summary`
 - If there were changes to configuration format, update README and the example config.
 
+### QA
+
+- When adding user-facing features, add a human testing checklist in the `qa/` folder.
+
 ### Git commits
 
 - Make a git commit after a shippable chunk of work are done

@@ -1,5 +1,6 @@
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
+use futures_util::StreamExt;
 use ksni::menu::{CheckmarkItem, StandardItem};
 use ksni::{Icon as SniIcon, MenuItem, Status as SniStatus, ToolTip, Tray, TrayService};
 use regex::Regex;
@@ -32,6 +33,7 @@ use x11rb::protocol::Event as X11Event;
 use x11rb::rust_connection::RustConnection;
 use zbus::object_server::SignalEmitter;
 use zbus::Connection;
+use zbus::zvariant::OwnedObjectPath;
 
 // Generated COSMIC protocols
 mod cosmic_workspace {
@@ -78,6 +80,10 @@ const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
 const DBUS_NAME: &str = "com.github.kanata.Switcher";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
+const LOGIND_BUS_NAME: &str = "org.freedesktop.login1";
+const LOGIND_MANAGER_PATH: &str = "/org/freedesktop/login1";
+const LOGIND_MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
+const LOGIND_SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlCommand {
@@ -219,6 +225,8 @@ async fn send_control_command_with_connection(
 struct Rule {
     class: Option<String>,
     title: Option<String>,
+    /// Layer to switch to when switching to a native terminal (VT)
+    on_native_terminal: Option<String>,
     /// Layer to switch to when rule matches
     layer: Option<String>,
     /// Virtual key to press while window is focused (auto-released on unfocus)
@@ -229,6 +237,13 @@ struct Rule {
     /// Continue matching subsequent rules after this one
     #[serde(default)]
     fallthrough: bool,
+}
+
+#[derive(Debug, Clone)]
+struct NativeTerminalRule {
+    layer: String,
+    virtual_key: Option<String>,
+    raw_vk_action: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -242,12 +257,15 @@ enum ConfigEntry {
 struct Config {
     rules: Vec<Rule>,
     default_layer: Option<String>,
+    native_terminal_rule: Option<NativeTerminalRule>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct WindowInfo {
     class: String,
     title: String,
+    #[serde(default)]
+    is_native_terminal: bool,
 }
 
 fn load_config(config_path: Option<&Path>) -> Config {
@@ -266,6 +284,7 @@ fn load_config(config_path: Option<&Path>) -> Config {
         eprintln!("Example config:");
         eprintln!(r#"[
   {{"default": "base"}},
+  {{"on_native_terminal": "tty"}},
   {{"class": "firefox", "layer": "browser"}},
   {{"class": "alacritty", "title": "vim", "layer": "vim"}}
 ]"#);
@@ -277,6 +296,7 @@ fn load_config(config_path: Option<&Path>) -> Config {
             Ok(entries) => {
                 let mut rules = Vec::new();
                 let mut default_layer: Option<String> = None;
+                let mut native_terminal_rule: Option<NativeTerminalRule> = None;
 
                 for entry in entries {
                     match entry {
@@ -288,14 +308,44 @@ fn load_config(config_path: Option<&Path>) -> Config {
                             default_layer = Some(default);
                         }
                         ConfigEntry::Rule(rule) => {
-                            rules.push(rule);
+                            if let Some(layer) = rule.on_native_terminal.clone() {
+                                if rule.class.is_some() || rule.title.is_some() {
+                                    eprintln!(
+                                        "[Config] Error: 'on_native_terminal' cannot be combined with 'class' or 'title'"
+                                    );
+                                    std::process::exit(1);
+                                }
+                                if rule.layer.is_some() {
+                                    eprintln!(
+                                        "[Config] Error: 'on_native_terminal' cannot be combined with 'layer'"
+                                    );
+                                    std::process::exit(1);
+                                }
+                                if native_terminal_rule.is_some() {
+                                    eprintln!(
+                                        "[Config] Error: multiple 'on_native_terminal' rules found, only one allowed"
+                                    );
+                                    std::process::exit(1);
+                                }
+                                native_terminal_rule = Some(NativeTerminalRule {
+                                    layer,
+                                    virtual_key: rule.virtual_key.clone(),
+                                    raw_vk_action: rule.raw_vk_action.clone().unwrap_or_default(),
+                                });
+                            } else {
+                                rules.push(rule);
+                            }
                         }
                     }
                 }
 
                 println!("[Config] Loaded {} rules from {}", rules.len(), path.display());
 
-                Config { rules, default_layer }
+                Config {
+                    rules,
+                    default_layer,
+                    native_terminal_rule,
+                }
             }
             Err(e) => {
                 eprintln!("[Config] Error: Failed to parse {}: {}", path.display(), e);
@@ -351,27 +401,33 @@ impl FocusActions {
     }
 }
 
+const NATIVE_TERMINAL_RULE_INDEX: usize = usize::MAX;
+
 #[derive(Debug)]
 struct FocusHandler {
     rules: Vec<Rule>,
+    native_terminal_rule: Option<NativeTerminalRule>,
     last_class: String,
     last_title: String,
     last_matched_rules: Vec<usize>,
     last_effective_layer: String,
     /// Currently held virtual keys, in order they were pressed (top-to-bottom rule order)
     current_virtual_keys: Vec<String>,
+    last_gui_window: Option<WindowInfo>,
     quiet_focus: bool,
 }
 
 impl FocusHandler {
-    fn new(rules: Vec<Rule>, quiet_focus: bool) -> Self {
+    fn new(rules: Vec<Rule>, native_terminal_rule: Option<NativeTerminalRule>, quiet_focus: bool) -> Self {
         Self {
             rules,
+            native_terminal_rule,
             last_class: String::new(),
             last_title: String::new(),
             last_matched_rules: Vec::new(),
             last_effective_layer: String::new(),
             current_virtual_keys: Vec::new(),
+            last_gui_window: None,
             quiet_focus,
         }
     }
@@ -382,26 +438,13 @@ impl FocusHandler {
     fn handle(&mut self, win: &WindowInfo, default_layer: &str) -> Option<FocusActions> {
         let mut result = FocusActions::default();
 
+        if win.is_native_terminal {
+            return self.handle_native_terminal(default_layer);
+        }
+
         // Handle unfocused state (no window has focus)
         if win.class.is_empty() && win.title.is_empty() {
-            if !self.quiet_focus {
-                println!("[Focus] No window focused");
-            }
-            // Release all active virtual keys in reverse order (bottom-to-top)
-            for vk in self.current_virtual_keys.iter().rev() {
-                result.actions.push(FocusAction::ReleaseVk(vk.clone()));
-            }
-            // Switch to default layer
-            if !default_layer.is_empty() && self.last_effective_layer != default_layer {
-                result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
-            }
-            result.new_managed_vks = Vec::new();
-            self.current_virtual_keys = Vec::new();
-            self.last_matched_rules.clear();
-            self.last_effective_layer = default_layer.to_string();
-            self.last_class = win.class.clone();
-            self.last_title = win.title.clone();
-            return if result.is_empty() { None } else { Some(result) };
+            return self.handle_unfocused(default_layer);
         }
 
         if !self.quiet_focus {
@@ -520,6 +563,7 @@ impl FocusHandler {
         self.last_title = win.title.clone();
         self.last_matched_rules = matched_indices;
         self.current_virtual_keys = result.new_managed_vks.clone();
+        self.last_gui_window = Some(win.clone());
 
         if result.is_empty() {
             None
@@ -532,12 +576,122 @@ impl FocusHandler {
         self.current_virtual_keys.clone()
     }
 
+    fn last_gui_window(&self) -> Option<WindowInfo> {
+        self.last_gui_window.clone()
+    }
+
     fn reset(&mut self) {
         self.last_class.clear();
         self.last_title.clear();
         self.last_matched_rules.clear();
         self.last_effective_layer.clear();
         self.current_virtual_keys.clear();
+        self.last_gui_window = None;
+    }
+
+    fn handle_unfocused(&mut self, default_layer: &str) -> Option<FocusActions> {
+        let mut result = FocusActions::default();
+        if !self.quiet_focus {
+            println!("[Focus] No window focused");
+        }
+        // Release all active virtual keys in reverse order (bottom-to-top)
+        for vk in self.current_virtual_keys.iter().rev() {
+            result.actions.push(FocusAction::ReleaseVk(vk.clone()));
+        }
+        // Switch to default layer
+        if !default_layer.is_empty() && self.last_effective_layer != default_layer {
+            result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
+        }
+        result.new_managed_vks = Vec::new();
+        self.current_virtual_keys = Vec::new();
+        self.last_matched_rules.clear();
+        self.last_effective_layer = default_layer.to_string();
+        self.last_class.clear();
+        self.last_title.clear();
+        self.last_gui_window = None;
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    fn handle_native_terminal(&mut self, default_layer: &str) -> Option<FocusActions> {
+        let Some(rule) = self.native_terminal_rule.clone() else {
+            return self.handle_native_terminal_without_rule(default_layer);
+        };
+
+        if !self.quiet_focus {
+            println!("[Focus] Native terminal active");
+        }
+
+        let mut result = FocusActions::default();
+        let mut new_vks = Vec::new();
+
+        if let Some(vk) = rule.virtual_key.clone() {
+            new_vks.push(vk);
+        }
+
+        for vk in self.current_virtual_keys.iter().rev() {
+            if !new_vks.contains(vk) {
+                result.actions.push(FocusAction::ReleaseVk(vk.clone()));
+            }
+        }
+
+        let matched_indices = vec![NATIVE_TERMINAL_RULE_INDEX];
+        let is_new = self.last_matched_rules != matched_indices;
+
+        if is_new {
+            if !rule.layer.is_empty() && self.last_effective_layer != rule.layer {
+                result.actions.push(FocusAction::ChangeLayer(rule.layer.clone()));
+            }
+            if let Some(vk) = rule.virtual_key {
+                if !self.current_virtual_keys.contains(&vk) {
+                    result.actions.push(FocusAction::PressVk(vk));
+                }
+            }
+            for (name, action) in rule.raw_vk_action {
+                result.actions.push(FocusAction::RawVkAction(name, action));
+            }
+        }
+
+        result.new_managed_vks = new_vks;
+        self.last_matched_rules = matched_indices;
+        self.last_effective_layer = rule.layer;
+        self.current_virtual_keys = result.new_managed_vks.clone();
+        self.last_class.clear();
+        self.last_title.clear();
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    fn handle_native_terminal_without_rule(&mut self, default_layer: &str) -> Option<FocusActions> {
+        let mut result = FocusActions::default();
+        if !self.quiet_focus {
+            println!("[Focus] Native terminal active");
+        }
+        for vk in self.current_virtual_keys.iter().rev() {
+            result.actions.push(FocusAction::ReleaseVk(vk.clone()));
+        }
+        if !default_layer.is_empty() && self.last_effective_layer != default_layer {
+            result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
+        }
+        result.new_managed_vks = Vec::new();
+        self.current_virtual_keys = Vec::new();
+        self.last_matched_rules.clear();
+        self.last_effective_layer = default_layer.to_string();
+        self.last_class.clear();
+        self.last_title.clear();
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
     }
 }
 
@@ -1158,6 +1312,175 @@ fn handle_focus_event(
         return None;
     }
     update_status_for_focus(handler, status_broadcaster, win, default_layer)
+}
+
+fn native_terminal_window() -> WindowInfo {
+    WindowInfo {
+        class: String::new(),
+        title: String::new(),
+        is_native_terminal: true,
+    }
+}
+
+fn cached_gui_window(handler: &Arc<Mutex<FocusHandler>>) -> WindowInfo {
+    let handler = handler.lock().unwrap();
+    handler.last_gui_window().unwrap_or_default()
+}
+
+fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let connection = WaylandConnection::connect_to_env()?;
+    let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
+    let mut state = WaylandState::default();
+
+    if globals
+        .bind::<ZwlrForeignToplevelManagerV1, _, _>(&queue.handle(), 1..=3, ())
+        .is_err()
+        && globals
+            .bind::<ZcosmicToplevelInfoV1, _, _>(&queue.handle(), 1..=1, ())
+            .is_err()
+    {
+        return Err("No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into());
+    }
+
+    queue.roundtrip(&mut state)?;
+    Ok(state.get_active_window())
+}
+
+fn query_x11_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let state = X11State::new()?;
+    Ok(state.get_active_window())
+}
+
+async fn apply_session_focus(
+    active: bool,
+    env: Environment,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    pause_broadcaster: &PauseBroadcaster,
+    kanata: &KanataClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let win = if active {
+        match env {
+            Environment::Wayland => tokio::task::block_in_place(query_wayland_active_window)?,
+            Environment::X11 => tokio::task::block_in_place(query_x11_active_window)?,
+            Environment::Gnome | Environment::Kde => cached_gui_window(handler),
+            Environment::Unknown => WindowInfo::default(),
+        }
+    } else {
+        native_terminal_window()
+    };
+
+    let default_layer = kanata.default_layer().await.unwrap_or_default();
+    if let Some(actions) =
+        handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
+    {
+        execute_focus_actions(kanata, actions).await;
+    }
+
+    Ok(())
+}
+
+async fn resolve_logind_session_path(
+    connection: &Connection,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    let manager = zbus::Proxy::new(
+        connection,
+        LOGIND_BUS_NAME,
+        LOGIND_MANAGER_PATH,
+        LOGIND_MANAGER_INTERFACE,
+    )
+    .await?;
+
+    if let Ok(session_id) = env::var("XDG_SESSION_ID") {
+        let path: OwnedObjectPath = manager.call("GetSession", &(session_id)).await?;
+        return Ok(path);
+    }
+
+    let pid = std::process::id();
+    let path: OwnedObjectPath = manager.call("GetSessionByPID", &(pid)).await?;
+    Ok(path)
+}
+
+async fn start_logind_session_monitor(
+    env: Environment,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
+    kanata: KanataClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let connection = Connection::system().await?;
+    let session_path = resolve_logind_session_path(&connection).await?;
+    let session_proxy = zbus::Proxy::new(
+        &connection,
+        LOGIND_BUS_NAME,
+        session_path.clone(),
+        LOGIND_SESSION_INTERFACE,
+    )
+    .await?;
+    let active: bool = session_proxy.get_property("Active").await?;
+
+    if !active {
+        apply_session_focus(
+            false,
+            env,
+            &handler,
+            &status_broadcaster,
+            &pause_broadcaster,
+            &kanata,
+        )
+        .await?;
+    }
+
+    let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
+        .destination(LOGIND_BUS_NAME)?
+        .path(session_path.clone())?
+        .build()
+        .await?;
+    let mut signals = properties_proxy.receive_properties_changed().await?;
+
+    tokio::spawn(async move {
+        let mut last_active = active;
+        while let Some(signal) = signals.next().await {
+            let args = match signal.args() {
+                Ok(args) => args,
+                Err(error) => {
+                    eprintln!("[Logind] Failed to parse PropertiesChanged signal: {}", error);
+                    std::process::exit(1);
+                }
+            };
+            let Some(value) = args.changed_properties.get("Active") else {
+                continue;
+            };
+            let next_active = match value.downcast_ref::<bool>().ok() {
+                Some(active_value) => active_value,
+                None => {
+                    eprintln!("[Logind] Failed to parse Active property");
+                    std::process::exit(1);
+                }
+            };
+
+            if next_active == last_active {
+                continue;
+            }
+            last_active = next_active;
+
+            if let Err(error) = apply_session_focus(
+                next_active,
+                env,
+                &handler,
+                &status_broadcaster,
+                &pause_broadcaster,
+                &kanata,
+            )
+            .await
+            {
+                eprintln!("[Logind] Failed to apply session focus: {}", error);
+                std::process::exit(1);
+            }
+        }
+    });
+
+    Ok(())
 }
 
 fn pause_daemon(
@@ -1803,6 +2126,7 @@ impl WaylandState {
             .map(|w| WindowInfo {
                 class: w.app_id.clone(),
                 title: w.title.clone(),
+                is_native_terminal: false,
             })
             .unwrap_or_default()
     }
@@ -2180,7 +2504,11 @@ impl X11State {
         let class = self.get_window_class(window_id).unwrap_or_default();
         let title = self.get_window_title(window_id).unwrap_or_default();
 
-        WindowInfo { class, title }
+        WindowInfo {
+            class,
+            title,
+            is_native_terminal: false,
+        }
     }
 }
 
@@ -2815,6 +3143,7 @@ impl DbusWindowFocusService {
         let win = WindowInfo {
             class: window_class.to_string(),
             title: window_title.to_string(),
+            is_native_terminal: false,
         };
 
         let default_layer = self
@@ -2892,15 +3221,14 @@ impl DbusWindowFocusService {
 async fn register_dbus_service(
     connection: &Connection,
     kanata: KanataClient,
-    rules: Vec<Rule>,
-    quiet_focus: bool,
+    handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let service = DbusWindowFocusService {
         kanata,
-        handler: Arc::new(Mutex::new(FocusHandler::new(rules, quiet_focus))),
+        handler,
         runtime_handle: tokio::runtime::Handle::current(),
         status_broadcaster: status_broadcaster.clone(),
         restart_handle,
@@ -2977,8 +3305,7 @@ async fn register_dbus_service(
 
 async fn run_gnome(
     kanata: KanataClient,
-    rules: Vec<Rule>,
-    quiet_focus: bool,
+    handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
@@ -2987,8 +3314,7 @@ async fn run_gnome(
     register_dbus_service(
         &connection,
         kanata,
-        rules,
-        quiet_focus,
+        handler,
         status_broadcaster,
         restart_handle.clone(),
         pause_broadcaster,
@@ -3005,8 +3331,7 @@ async fn run_gnome(
 
 async fn run_kde(
     kanata: KanataClient,
-    rules: Vec<Rule>,
-    quiet_focus: bool,
+    handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
@@ -3015,8 +3340,7 @@ async fn run_kde(
     register_dbus_service(
         &connection,
         kanata,
-        rules,
-        quiet_focus,
+        handler,
         status_broadcaster,
         restart_handle.clone(),
         pause_broadcaster,
@@ -3158,12 +3482,13 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     }
 
     let config = load_config(args.config.as_deref());
-    if config.rules.is_empty() {
+    if config.rules.is_empty() && config.native_terminal_rule.is_none() {
         eprintln!("[Config] Error: No rules found in config file");
         eprintln!();
         eprintln!("Example config (~/.config/kanata/kanata-switcher.json):");
         eprintln!(r#"[
   {{"default": "base"}},
+  {{"on_native_terminal": "tty"}},
   {{"class": "firefox", "layer": "browser"}},
   {{"class": "alacritty", "title": "vim", "layer": "vim"}}
 ]"#);
@@ -3184,12 +3509,25 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     );
     kanata.connect_with_retry().await;
 
-    let mut focus_handler: Option<Arc<Mutex<FocusHandler>>> = None;
-    if matches!(env, Environment::Wayland | Environment::X11) {
-        focus_handler = Some(Arc::new(Mutex::new(FocusHandler::new(
+    let focus_handler = if matches!(env, Environment::Unknown) {
+        None
+    } else {
+        Some(Arc::new(Mutex::new(FocusHandler::new(
             config.rules.clone(),
+            config.native_terminal_rule.clone(),
             quiet_focus,
-        ))));
+        ))))
+    };
+
+    if let Some(handler) = focus_handler.clone() {
+        start_logind_session_monitor(
+            env,
+            handler,
+            status_broadcaster.clone(),
+            pause_broadcaster.clone(),
+            kanata.clone(),
+        )
+        .await?;
     }
 
     // Create shutdown guard - will switch to default layer when dropped
@@ -3266,10 +3604,10 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
 
     match env {
         Environment::Gnome => {
+            let handler = focus_handler.expect("Focus handler missing for GNOME backend");
             return run_gnome(
                 kanata,
-                config.rules,
-                quiet_focus,
+                handler,
                 status_broadcaster,
                 restart_handle,
                 pause_broadcaster,
@@ -3277,10 +3615,10 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             .await;
         }
         Environment::Kde => {
+            let handler = focus_handler.expect("Focus handler missing for KDE backend");
             return run_kde(
                 kanata,
-                config.rules,
-                quiet_focus,
+                handler,
                 status_broadcaster,
                 restart_handle,
                 pause_broadcaster,

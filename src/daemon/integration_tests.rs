@@ -174,6 +174,7 @@ async fn test_dbus_service_layer_switching() {
         Rule {
             class: Some("firefox".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("browser".to_string()),
             virtual_key: None,
             raw_vk_action: None,
@@ -182,6 +183,7 @@ async fn test_dbus_service_layer_switching() {
         Rule {
             class: Some("kitty".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("terminal".to_string()),
             virtual_key: None,
             raw_vk_action: None,
@@ -204,13 +206,14 @@ async fn test_dbus_service_layer_switching() {
     server.recv_timeout(Duration::from_secs(1));
 
     // Create the DBus service handler directly (without actual DBus)
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
 
     // Simulate WindowFocus call for firefox
     {
         let win = WindowInfo {
             class: "firefox".to_string(),
             title: "GitHub".to_string(),
+            is_native_terminal: false,
         };
         let default_layer = kanata.default_layer().await.unwrap_or_default();
         let actions = handler.lock().unwrap().handle(&win, &default_layer);
@@ -228,6 +231,7 @@ async fn test_dbus_service_layer_switching() {
         let win = WindowInfo {
             class: "kitty".to_string(),
             title: "bash".to_string(),
+            is_native_terminal: false,
         };
         let default_layer = kanata.default_layer().await.unwrap_or_default();
         let actions = handler.lock().unwrap().handle(&win, &default_layer);
@@ -250,6 +254,7 @@ async fn test_dbus_service_virtual_keys() {
         Rule {
             class: Some("firefox".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("browser".to_string()),
             virtual_key: Some("vk_browser".to_string()),
             raw_vk_action: None,
@@ -270,13 +275,14 @@ async fn test_dbus_service_virtual_keys() {
     // Skip RequestLayerNames
     server.recv_timeout(Duration::from_secs(1));
 
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
 
     // Focus firefox
     {
         let win = WindowInfo {
             class: "firefox".to_string(),
             title: "".to_string(),
+            is_native_terminal: false,
         };
         let default_layer = kanata.default_layer().await.unwrap_or_default();
         let actions = handler.lock().unwrap().handle(&win, &default_layer);
@@ -300,6 +306,7 @@ async fn test_dbus_service_virtual_keys() {
         let win = WindowInfo {
             class: "".to_string(),
             title: "".to_string(),
+            is_native_terminal: false,
         };
         let default_layer = kanata.default_layer().await.unwrap_or_default();
         let actions = handler.lock().unwrap().handle(&win, &default_layer);
@@ -329,6 +336,7 @@ async fn test_dbus_service_fallthrough() {
         Rule {
             class: Some("kitty".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("browser".to_string()),
             virtual_key: None,
             raw_vk_action: Some(vec![("vk_notify".to_string(), "Tap".to_string())]),
@@ -337,6 +345,7 @@ async fn test_dbus_service_fallthrough() {
         Rule {
             class: Some("kitty".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("terminal".to_string()),
             virtual_key: None,
             raw_vk_action: None,
@@ -356,12 +365,13 @@ async fn test_dbus_service_fallthrough() {
 
     server.recv_timeout(Duration::from_secs(1));
 
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
 
     {
         let win = WindowInfo {
             class: "kitty".to_string(),
             title: "".to_string(),
+            is_native_terminal: false,
         };
         let default_layer = kanata.default_layer().await.unwrap_or_default();
         let actions = handler.lock().unwrap().handle(&win, &default_layer);
@@ -511,6 +521,7 @@ async fn test_dbus_service_real_bus() {
         Rule {
             class: Some("test-app".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("browser".to_string()),  // must be in mock server's known_layers
             virtual_key: None,
             raw_vk_action: None,
@@ -544,11 +555,11 @@ async fn test_dbus_service_real_bus() {
 
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -608,6 +619,7 @@ async fn test_dbus_get_status_initial_layer() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -636,11 +648,11 @@ async fn test_dbus_get_status_initial_layer() {
 
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -699,6 +711,7 @@ async fn test_dbus_get_status_focus_source() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -727,11 +740,11 @@ async fn test_dbus_get_status_focus_source() {
 
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -798,6 +811,7 @@ async fn test_dbus_restart_request() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -827,11 +841,11 @@ async fn test_dbus_restart_request() {
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
     let mut restart_receiver = restart_handle.subscribe();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -881,6 +895,7 @@ async fn test_control_command_restart_private_dbus() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -910,11 +925,11 @@ async fn test_control_command_restart_private_dbus() {
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
     let mut restart_receiver = restart_handle.subscribe();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -961,6 +976,7 @@ async fn test_dbus_pause_unpause() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: Some("vk_browser".to_string()),
         raw_vk_action: None,
@@ -989,11 +1005,11 @@ async fn test_dbus_pause_unpause() {
 
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -1117,6 +1133,7 @@ async fn test_dbus_paused_changed_signal() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -1145,11 +1162,11 @@ async fn test_dbus_paused_changed_signal() {
 
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -1245,6 +1262,7 @@ async fn test_dbus_status_changed_focus_signal() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -1273,11 +1291,11 @@ async fn test_dbus_status_changed_focus_signal() {
 
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster,
@@ -1362,6 +1380,7 @@ async fn test_handle_focus_event_ignored_when_paused() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: None,
         raw_vk_action: None,
@@ -1370,7 +1389,7 @@ async fn test_handle_focus_event_ignored_when_paused() {
 
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let kanata = KanataClient::new(
         "127.0.0.1",
         mock_server.port(),
@@ -1386,6 +1405,7 @@ async fn test_handle_focus_event_ignored_when_paused() {
     let win = WindowInfo {
         class: "test-app".to_string(),
         title: "Test Window".to_string(),
+        is_native_terminal: false,
     };
     let actions = handle_focus_event(
         &handler,
@@ -1439,6 +1459,7 @@ async fn test_unfocus_ignored_when_paused() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: Some("vk_browser".to_string()),
         raw_vk_action: None,
@@ -1447,7 +1468,7 @@ async fn test_unfocus_ignored_when_paused() {
 
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let kanata = KanataClient::new(
         "127.0.0.1",
         mock_server.port(),
@@ -1480,6 +1501,7 @@ async fn test_pause_daemon_releases_virtual_keys_and_resets_layer() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: None,
         virtual_key: Some("vk_browser".to_string()),
         raw_vk_action: None,
@@ -1488,7 +1510,7 @@ async fn test_pause_daemon_releases_virtual_keys_and_resets_layer() {
 
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let kanata = KanataClient::new(
         "127.0.0.1",
         mock_server.port(),
@@ -1504,6 +1526,7 @@ async fn test_pause_daemon_releases_virtual_keys_and_resets_layer() {
         let win = WindowInfo {
             class: "test-app".to_string(),
             title: "Test Window".to_string(),
+            is_native_terminal: false,
         };
         let actions = handler.lock().unwrap().handle(&win, "default");
         assert!(actions.is_some());
@@ -1553,6 +1576,7 @@ async fn test_control_command_pause_unpause_private_dbus() {
     let rules = vec![Rule {
         class: Some("test-app".to_string()),
         title: None,
+        on_native_terminal: None,
         layer: Some("browser".to_string()),
         virtual_key: Some("vk_browser".to_string()),
         raw_vk_action: None,
@@ -1582,11 +1606,11 @@ async fn test_control_command_pause_unpause_private_dbus() {
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
     let mut pause_receiver = pause_broadcaster.subscribe();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
         kanata,
-        rules,
-        true,
+        handler,
         status_broadcaster,
         restart_handle,
         pause_broadcaster.clone(),
@@ -1988,13 +2012,14 @@ fn test_x11_focus_handler_integration() {
         Rule {
             class: Some("TestApp".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("test-layer".to_string()),
             virtual_key: None,
             raw_vk_action: None,
             fallthrough: false,
         },
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     // Prime the handler with initial state (no active window)
     // This sets up last_window so subsequent calls detect changes correctly
@@ -2059,6 +2084,7 @@ fn test_x11_multiple_focus_changes() {
         Rule {
             class: Some("App1".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("layer1".to_string()),
             virtual_key: None,
             raw_vk_action: None,
@@ -2067,13 +2093,14 @@ fn test_x11_multiple_focus_changes() {
         Rule {
             class: Some("App2".to_string()),
             title: None,
+            on_native_terminal: None,
             layer: Some("layer2".to_string()),
             virtual_key: None,
             raw_vk_action: None,
             fallthrough: false,
         },
     ];
-    let mut handler = FocusHandler::new(rules, true);
+    let mut handler = FocusHandler::new(rules, None, true);
 
     // Skip initial empty state
     handler.handle(&x11_state.get_active_window(), "default");

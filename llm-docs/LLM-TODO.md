@@ -9,6 +9,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Unified Wayland backend via `wlr-foreign-toplevel-management` (Sway, Hyprland, Niri, etc.)
 - [x] COSMIC support via `cosmic-toplevel-info` protocol (same unified backend)
 - [x] Support virtual key actions (`(vk ...)` in kanata config)
+- [x] Handle native terminal switching via logind `on_native_terminal` rule
 - [ ] Support reload config actions (`(lrld)`, `(lrld-num N)`, `(lrpv)`, `(lrnx)`)
 - [ ] Support ReloadFile action (TCP exclusive, no kanata syntax equivalent)
 
