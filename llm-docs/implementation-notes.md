@@ -125,6 +125,13 @@ Top bar indicator:
 - Schemas must be compiled (`schemas/gschemas.compiled`) for `getSettings()` to work; build/install paths run `glib-compile-schemas`
 - Preferences UI imports `ExtensionPreferences` from `resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js`
 - Character formatting lives in `src/gnome-extension/format.js` with a GJS test in `tests/gnome-extension-format.js`
+- Display format (GNOME + SNI):
+  - Layer glyph: first letter of current layer (uppercase), `?` if empty/unknown.
+  - Virtual keys glyph:
+    - 0 VKs: no VK glyph shown.
+    - 1 VK: show first letter of the VK name (uppercase).
+    - 2–9 VKs: show the count.
+    - >9 VKs: show `∞`.
 - Status updates include a `source` field (`focus` or `external`); prefs default to showing focus-based layer only
 - Focus updates force-broadcast via `StatusBroadcaster::update_focus_layer` so the indicator refreshes on focus events
 - Indicator menu includes Pause, Settings, and Restart; Pause calls daemon DBus `Pause`/`Unpause`
@@ -134,6 +141,7 @@ Top bar indicator:
 SNI indicator (non-GNOME):
 - Optional StatusNotifier item for KDE/wlroots/COSMIC/X11; menu includes Pause/Restart and “Show app layer only”
 - Uses the same layer + virtual key formatting as GNOME; pause toggles through local handlers on non-DBus backends
+- Tooltip: shows current layer; if any VKs are held, also lists the VK names (comma-separated)
 
 ## Virtual Key Support
 

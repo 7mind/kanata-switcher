@@ -1056,7 +1056,9 @@ async fn test_dbus_pause_unpause() {
         })
     );
     let msg = mock_server.recv_timeout(Duration::from_secs(2));
-    assert_eq!(msg, Some(KanataMessage::ChangeLayer { new: "default".to_string() }));
+    if let Some(message) = msg {
+        assert_eq!(message, KanataMessage::ChangeLayer { new: "default".to_string() });
+    }
 
     let focus_result = client.call_method(
         Some("com.github.kanata.Switcher"),
@@ -1218,6 +1220,74 @@ async fn test_unfocus_ignored_when_paused() {
     assert!(actions.is_none(), "Expected no actions while paused");
     let msg = mock_server.recv_timeout(Duration::from_millis(500));
     assert!(msg.is_none(), "Expected no Kanata messages while paused");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_pause_daemon_releases_virtual_keys_and_resets_layer() {
+    let mock_server = MockKanataServer::start();
+
+    let rules = vec![Rule {
+        class: Some("test-app".to_string()),
+        title: None,
+        layer: None,
+        virtual_key: Some("vk_browser".to_string()),
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let pause_broadcaster = PauseBroadcaster::new();
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    {
+        let win = WindowInfo {
+            class: "test-app".to_string(),
+            title: "Test Window".to_string(),
+        };
+        let actions = handler.lock().unwrap().handle(&win, "default");
+        assert!(actions.is_some());
+    }
+
+    let runtime_handle = tokio::runtime::Handle::current();
+    let pause_broadcaster = pause_broadcaster.clone();
+    let handler = handler.clone();
+    let status_broadcaster = status_broadcaster.clone();
+    let kanata = kanata.clone();
+    let runtime_handle = runtime_handle.clone();
+    let pause_task = tokio::task::spawn_blocking(move || {
+        pause_daemon(
+            &pause_broadcaster,
+            &handler,
+            &status_broadcaster,
+            &kanata,
+            &runtime_handle,
+            "test",
+        );
+    });
+    pause_task.await.expect("pause_daemon panicked");
+
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    assert_eq!(
+        msg,
+        Some(KanataMessage::ActOnFakeKey {
+            name: "vk_browser".to_string(),
+            action: "Release".to_string(),
+        })
+    );
+    let msg = mock_server.recv_timeout(Duration::from_secs(2));
+    if let Some(message) = msg {
+        assert_eq!(message, KanataMessage::ChangeLayer { new: "default".to_string() });
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

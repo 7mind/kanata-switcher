@@ -346,6 +346,31 @@ fn test_sni_menu_toggle_affects_display() {
 }
 
 #[test]
+fn test_sni_tooltip_includes_virtual_keys() {
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let control = MockSniControl::new();
+    let mut indicator = SniIndicator {
+        state: SniIndicatorState::new(initial),
+        control: Arc::new(control),
+    };
+
+    let focus_status = StatusSnapshot {
+        layer: "browser".to_string(),
+        virtual_keys: vec!["vk_browser".to_string(), "vk_media".to_string()],
+        layer_source: LayerSource::Focus,
+    };
+    indicator.update_status(focus_status);
+    let tooltip = indicator.tooltip_text();
+    assert!(tooltip.contains("Layer: browser"));
+    assert!(tooltip.contains("vk_browser"));
+    assert!(tooltip.contains("vk_media"));
+}
+
+#[test]
 fn test_update_status_for_focus_updates_snapshot() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, true)));
