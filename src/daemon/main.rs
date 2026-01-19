@@ -12,31 +12,33 @@ use std::os::fd::AsFd;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
-use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream as TokioTcpStream;
-use tokio::sync::{oneshot, watch, Mutex as TokioMutex};
+use tokio::net::tcp::OwnedWriteHalf;
+use tokio::sync::{Mutex as TokioMutex, oneshot, watch};
 use wayland_client::{
-    backend::{ObjectId, WaylandError},
-    globals::{registry_queue_init, GlobalListContents},
-    protocol::wl_registry,
     Connection as WaylandConnection, Dispatch, Proxy, QueueHandle,
+    backend::{ObjectId, WaylandError},
+    globals::{GlobalListContents, registry_queue_init},
+    protocol::wl_registry,
 };
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 use x11rb::connection::Connection as X11Connection;
-use x11rb::protocol::xproto::{AtomEnum, ChangeWindowAttributesAux, ConnectionExt as X11ConnectionExt, EventMask, Window};
 use x11rb::protocol::Event as X11Event;
+use x11rb::protocol::xproto::{
+    AtomEnum, ChangeWindowAttributesAux, ConnectionExt as X11ConnectionExt, EventMask, Window,
+};
 use x11rb::rust_connection::RustConnection;
-use zbus::object_server::SignalEmitter;
 use zbus::Connection;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
 
 // Generated COSMIC protocols
@@ -61,8 +63,8 @@ mod cosmic_toplevel {
     use wayland_client;
     use wayland_client::protocol::*;
     pub mod __interfaces {
-        use wayland_client::protocol::__interfaces::*;
         use crate::cosmic_workspace::__interfaces::*;
+        use wayland_client::protocol::__interfaces::*;
         wayland_scanner::generate_interfaces!("src/protocols/cosmic-toplevel-info-unstable-v1.xml");
     }
     use self::__interfaces::*;
@@ -75,8 +77,8 @@ use cosmic_toplevel::{
     zcosmic_toplevel_info_v1::{self, ZcosmicToplevelInfoV1},
 };
 use cosmic_workspace::{
-    zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1,
     zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1,
+    zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1,
     zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
 };
 
@@ -383,11 +385,7 @@ fn install_autostart_desktop(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for option in AUTOSTART_ONESHOT_OPTIONS {
         if AUTOSTART_PASSTHROUGH_OPTIONS.contains(option) {
-            return Err(format!(
-                "autostart option lists overlap: {}",
-                option
-            )
-            .into());
+            return Err(format!("autostart option lists overlap: {}", option).into());
         }
     }
     let exec_path = resolve_binary_path()?;
@@ -399,34 +397,29 @@ fn install_autostart_desktop(
     let desktop_path = autostart_dir.join(AUTOSTART_DESKTOP_FILENAME);
 
     std::fs::write(&desktop_path, content)?;
-    println!(
-        "[Autostart] Installed {}",
-        desktop_path.display()
-    );
+    println!("[Autostart] Installed {}", desktop_path.display());
     Ok(())
 }
 
 fn uninstall_autostart_desktop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let desktop_path = autostart_desktop_path()?;
     if !desktop_path.exists() {
-        return Err(format!(
-            "autostart entry not found: {}",
-            desktop_path.display()
-        )
-        .into());
+        return Err(format!("autostart entry not found: {}", desktop_path.display()).into());
     }
     std::fs::remove_file(&desktop_path)?;
-    println!(
-        "[Autostart] Removed {}",
-        desktop_path.display()
-    );
+    println!("[Autostart] Removed {}", desktop_path.display());
     Ok(())
 }
 
-async fn send_control_command(command: ControlCommand) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn send_control_command(
+    command: ControlCommand,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
     send_control_command_with_connection(&connection, command).await?;
-    println!("[Control] Sent {} request to running daemon", command.label());
+    println!(
+        "[Control] Sent {} request to running daemon",
+        command.label()
+    );
     Ok(())
 }
 
@@ -498,25 +491,25 @@ struct WindowInfo {
 }
 
 fn load_config(config_path: Option<&Path>) -> Config {
-    let path = config_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| {
-            let xdg_config = env::var("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| dirs::home_dir().unwrap().join(".config"));
-            xdg_config.join("kanata").join("kanata-switcher.json")
-        });
+    let path = config_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        let xdg_config = env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs::home_dir().unwrap().join(".config"));
+        xdg_config.join("kanata").join("kanata-switcher.json")
+    });
 
     if !path.exists() {
         eprintln!("[Config] Error: Config file not found: {}", path.display());
         eprintln!();
         eprintln!("Example config:");
-        eprintln!(r#"[
+        eprintln!(
+            r#"[
   {{"default": "base"}},
   {{"on_native_terminal": "tty"}},
   {{"class": "firefox", "layer": "browser"}},
   {{"class": "alacritty", "title": "vim", "layer": "vim"}}
-]"#);
+]"#
+        );
         std::process::exit(1);
     }
 
@@ -531,7 +524,9 @@ fn load_config(config_path: Option<&Path>) -> Config {
                     match entry {
                         ConfigEntry::Default { default } => {
                             if default_layer.is_some() {
-                                eprintln!("[Config] Error: multiple 'default' entries found, only one allowed");
+                                eprintln!(
+                                    "[Config] Error: multiple 'default' entries found, only one allowed"
+                                );
                                 std::process::exit(1);
                             }
                             default_layer = Some(default);
@@ -568,7 +563,11 @@ fn load_config(config_path: Option<&Path>) -> Config {
                     }
                 }
 
-                println!("[Config] Loaded {} rules from {}", rules.len(), path.display());
+                println!(
+                    "[Config] Loaded {} rules from {}",
+                    rules.len(),
+                    path.display()
+                );
 
                 Config {
                     rules,
@@ -646,7 +645,11 @@ struct FocusHandler {
 }
 
 impl FocusHandler {
-    fn new(rules: Vec<Rule>, native_terminal_rule: Option<NativeTerminalRule>, quiet_focus: bool) -> Self {
+    fn new(
+        rules: Vec<Rule>,
+        native_terminal_rule: Option<NativeTerminalRule>,
+        quiet_focus: bool,
+    ) -> Self {
         Self {
             rules,
             native_terminal_rule,
@@ -723,7 +726,9 @@ impl FocusHandler {
         // If no rules matched, use default layer
         if matched_rules.is_empty() {
             if !default_layer.is_empty() && self.last_effective_layer != default_layer {
-                result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
+                result
+                    .actions
+                    .push(FocusAction::ChangeLayer(default_layer.to_string()));
             }
             result.new_managed_vks = Vec::new();
             self.last_effective_layer = default_layer.to_string();
@@ -775,7 +780,9 @@ impl FocusHandler {
                             }
                         });
                         if has_new_layer != Some(true) {
-                            result.actions.push(FocusAction::ChangeLayer(new_layer.clone()));
+                            result
+                                .actions
+                                .push(FocusAction::ChangeLayer(new_layer.clone()));
                         }
                     }
                     self.last_effective_layer = new_layer;
@@ -821,7 +828,9 @@ impl FocusHandler {
         }
         // Switch to default layer
         if !default_layer.is_empty() && self.last_effective_layer != default_layer {
-            result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
+            result
+                .actions
+                .push(FocusAction::ChangeLayer(default_layer.to_string()));
         }
         result.new_managed_vks = Vec::new();
         self.current_virtual_keys = Vec::new();
@@ -863,7 +872,9 @@ impl FocusHandler {
 
         if is_new {
             if !rule.layer.is_empty() && self.last_effective_layer != rule.layer {
-                result.actions.push(FocusAction::ChangeLayer(rule.layer.clone()));
+                result
+                    .actions
+                    .push(FocusAction::ChangeLayer(rule.layer.clone()));
             }
             if let Some(vk) = rule.virtual_key {
                 if !self.current_virtual_keys.contains(&vk) {
@@ -898,7 +909,9 @@ impl FocusHandler {
             result.actions.push(FocusAction::ReleaseVk(vk.clone()));
         }
         if !default_layer.is_empty() && self.last_effective_layer != default_layer {
-            result.actions.push(FocusAction::ChangeLayer(default_layer.to_string()));
+            result
+                .actions
+                .push(FocusAction::ChangeLayer(default_layer.to_string()));
         }
         result.new_managed_vks = Vec::new();
         self.current_virtual_keys = Vec::new();
@@ -1116,12 +1129,7 @@ const SNI_INDICATOR_TITLE: &str = "Kanata Switcher";
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
 
 trait GsettingsBackend: Send + Sync {
-    fn get_bool(
-        &self,
-        schema_dir: Option<&Path>,
-        schema: &str,
-        key: &str,
-    ) -> Result<bool, String>;
+    fn get_bool(&self, schema_dir: Option<&Path>, schema: &str, key: &str) -> Result<bool, String>;
     fn set_bool(
         &self,
         schema_dir: Option<&Path>,
@@ -1134,12 +1142,7 @@ trait GsettingsBackend: Send + Sync {
 struct ShellGsettingsBackend;
 
 impl GsettingsBackend for ShellGsettingsBackend {
-    fn get_bool(
-        &self,
-        schema_dir: Option<&Path>,
-        schema: &str,
-        key: &str,
-    ) -> Result<bool, String> {
+    fn get_bool(&self, schema_dir: Option<&Path>, schema: &str, key: &str) -> Result<bool, String> {
         gsettings_get_bool(schema_dir, schema, key)
     }
 
@@ -1456,13 +1459,7 @@ impl SniIndicator {
 
     fn glyph_for_char(ch: char) -> [u8; 8] {
         const INFINITY_GLYPH: [u8; 8] = [
-            0b00000000,
-            0b00111100,
-            0b01000010,
-            0b10011001,
-            0b10011001,
-            0b01000010,
-            0b00111100,
+            0b00000000, 0b00111100, 0b01000010, 0b10011001, 0b10011001, 0b01000010, 0b00111100,
             0b00000000,
         ];
         if ch == SNI_INFINITY_SYMBOL {
@@ -1642,7 +1639,9 @@ fn resolve_sni_focus_only(
     if let Some(value) = override_value {
         return value.as_bool();
     }
-    settings.read_focus_only().unwrap_or(SNI_DEFAULT_SHOW_FOCUS_ONLY)
+    settings
+        .read_focus_only()
+        .unwrap_or(SNI_DEFAULT_SHOW_FOCUS_ONLY)
 }
 
 /// Execute focus actions in order
@@ -1720,8 +1719,6 @@ fn native_terminal_window() -> WindowInfo {
     }
 }
 
- 
-
 #[derive(Clone, Copy, Debug)]
 struct RawFdWatcher {
     fd: RawFd,
@@ -1755,7 +1752,9 @@ fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error
             .bind::<ZcosmicToplevelInfoV1, _, _>(&queue.handle(), 1..=1, ())
             .is_err()
     {
-        return Err("No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into());
+        return Err(
+            "No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into(),
+        );
     }
 
     for _ in 0..5 {
@@ -1865,12 +1864,12 @@ async fn load_kwin_script(
     Ok((obj_path, "org.kde.kwin.Script"))
 }
 
-fn build_kde_query_script(
-    is_kde6: bool,
-    bus_name: &str,
-    object_path: &str,
-) -> String {
-    let active_window = if is_kde6 { "activeWindow" } else { "activeClient" };
+fn build_kde_query_script(is_kde6: bool, bus_name: &str, object_path: &str) -> String {
+    let active_window = if is_kde6 {
+        "activeWindow"
+    } else {
+        "activeClient"
+    };
     format!(
         r#"function reportFocus(client) {{
   callDBus(
@@ -1905,7 +1904,10 @@ async fn query_kde_focus(
     let service = KdeFocusQueryService {
         sender: TokioMutex::new(Some(sender)),
     };
-    connection.object_server().at(query_path.as_str(), service).await?;
+    connection
+        .object_server()
+        .at(query_path.as_str(), service)
+        .await?;
 
     let uid = unsafe { libc::getuid() };
     let script_path = format!("/tmp/kanata-switcher-kwin-query-{}-{}.js", uid, query_id);
@@ -1992,9 +1994,13 @@ async fn apply_focus_for_env(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let win = query_focus_for_env(env, connection, is_kde6).await?;
     let default_layer = kanata.default_layer().await.unwrap_or_default();
-    if let Some(actions) =
-        handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
-    {
+    if let Some(actions) = handle_focus_event(
+        handler,
+        status_broadcaster,
+        pause_broadcaster,
+        &win,
+        &default_layer,
+    ) {
         execute_focus_actions(kanata, actions).await;
     }
     Ok(())
@@ -2024,9 +2030,13 @@ async fn apply_session_focus(
 
     let win = native_terminal_window();
     let default_layer = kanata.default_layer().await.unwrap_or_default();
-    if let Some(actions) =
-        handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
-    {
+    if let Some(actions) = handle_focus_event(
+        handler,
+        status_broadcaster,
+        pause_broadcaster,
+        &win,
+        &default_layer,
+    ) {
         execute_focus_actions(kanata, actions).await;
     }
 
@@ -2150,7 +2160,10 @@ async fn start_logind_session_monitor(
             let args = match signal.args() {
                 Ok(args) => args,
                 Err(error) => {
-                    eprintln!("[Logind] Failed to parse PropertiesChanged signal: {}", error);
+                    eprintln!(
+                        "[Logind] Failed to parse PropertiesChanged signal: {}",
+                        error
+                    );
                     std::process::exit(1);
                 }
             };
@@ -2284,7 +2297,10 @@ fn unpause_daemon(
     request_label: &str,
 ) {
     if !pause_broadcaster.set_paused(false) {
-        println!("[Pause] Unpause requested {} (already running)", request_label);
+        println!(
+            "[Pause] Unpause requested {} (already running)",
+            request_label
+        );
         return;
     }
     println!("[Pause] Resuming daemon");
@@ -2402,7 +2418,10 @@ impl KanataClient {
         status_broadcaster: StatusBroadcaster,
     ) -> Self {
         if let Some(ref layer) = config_default_layer {
-            println!("[Kanata] Using config-specified default layer: \"{}\"", layer);
+            println!(
+                "[Kanata] Using config-specified default layer: \"{}\"",
+                layer
+            );
         }
         Self {
             inner: Arc::new(TokioMutex::new(KanataClientInner {
@@ -2508,7 +2527,8 @@ impl KanataClient {
                 inner.auto_default_layer = auto_default_layer;
             }
             if let Some(ref layer) = inner.current_layer {
-                inner.status_broadcaster
+                inner
+                    .status_broadcaster
                     .update_layer(layer.clone(), LayerSource::External);
             }
         }
@@ -2720,7 +2740,10 @@ impl KanataClient {
 
     pub async fn default_layer(&self) -> Option<String> {
         let inner = self.inner.lock().await;
-        inner.config_default_layer.clone().or_else(|| inner.auto_default_layer.clone())
+        inner
+            .config_default_layer
+            .clone()
+            .or_else(|| inner.auto_default_layer.clone())
     }
 
     pub async fn pause_disconnect(&self) {
@@ -2751,7 +2774,9 @@ impl KanataClient {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 let inner = self.inner.lock().await;
-                inner.config_default_layer.clone()
+                inner
+                    .config_default_layer
+                    .clone()
                     .or_else(|| inner.auto_default_layer.clone())
                     .unwrap_or_default()
             })
@@ -2929,7 +2954,9 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for WaylandState {
         _: &QueueHandle<Self>,
     ) {
         if let zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } = event {
-            state.windows.insert(toplevel.id(), ToplevelWindow::default());
+            state
+                .windows
+                .insert(toplevel.id(), ToplevelWindow::default());
         }
     }
 
@@ -2958,7 +2985,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for WaylandState {
                     w.title = title;
                 }
             }
-            zwlr_foreign_toplevel_handle_v1::Event::State { state: handle_state } => {
+            zwlr_foreign_toplevel_handle_v1::Event::State {
+                state: handle_state,
+            } => {
                 let activated = zwlr_foreign_toplevel_handle_v1::State::Activated as u8;
                 if handle_state.contains(&activated) {
                     state.active_window = Some(handle.id());
@@ -2990,7 +3019,9 @@ impl Dispatch<ZcosmicToplevelInfoV1, ()> for WaylandState {
         _: &QueueHandle<Self>,
     ) {
         if let zcosmic_toplevel_info_v1::Event::Toplevel { toplevel } = event {
-            state.windows.insert(toplevel.id(), ToplevelWindow::default());
+            state
+                .windows
+                .insert(toplevel.id(), ToplevelWindow::default());
         }
     }
 
@@ -3019,7 +3050,9 @@ impl Dispatch<ZcosmicToplevelHandleV1, ()> for WaylandState {
                     w.title = title;
                 }
             }
-            zcosmic_toplevel_handle_v1::Event::State { state: handle_state } => {
+            zcosmic_toplevel_handle_v1::Event::State {
+                state: handle_state,
+            } => {
                 // COSMIC: activated = 2
                 let (chunks, _) = handle_state.as_chunks::<4>();
                 let activated = chunks
@@ -3134,7 +3167,9 @@ async fn run_wayland(
     {
         WaylandProtocol::Cosmic
     } else {
-        return Err("No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into());
+        return Err(
+            "No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into(),
+        );
     };
 
     println!("[Wayland] Using {:?} toplevel protocol", protocol);
@@ -3209,9 +3244,13 @@ async fn run_wayland(
         let win = state.get_active_window();
         let default_layer = kanata.default_layer_sync();
 
-        if let Some(actions) =
-            handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
-        {
+        if let Some(actions) = handle_focus_event(
+            &handler,
+            &status_broadcaster,
+            &pause_broadcaster,
+            &win,
+            &default_layer,
+        ) {
             execute_focus_actions(&kanata, actions).await;
         }
     }
@@ -3244,12 +3283,24 @@ impl X11State {
         connection.change_window_attributes(root, &attrs)?;
         connection.flush()?;
 
-        Ok(Self { connection, root, atoms })
+        Ok(Self {
+            connection,
+            root,
+            atoms,
+        })
     }
 
     fn get_active_window_id(&self) -> Option<Window> {
-        let prop_reply = self.connection
-            .get_property(false, self.root, self.atoms._NET_ACTIVE_WINDOW, AtomEnum::WINDOW, 0, 1)
+        let prop_reply = self
+            .connection
+            .get_property(
+                false,
+                self.root,
+                self.atoms._NET_ACTIVE_WINDOW,
+                AtomEnum::WINDOW,
+                0,
+                1,
+            )
             .ok()?
             .reply()
             .ok()?;
@@ -3261,15 +3312,12 @@ impl X11State {
         let arr: [u8; 4] = prop_reply.value.clone().try_into().ok()?;
         let winid = u32::from_le_bytes(arr);
 
-        if winid == 0 {
-            None
-        } else {
-            Some(winid)
-        }
+        if winid == 0 { None } else { Some(winid) }
     }
 
     fn get_window_class(&self, window: Window) -> Option<String> {
-        let reply = self.connection
+        let reply = self
+            .connection
             .get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1024)
             .ok()?
             .reply()
@@ -3293,8 +3341,16 @@ impl X11State {
 
     fn get_window_title(&self, window: Window) -> Option<String> {
         // Try _NET_WM_NAME first (UTF-8)
-        let prop_reply = self.connection
-            .get_property(false, window, self.atoms._NET_WM_NAME, self.atoms.UTF8_STRING, 0, u32::MAX)
+        let prop_reply = self
+            .connection
+            .get_property(
+                false,
+                window,
+                self.atoms._NET_WM_NAME,
+                self.atoms.UTF8_STRING,
+                0,
+                u32::MAX,
+            )
             .ok()?
             .reply()
             .ok()?;
@@ -3304,8 +3360,16 @@ impl X11State {
         }
 
         // Fallback to WM_NAME (Latin-1)
-        let prop_reply = self.connection
-            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, u32::MAX)
+        let prop_reply = self
+            .connection
+            .get_property(
+                false,
+                window,
+                AtomEnum::WM_NAME,
+                AtomEnum::STRING,
+                0,
+                u32::MAX,
+            )
             .ok()?
             .reply()
             .ok()?;
@@ -3479,7 +3543,8 @@ fn xdg_data_dirs() -> Vec<PathBuf> {
         }
     }
 
-    let data_dirs = env::var("XDG_DATA_DIRS").unwrap_or_else(|_| XDG_DATA_DIRS_FALLBACK.to_string());
+    let data_dirs =
+        env::var("XDG_DATA_DIRS").unwrap_or_else(|_| XDG_DATA_DIRS_FALLBACK.to_string());
     for entry in data_dirs.split(':') {
         if entry.is_empty() {
             continue;
@@ -3518,11 +3583,7 @@ fn gsettings_command(schema_dir: Option<&Path>) -> Command {
     command
 }
 
-fn gsettings_get_bool(
-    schema_dir: Option<&Path>,
-    schema: &str,
-    key: &str,
-) -> Result<bool, String> {
+fn gsettings_get_bool(schema_dir: Option<&Path>, schema: &str, key: &str) -> Result<bool, String> {
     let output = gsettings_command(schema_dir)
         .args(["get", schema, key])
         .output()
@@ -3614,7 +3675,9 @@ fn gnome_extension_fs_exists() -> bool {
 #[cfg(feature = "embed-gnome-extension")]
 fn compile_gnome_schemas(dir: &Path) -> std::io::Result<()> {
     let schema_dir = dir.join("schemas");
-    let output = Command::new("glib-compile-schemas").arg(&schema_dir).output()?;
+    let output = Command::new("glib-compile-schemas")
+        .arg(&schema_dir)
+        .output()?;
     if !output.status.success() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -3637,7 +3700,10 @@ fn write_embedded_extension_to_dir(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join("focus.js"), EMBEDDED_FOCUS_JS)?;
     let schema_dir = dir.join("schemas");
     fs::create_dir_all(&schema_dir)?;
-    fs::write(dir.join(GNOME_EXTENSION_SCHEMA_FILE), EMBEDDED_GSETTINGS_SCHEMA)?;
+    fs::write(
+        dir.join(GNOME_EXTENSION_SCHEMA_FILE),
+        EMBEDDED_GSETTINGS_SCHEMA,
+    )?;
     compile_gnome_schemas(dir)?;
     Ok(())
 }
@@ -3676,7 +3742,9 @@ fn gnome_state_name(state: u8) -> &'static str {
 /// Parse GNOME Shell extension state from D-Bus response.
 /// State values: 1.0=ENABLED, 2.0=DISABLED, 3.0=ERROR, 4.0=OUT_OF_DATE, 5.0=DOWNLOADING, 6.0=INITIALIZED
 #[cfg_attr(test, allow(dead_code))]
-fn parse_gnome_extension_state(body: &HashMap<String, zbus::zvariant::OwnedValue>) -> GnomeExtensionStatus {
+fn parse_gnome_extension_state(
+    body: &HashMap<String, zbus::zvariant::OwnedValue>,
+) -> GnomeExtensionStatus {
     // State is returned as f64 by GNOME Shell D-Bus API
     let state_f64: f64 = body
         .get("state")
@@ -3707,7 +3775,10 @@ fn gnome_extension_dbus_probe() -> Option<GnomeExtensionStatus> {
     let connection = match zbus::blocking::Connection::session() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[GNOME] D-Bus probe: failed to connect to session bus: {}", e);
+            eprintln!(
+                "[GNOME] D-Bus probe: failed to connect to session bus: {}",
+                e
+            );
             return None;
         }
     };
@@ -3770,7 +3841,13 @@ fn gnome_extension_status() -> GnomeExtensionStatus {
         })
         .unwrap_or(false);
 
-    GnomeExtensionStatus { installed, enabled, active: false, state: None, method: GnomeDetectionMethod::Cli }
+    GnomeExtensionStatus {
+        installed,
+        enabled,
+        active: false,
+        state: None,
+        method: GnomeDetectionMethod::Cli,
+    }
 }
 
 fn print_gnome_extension_install_instructions(reason: &str) {
@@ -3795,9 +3872,7 @@ fn print_gnome_extension_install_instructions(reason: &str) {
   gnome-extensions pack /tmp/kanata-switcher/{} --force --out-dir=/tmp
   gnome-extensions install "/tmp/{}.shell-extension.zip" --force
   gnome-extensions enable {}"#,
-            GNOME_EXTENSION_SRC_PATH,
-            GNOME_EXTENSION_UUID,
-            GNOME_EXTENSION_UUID
+            GNOME_EXTENSION_SRC_PATH, GNOME_EXTENSION_UUID, GNOME_EXTENSION_UUID
         )
     };
 
@@ -3895,10 +3970,7 @@ fn install_gnome_extension() -> bool {
             }
             Err(e) => {
                 eprintln!("[GNOME] Failed to install from embedded: {}", e);
-                print_gnome_extension_install_instructions(&format!(
-                    "Auto-install failed: {}",
-                    e
-                ));
+                print_gnome_extension_install_instructions(&format!("Auto-install failed: {}", e));
                 return false;
             }
         }
@@ -3914,7 +3986,8 @@ fn install_gnome_extension() -> bool {
                 e
             )
         } else {
-            "Extension files not found and embedded extension is disabled in this build.".to_string()
+            "Extension files not found and embedded extension is disabled in this build."
+                .to_string()
         };
         print_gnome_extension_install_instructions(&reason);
         return false;
@@ -3953,7 +4026,9 @@ fn ensure_gnome_extension(status: &GnomeExtensionStatus, auto_install: bool) -> 
 
     if !status.installed {
         if !auto_install {
-            print_gnome_extension_install_instructions("Auto-install was disabled (--no-install-gnome-extension).");
+            print_gnome_extension_install_instructions(
+                "Auto-install was disabled (--no-install-gnome-extension).",
+            );
             std::process::exit(1);
         }
 
@@ -3989,11 +4064,23 @@ fn print_gnome_extension_status(status: &GnomeExtensionStatus) {
             .unwrap_or_default();
         println!(
             "[GNOME] Extension status: {}, {} ({}{}){}",
-            if status.installed { "installed" } else { "not installed" },
-            if status.enabled { "enabled" } else { "not enabled" },
+            if status.installed {
+                "installed"
+            } else {
+                "not installed"
+            },
+            if status.enabled {
+                "enabled"
+            } else {
+                "not enabled"
+            },
             method_str,
             state_info,
-            if !matches!(status.state, Some(2) | Some(4)) { " - waiting for GNOME Shell..." } else { "" }
+            if !matches!(status.state, Some(2) | Some(4)) {
+                " - waiting for GNOME Shell..."
+            } else {
+                ""
+            }
         );
     }
 }
@@ -4072,7 +4159,7 @@ struct DbusWindowFocusService {
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
     env: Environment,
-    connection: Connection,
+    focus_query_connection: Connection,
     is_kde6: bool,
 }
 
@@ -4130,10 +4217,7 @@ impl DbusWindowFocusService {
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn paused_changed(
-        signal_emitter: &SignalEmitter<'_>,
-        paused: bool,
-    ) -> zbus::Result<()>;
+    async fn paused_changed(signal_emitter: &SignalEmitter<'_>, paused: bool) -> zbus::Result<()>;
 
     async fn restart(&self) {
         println!("[Restart] Restart requested via DBus");
@@ -4154,7 +4238,7 @@ impl DbusWindowFocusService {
     async fn unpause(&self) {
         unpause_daemon(
             self.env,
-            Some(self.connection.clone()),
+            Some(self.focus_query_connection.clone()),
             self.is_kde6,
             &self.pause_broadcaster,
             &self.handler,
@@ -4168,6 +4252,7 @@ impl DbusWindowFocusService {
 
 async fn register_dbus_service(
     connection: &Connection,
+    focus_query_connection: Connection,
     env: Environment,
     is_kde6: bool,
     kanata: KanataClient,
@@ -4184,7 +4269,7 @@ async fn register_dbus_service(
         restart_handle,
         pause_broadcaster: pause_broadcaster.clone(),
         env,
-        connection: connection.clone(),
+        focus_query_connection,
         is_kde6,
     };
 
@@ -4198,7 +4283,8 @@ async fn register_dbus_service(
         .await?;
 
     let mut receiver = status_broadcaster.subscribe();
-    let signal_emitter = SignalEmitter::new(connection, "/com/github/kanata/Switcher")?.into_owned();
+    let signal_emitter =
+        SignalEmitter::new(connection, "/com/github/kanata/Switcher")?.into_owned();
     let initial_status = status_broadcaster.snapshot();
     let initial_virtual_keys: Vec<&str> = initial_status
         .virtual_keys
@@ -4221,7 +4307,8 @@ async fn register_dbus_service(
             }
             let current = receiver.borrow().clone();
             if current != last {
-                let virtual_keys: Vec<&str> = current.virtual_keys.iter().map(|vk| vk.as_str()).collect();
+                let virtual_keys: Vec<&str> =
+                    current.virtual_keys.iter().map(|vk| vk.as_str()).collect();
                 let _ = DbusWindowFocusService::status_changed(
                     &signal_emitter_task,
                     &current.layer,
@@ -4265,8 +4352,10 @@ async fn run_gnome(
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
+    let focus_query_connection = Connection::session().await?;
     register_dbus_service(
         &connection,
+        focus_query_connection.clone(),
         Environment::Gnome,
         false,
         kanata.clone(),
@@ -4279,7 +4368,7 @@ async fn run_gnome(
 
     apply_focus_for_env(
         Environment::Gnome,
-        Some(&connection),
+        Some(&focus_query_connection),
         false,
         &handler,
         &status_broadcaster,
@@ -4383,12 +4472,14 @@ async fn run_kde(
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
+    let focus_query_connection = Connection::session().await?;
     let runtime_handle = tokio::runtime::Handle::current();
     let is_kde6 = env::var("KDE_SESSION_VERSION")
         .map(|v| v == "6")
         .unwrap_or(false);
     register_dbus_service(
         &connection,
+        focus_query_connection.clone(),
         Environment::Kde,
         is_kde6,
         kanata.clone(),
@@ -4401,7 +4492,7 @@ async fn run_kde(
 
     apply_focus_for_env(
         Environment::Kde,
-        Some(&connection),
+        Some(&focus_query_connection),
         is_kde6,
         &handler,
         &status_broadcaster,
@@ -4411,8 +4502,16 @@ async fn run_kde(
     .await?;
 
     // Inject KWin script (DBus service is ready to receive calls)
-    let api = if is_kde6 { "windowActivated" } else { "clientActivated" };
-    let active_window = if is_kde6 { "activeWindow" } else { "activeClient" };
+    let api = if is_kde6 {
+        "windowActivated"
+    } else {
+        "clientActivated"
+    };
+    let active_window = if is_kde6 {
+        "activeWindow"
+    } else {
+        "activeClient"
+    };
     let kwin_script = format!(
         r#"function notifyFocus(client) {{
   callDBus(
@@ -4560,12 +4659,14 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         eprintln!("[Config] Error: No rules found in config file");
         eprintln!();
         eprintln!("Example config (~/.config/kanata/kanata-switcher.json):");
-        eprintln!(r#"[
+        eprintln!(
+            r#"[
   {{"default": "base"}},
   {{"on_native_terminal": "tty"}},
   {{"class": "firefox", "layer": "browser"}},
   {{"class": "alacritty", "title": "vim", "layer": "vim"}}
-]"#);
+]"#
+        );
         std::process::exit(1);
     }
 
@@ -4752,7 +4853,6 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
 }
 
 // === Tests ===
-
 
 #[cfg(test)]
 mod tests;

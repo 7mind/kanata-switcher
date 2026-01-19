@@ -1,8 +1,20 @@
 use super::*;
 use clap::Parser;
+use proptest::prelude::*;
+use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use proptest::prelude::*;
+
+const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn with_test_timeout<F, T>(future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(TEST_TIMEOUT, future)
+        .await
+        .expect("test timeout")
+}
 
 fn win(class: &str, title: &str) -> WindowInfo {
     WindowInfo {
@@ -65,15 +77,31 @@ fn has_action(actions: &FocusActions, action: &FocusAction) -> bool {
 
 /// Helper to get all actions of a specific type
 fn get_layers(actions: &FocusActions) -> Vec<String> {
-    actions.actions.iter().filter_map(|a| {
-        if let FocusAction::ChangeLayer(l) = a { Some(l.clone()) } else { None }
-    }).collect()
+    actions
+        .actions
+        .iter()
+        .filter_map(|a| {
+            if let FocusAction::ChangeLayer(l) = a {
+                Some(l.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn get_raw_vk_actions(actions: &FocusActions) -> Vec<(String, String)> {
-    actions.actions.iter().filter_map(|a| {
-        if let FocusAction::RawVkAction(n, act) = a { Some((n.clone(), act.clone())) } else { None }
-    }).collect()
+    actions
+        .actions
+        .iter()
+        .filter_map(|a| {
+            if let FocusAction::RawVkAction(n, act) = a {
+                Some((n.clone(), act.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 // === Flow Tests ===
@@ -84,7 +112,10 @@ fn test_basic_layer_match() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
-    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("browser".to_string())]);
+    assert_eq!(
+        actions.actions,
+        vec![FocusAction::ChangeLayer("browser".to_string())]
+    );
 }
 
 #[test]
@@ -93,7 +124,10 @@ fn test_no_match_uses_default() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
-    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("default".to_string())]);
+    assert_eq!(
+        actions.actions,
+        vec![FocusAction::ChangeLayer("default".to_string())]
+    );
 }
 
 #[test]
@@ -112,7 +146,10 @@ fn test_same_rule_different_window_no_action() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", "tab1"), "default").unwrap();
-    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("global".to_string())]);
+    assert_eq!(
+        actions.actions,
+        vec![FocusAction::ChangeLayer("global".to_string())]
+    );
 
     let actions = handler.handle(&win("kitty", "tab2"), "default");
     assert_eq!(actions, None);
@@ -175,10 +212,13 @@ fn test_unfocus_releases_vk_and_switches_to_default() {
     handler.handle(&win("firefox", ""), "default");
     let actions = handler.handle(&win("", ""), "default").unwrap();
 
-    assert_eq!(actions.actions, vec![
-        FocusAction::ReleaseVk("vk_browser".to_string()),
-        FocusAction::ChangeLayer("default".to_string()),
-    ]);
+    assert_eq!(
+        actions.actions,
+        vec![
+            FocusAction::ReleaseVk("vk_browser".to_string()),
+            FocusAction::ChangeLayer("default".to_string()),
+        ]
+    );
     assert_eq!(actions.new_managed_vks, Vec::<String>::new());
 }
 
@@ -203,8 +243,14 @@ fn test_native_terminal_rule_applies_actions() {
         )
         .unwrap();
 
-    assert!(has_action(&actions, &FocusAction::ChangeLayer("tty".to_string())));
-    assert!(has_action(&actions, &FocusAction::PressVk("vk_tty".to_string())));
+    assert!(has_action(
+        &actions,
+        &FocusAction::ChangeLayer("tty".to_string())
+    ));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk_tty".to_string())
+    ));
     assert!(has_action(
         &actions,
         &FocusAction::RawVkAction("vk_notify".to_string(), "Tap".to_string())
@@ -246,10 +292,7 @@ fn test_autostart_passthrough_args_tray_focus_only() {
     let exec_args = autostart_passthrough_args(&matches, &args);
     assert_eq!(
         exec_args,
-        vec![
-            "--tray-focus-only".to_string(),
-            "false".to_string()
-        ]
+        vec!["--tray-focus-only".to_string(), "false".to_string()]
     );
 }
 
@@ -287,13 +330,19 @@ fn test_native_terminal_without_rule_uses_default() {
         )
         .unwrap();
 
-    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("default".to_string())]);
+    assert_eq!(
+        actions.actions,
+        vec![FocusAction::ChangeLayer("default".to_string())]
+    );
 }
 
 #[test]
 fn test_control_command_restart() {
     let args = Args::parse_from(["kanata-switcher", "--restart"]);
-    assert_eq!(resolve_control_command(&args), Some(ControlCommand::Restart));
+    assert_eq!(
+        resolve_control_command(&args),
+        Some(ControlCommand::Restart)
+    );
 }
 
 #[test]
@@ -305,7 +354,10 @@ fn test_control_command_pause() {
 #[test]
 fn test_control_command_unpause() {
     let args = Args::parse_from(["kanata-switcher", "--unpause"]);
-    assert_eq!(resolve_control_command(&args), Some(ControlCommand::Unpause));
+    assert_eq!(
+        resolve_control_command(&args),
+        Some(ControlCommand::Unpause)
+    );
 }
 
 #[test]
@@ -332,12 +384,10 @@ fn test_sni_format_virtual_keys() {
         SniIndicator::format_virtual_keys(&[String::from("a"), String::from("b")]),
         "2"
     );
-    let keys = vec![
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect::<Vec<_>>();
+    let keys = vec!["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
     assert_eq!(SniIndicator::format_virtual_keys(&keys), "∞");
 }
 
@@ -756,8 +806,16 @@ fn test_virtual_key_press_on_focus() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
-    assert!(has_action(&actions, &FocusAction::PressVk("vk_browser".to_string())));
-    assert!(!actions.actions.iter().any(|a| matches!(a, FocusAction::ReleaseVk(_))));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk_browser".to_string())
+    ));
+    assert!(
+        !actions
+            .actions
+            .iter()
+            .any(|a| matches!(a, FocusAction::ReleaseVk(_)))
+    );
     assert_eq!(actions.new_managed_vks, vec!["vk_browser".to_string()]);
 }
 
@@ -773,12 +831,24 @@ fn test_virtual_key_release_on_switch() {
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
 
     // Release comes before Press in the action list
-    let release_idx = actions.actions.iter().position(|a| matches!(a, FocusAction::ReleaseVk(_)));
-    let press_idx = actions.actions.iter().position(|a| matches!(a, FocusAction::PressVk(_)));
+    let release_idx = actions
+        .actions
+        .iter()
+        .position(|a| matches!(a, FocusAction::ReleaseVk(_)));
+    let press_idx = actions
+        .actions
+        .iter()
+        .position(|a| matches!(a, FocusAction::PressVk(_)));
     assert!(release_idx.unwrap() < press_idx.unwrap());
 
-    assert!(has_action(&actions, &FocusAction::ReleaseVk("vk_browser".to_string())));
-    assert!(has_action(&actions, &FocusAction::PressVk("vk_terminal".to_string())));
+    assert!(has_action(
+        &actions,
+        &FocusAction::ReleaseVk("vk_browser".to_string())
+    ));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk_terminal".to_string())
+    ));
 }
 
 #[test]
@@ -790,9 +860,15 @@ fn test_virtual_key_no_change_no_press() {
     let actions = handler.handle(&win("firefox", "tab2"), "default");
 
     // Window changed but VK is the same - no VK actions (VK already held)
-    assert!(actions.is_none() || !actions.as_ref().unwrap().actions.iter().any(|a|
-        matches!(a, FocusAction::PressVk(_) | FocusAction::ReleaseVk(_))
-    ));
+    assert!(
+        actions.is_none()
+            || !actions
+                .as_ref()
+                .unwrap()
+                .actions
+                .iter()
+                .any(|a| matches!(a, FocusAction::PressVk(_) | FocusAction::ReleaseVk(_)))
+    );
 }
 
 #[test]
@@ -823,15 +899,33 @@ fn test_partial_vk_set_change_only_releases_removed() {
 
     // Focus window that matches both rules - both VKs pressed
     let actions = handler.handle(&win("app", "both"), "default").unwrap();
-    assert!(has_action(&actions, &FocusAction::PressVk("vk1".to_string())));
-    assert!(has_action(&actions, &FocusAction::PressVk("vk2".to_string())));
-    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string()]);
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk1".to_string())
+    ));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk2".to_string())
+    ));
+    assert_eq!(
+        actions.new_managed_vks,
+        vec!["vk1".to_string(), "vk2".to_string()]
+    );
 
     // Focus window that only matches second rule - only vk1 should be released, vk2 stays held
     let actions = handler.handle(&win("app", "other"), "default").unwrap();
-    assert!(has_action(&actions, &FocusAction::ReleaseVk("vk1".to_string())));
-    assert!(!has_action(&actions, &FocusAction::ReleaseVk("vk2".to_string())));
-    assert!(!has_action(&actions, &FocusAction::PressVk("vk2".to_string()))); // vk2 already held
+    assert!(has_action(
+        &actions,
+        &FocusAction::ReleaseVk("vk1".to_string())
+    ));
+    assert!(!has_action(
+        &actions,
+        &FocusAction::ReleaseVk("vk2".to_string())
+    ));
+    assert!(!has_action(
+        &actions,
+        &FocusAction::PressVk("vk2".to_string())
+    )); // vk2 already held
     assert_eq!(actions.new_managed_vks, vec!["vk2".to_string()]);
 }
 
@@ -871,26 +965,46 @@ fn test_unfocus_releases_multiple_vks_in_reverse_order() {
 
     // Focus window - all three VKs pressed in order
     let actions = handler.handle(&win("app", ""), "default").unwrap();
-    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string(), "vk3".to_string()]);
+    assert_eq!(
+        actions.new_managed_vks,
+        vec!["vk1".to_string(), "vk2".to_string(), "vk3".to_string()]
+    );
 
     // Unfocus - all VKs should be released in reverse order (vk3, vk2, vk1)
     let actions = handler.handle(&win("", ""), "default").unwrap();
-    let release_actions: Vec<_> = actions.actions.iter()
-        .filter_map(|a| if let FocusAction::ReleaseVk(vk) = a { Some(vk.clone()) } else { None })
+    let release_actions: Vec<_> = actions
+        .actions
+        .iter()
+        .filter_map(|a| {
+            if let FocusAction::ReleaseVk(vk) = a {
+                Some(vk.clone())
+            } else {
+                None
+            }
+        })
         .collect();
-    assert_eq!(release_actions, vec!["vk3".to_string(), "vk2".to_string(), "vk1".to_string()]);
+    assert_eq!(
+        release_actions,
+        vec!["vk3".to_string(), "vk2".to_string(), "vk1".to_string()]
+    );
 }
 
 #[test]
 fn test_raw_vk_action_fires_on_focus() {
-    let rules = vec![rule_raw_vk(Some("firefox"), vec![("vk1", "Tap"), ("vk2", "Toggle")])];
+    let rules = vec![rule_raw_vk(
+        Some("firefox"),
+        vec![("vk1", "Tap"), ("vk2", "Toggle")],
+    )];
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
-    assert_eq!(get_raw_vk_actions(&actions), vec![
-        ("vk1".to_string(), "Tap".to_string()),
-        ("vk2".to_string(), "Toggle".to_string()),
-    ]);
+    assert_eq!(
+        get_raw_vk_actions(&actions),
+        vec![
+            ("vk1".to_string(), "Tap".to_string()),
+            ("vk2".to_string(), "Toggle".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -903,7 +1017,10 @@ fn test_fallthrough_collects_all_layers() {
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     // Both layers should be in the action list, in order
-    assert_eq!(get_layers(&actions), vec!["layer1".to_string(), "layer2".to_string()]);
+    assert_eq!(
+        get_layers(&actions),
+        vec!["layer1".to_string(), "layer2".to_string()]
+    );
 }
 
 #[test]
@@ -915,10 +1032,16 @@ fn test_fallthrough_add_remove_rule_only_new_actions() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", "special"), "default").unwrap();
-    assert_eq!(get_layers(&actions), vec!["base".to_string(), "special".to_string()]);
+    assert_eq!(
+        get_layers(&actions),
+        vec!["base".to_string(), "special".to_string()]
+    );
 
     let actions = handler.handle(&win("app", "other"), "default").unwrap();
-    assert_eq!(actions.actions, vec![FocusAction::ChangeLayer("base".to_string())]);
+    assert_eq!(
+        actions.actions,
+        vec![FocusAction::ChangeLayer("base".to_string())]
+    );
 }
 
 #[test]
@@ -930,10 +1053,13 @@ fn test_fallthrough_collects_all_raw_vk_actions() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
-    assert_eq!(get_raw_vk_actions(&actions), vec![
-        ("vk1".to_string(), "Press".to_string()),
-        ("vk2".to_string(), "Tap".to_string()),
-    ]);
+    assert_eq!(
+        get_raw_vk_actions(&actions),
+        vec![
+            ("vk1".to_string(), "Press".to_string()),
+            ("vk2".to_string(), "Tap".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -946,9 +1072,18 @@ fn test_fallthrough_all_vks_pressed_and_held() {
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     // Both vk1 and vk2 should be pressed (all matched VKs are held)
-    assert!(has_action(&actions, &FocusAction::PressVk("vk1".to_string())));
-    assert!(has_action(&actions, &FocusAction::PressVk("vk2".to_string())));
-    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string()]);
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk1".to_string())
+    ));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk2".to_string())
+    ));
+    assert_eq!(
+        actions.new_managed_vks,
+        vec!["vk1".to_string(), "vk2".to_string()]
+    );
 }
 
 #[test]
@@ -962,10 +1097,22 @@ fn test_fallthrough_multiple_vks_all_pressed_and_held() {
 
     let actions = handler.handle(&win("kitty", ""), "default").unwrap();
     // All three VKs should be pressed and held
-    assert!(has_action(&actions, &FocusAction::PressVk("vk1".to_string())));
-    assert!(has_action(&actions, &FocusAction::PressVk("vk2".to_string())));
-    assert!(has_action(&actions, &FocusAction::PressVk("vk3".to_string())));
-    assert_eq!(actions.new_managed_vks, vec!["vk1".to_string(), "vk2".to_string(), "vk3".to_string()]);
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk1".to_string())
+    ));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk2".to_string())
+    ));
+    assert!(has_action(
+        &actions,
+        &FocusAction::PressVk("vk3".to_string())
+    ));
+    assert_eq!(
+        actions.new_managed_vks,
+        vec!["vk1".to_string(), "vk2".to_string(), "vk3".to_string()]
+    );
 }
 
 #[test]
@@ -997,14 +1144,17 @@ fn test_fallthrough_action_order_preserved() {
 
     // Expected order: layer1, PressVk(vk1), raw1, layer2, PressVk(vk2), raw2
     // All matched VKs are pressed (not tapped)
-    assert_eq!(actions.actions, vec![
-        FocusAction::ChangeLayer("layer1".to_string()),
-        FocusAction::PressVk("vk1".to_string()),
-        FocusAction::RawVkAction("raw1".to_string(), "Tap".to_string()),
-        FocusAction::ChangeLayer("layer2".to_string()),
-        FocusAction::PressVk("vk2".to_string()),
-        FocusAction::RawVkAction("raw2".to_string(), "Toggle".to_string()),
-    ]);
+    assert_eq!(
+        actions.actions,
+        vec![
+            FocusAction::ChangeLayer("layer1".to_string()),
+            FocusAction::PressVk("vk1".to_string()),
+            FocusAction::RawVkAction("raw1".to_string(), "Tap".to_string()),
+            FocusAction::ChangeLayer("layer2".to_string()),
+            FocusAction::PressVk("vk2".to_string()),
+            FocusAction::RawVkAction("raw2".to_string(), "Toggle".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -1021,11 +1171,14 @@ fn test_combined_virtual_key_and_raw_vk_action() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("firefox", ""), "default").unwrap();
-    assert_eq!(actions.actions, vec![
-        FocusAction::ChangeLayer("browser".to_string()),
-        FocusAction::PressVk("vk_browser".to_string()),
-        FocusAction::RawVkAction("vk_notify".to_string(), "Tap".to_string()),
-    ]);
+    assert_eq!(
+        actions.actions,
+        vec![
+            FocusAction::ChangeLayer("browser".to_string()),
+            FocusAction::PressVk("vk_browser".to_string()),
+            FocusAction::RawVkAction("vk_notify".to_string(), "Tap".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -1042,9 +1195,15 @@ fn test_regex_pattern() {
     let rules = vec![rule(Some("^(firefox|chrome)$"), None, Some("browser"))];
     let mut handler = FocusHandler::new(rules, None, true);
 
-    assert_eq!(get_layers(&handler.handle(&win("firefox", ""), "default").unwrap()), vec!["browser".to_string()]);
+    assert_eq!(
+        get_layers(&handler.handle(&win("firefox", ""), "default").unwrap()),
+        vec!["browser".to_string()]
+    );
     assert_eq!(handler.handle(&win("chrome", ""), "default"), None);
-    assert_eq!(get_layers(&handler.handle(&win("chromium", ""), "default").unwrap()), vec!["default".to_string()]);
+    assert_eq!(
+        get_layers(&handler.handle(&win("chromium", ""), "default").unwrap()),
+        vec!["default".to_string()]
+    );
 }
 
 #[test]
@@ -1057,36 +1216,45 @@ fn test_three_rules_fallthrough_all_layers_execute() {
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
-    assert_eq!(get_layers(&actions), vec![
-        "layer1".to_string(),
-        "layer2".to_string(),
-        "layer3".to_string(),
-    ]);
+    assert_eq!(
+        get_layers(&actions),
+        vec![
+            "layer1".to_string(),
+            "layer2".to_string(),
+            "layer3".to_string(),
+        ]
+    );
 }
 
 #[test]
 fn test_multiple_raw_vk_actions_per_rule_all_execute() {
     let rules = vec![
-        rule_with_fallthrough(rule_raw_vk(Some("app"), vec![("a1", "Press"), ("a2", "Release")])),
+        rule_with_fallthrough(rule_raw_vk(
+            Some("app"),
+            vec![("a1", "Press"), ("a2", "Release")],
+        )),
         rule_raw_vk(Some("app"), vec![("b1", "Tap"), ("b2", "Toggle")]),
     ];
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
-    assert_eq!(get_raw_vk_actions(&actions), vec![
-        ("a1".to_string(), "Press".to_string()),
-        ("a2".to_string(), "Release".to_string()),
-        ("b1".to_string(), "Tap".to_string()),
-        ("b2".to_string(), "Toggle".to_string()),
-    ]);
+    assert_eq!(
+        get_raw_vk_actions(&actions),
+        vec![
+            ("a1".to_string(), "Press".to_string()),
+            ("a2".to_string(), "Release".to_string()),
+            ("b1".to_string(), "Tap".to_string()),
+            ("b2".to_string(), "Toggle".to_string()),
+        ]
+    );
 }
 
 #[test]
 fn test_non_fallthrough_stops_chain() {
     // First rule matches but has fallthrough=false, should stop chain
     let rules = vec![
-        rule(Some("app"), None, Some("layer1")),  // fallthrough=false
-        rule(Some("app"), None, Some("layer2")),  // would match but shouldn't be reached
+        rule(Some("app"), None, Some("layer1")), // fallthrough=false
+        rule(Some("app"), None, Some("layer2")), // would match but shouldn't be reached
         rule(Some("app"), None, Some("layer3")),
     ];
     let mut handler = FocusHandler::new(rules, None, true);
@@ -1102,17 +1270,20 @@ fn test_fallthrough_stops_at_non_fallthrough() {
     let rules = vec![
         rule_with_fallthrough(rule(Some("app"), None, Some("layer1"))),
         rule_with_fallthrough(rule(Some("app"), None, Some("layer2"))),
-        rule(Some("app"), None, Some("layer3")),  // fallthrough=false, stops here
-        rule(Some("app"), None, Some("layer4")),  // should not be reached
+        rule(Some("app"), None, Some("layer3")), // fallthrough=false, stops here
+        rule(Some("app"), None, Some("layer4")), // should not be reached
     ];
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
-    assert_eq!(get_layers(&actions), vec![
-        "layer1".to_string(),
-        "layer2".to_string(),
-        "layer3".to_string(),
-    ]);
+    assert_eq!(
+        get_layers(&actions),
+        vec![
+            "layer1".to_string(),
+            "layer2".to_string(),
+            "layer3".to_string(),
+        ]
+    );
     // layer4 should NOT be present
 }
 
@@ -1121,17 +1292,17 @@ fn test_non_matching_rules_skipped_in_fallthrough() {
     // Rules that don't match should be skipped even with fallthrough
     let rules = vec![
         rule_with_fallthrough(rule(Some("app"), None, Some("layer1"))),
-        rule_with_fallthrough(rule(Some("other"), None, Some("layer2"))),  // doesn't match
+        rule_with_fallthrough(rule(Some("other"), None, Some("layer2"))), // doesn't match
         rule(Some("app"), None, Some("layer3")),
     ];
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     // layer2 should be skipped because "other" doesn't match "app"
-    assert_eq!(get_layers(&actions), vec![
-        "layer1".to_string(),
-        "layer3".to_string(),
-    ]);
+    assert_eq!(
+        get_layers(&actions),
+        vec!["layer1".to_string(), "layer3".to_string(),]
+    );
 }
 
 #[test]
@@ -1140,18 +1311,18 @@ fn test_non_matching_non_fallthrough_rule_does_not_stop_chain() {
     // (only matching rules can stop the chain)
     let rules = vec![
         rule_with_fallthrough(rule(Some("app"), None, Some("layer1"))),
-        rule(Some("other"), None, Some("layer2")),  // doesn't match, fallthrough=false
-        rule(Some("app"), None, Some("layer3")),    // should still be reached
+        rule(Some("other"), None, Some("layer2")), // doesn't match, fallthrough=false
+        rule(Some("app"), None, Some("layer3")),   // should still be reached
     ];
     let mut handler = FocusHandler::new(rules, None, true);
 
     let actions = handler.handle(&win("app", ""), "default").unwrap();
     // layer1 and layer3 should be collected; layer2 skipped (doesn't match)
     // The non-matching rule's fallthrough=false should NOT stop the chain
-    assert_eq!(get_layers(&actions), vec![
-        "layer1".to_string(),
-        "layer3".to_string(),
-    ]);
+    assert_eq!(
+        get_layers(&actions),
+        vec!["layer1".to_string(), "layer3".to_string(),]
+    );
 }
 
 // === Property Tests ===
@@ -1214,7 +1385,10 @@ fn arb_rule() -> impl Strategy<Value = Rule> {
         prop::option::of(arb_title()),
         prop::option::of(arb_layer()),
         prop::option::of(arb_vk_name()),
-        prop::option::of(prop::collection::vec((arb_vk_name(), arb_vk_action()), 0..3)),
+        prop::option::of(prop::collection::vec(
+            (arb_vk_name(), arb_vk_action()),
+            0..3,
+        )),
         any::<bool>(),
     )
         .prop_map(|(class, title, layer, vk, raw_vk, fallthrough)| Rule {
@@ -1436,7 +1610,10 @@ fn test_gnome_extension_state_enabled_f64() {
     use zbus::zvariant::{OwnedValue, Value};
 
     let mut body = HashMap::new();
-    body.insert("state".to_string(), OwnedValue::try_from(Value::F64(1.0)).unwrap());
+    body.insert(
+        "state".to_string(),
+        OwnedValue::try_from(Value::F64(1.0)).unwrap(),
+    );
 
     let status = parse_gnome_extension_state(&body);
     assert!(status.active, "state=1.0 should be active");
@@ -1450,7 +1627,10 @@ fn test_gnome_extension_state_disabled_f64() {
     use zbus::zvariant::{OwnedValue, Value};
 
     let mut body = HashMap::new();
-    body.insert("state".to_string(), OwnedValue::try_from(Value::F64(2.0)).unwrap());
+    body.insert(
+        "state".to_string(),
+        OwnedValue::try_from(Value::F64(2.0)).unwrap(),
+    );
 
     let status = parse_gnome_extension_state(&body);
     assert!(!status.active, "state=2.0 should not be active");
@@ -1469,85 +1649,100 @@ fn test_gnome_extension_state_missing() {
 
 #[tokio::test]
 async fn test_logind_monitor_startup_failure_is_non_fatal() {
-    let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
-    let status_broadcaster = StatusBroadcaster::new();
-    let pause_broadcaster = PauseBroadcaster::new();
-    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
+    with_test_timeout(async {
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
 
-    let started = start_logind_session_monitor_best_effort(
-        Environment::Wayland,
-        None,
-        false,
-        handler,
-        status_broadcaster.clone(),
-        pause_broadcaster,
-        kanata,
-        |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "logind unavailable").into())
-        },
-    )
+        let started = start_logind_session_monitor_best_effort(
+            Environment::Wayland,
+            None,
+            false,
+            handler,
+            status_broadcaster.clone(),
+            pause_broadcaster,
+            kanata,
+            |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "logind unavailable").into())
+            },
+        )
+        .await;
+
+        assert!(!started);
+    })
     .await;
-
-    assert!(!started);
 }
 
 #[tokio::test]
 async fn test_logind_monitor_startup_success_returns_true() {
-    let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
-    let status_broadcaster = StatusBroadcaster::new();
-    let pause_broadcaster = PauseBroadcaster::new();
-    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
+    with_test_timeout(async {
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
 
-    let started = start_logind_session_monitor_best_effort(
-        Environment::Wayland,
-        None,
-        false,
-        handler,
-        status_broadcaster.clone(),
-        pause_broadcaster,
-        kanata,
-        |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async { Ok(()) },
-    )
+        let started = start_logind_session_monitor_best_effort(
+            Environment::Wayland,
+            None,
+            false,
+            handler,
+            status_broadcaster.clone(),
+            pause_broadcaster,
+            kanata,
+            |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async { Ok(()) },
+        )
+        .await;
+
+        assert!(started);
+    })
     .await;
-
-    assert!(started);
 }
 
 #[tokio::test]
 async fn test_wait_for_restart_or_shutdown_returns_restart() {
-    let restart_handle = RestartHandle::new();
-    let shutdown_handle = ShutdownHandle::new();
+    with_test_timeout(async {
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
 
-    let wait_future = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle);
-    let trigger_future = async {
-        tokio::task::yield_now().await;
-        restart_handle.request();
-    };
-    let (outcome, _) = tokio::join!(wait_future, trigger_future);
-    assert_eq!(outcome, RunOutcome::Restart);
+        let wait_future = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle);
+        let trigger_future = async {
+            tokio::task::yield_now().await;
+            restart_handle.request();
+        };
+        let (outcome, _) = tokio::join!(wait_future, trigger_future);
+        assert_eq!(outcome, RunOutcome::Restart);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn test_wait_for_restart_or_shutdown_returns_exit() {
-    let restart_handle = RestartHandle::new();
-    let shutdown_handle = ShutdownHandle::new();
+    with_test_timeout(async {
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
 
-    shutdown_handle.request();
+        shutdown_handle.request();
 
-    let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
-    assert_eq!(outcome, RunOutcome::Exit);
+        let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
+        assert_eq!(outcome, RunOutcome::Exit);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn test_wait_for_restart_or_shutdown_shutdown_wins() {
-    let restart_handle = RestartHandle::new();
-    let shutdown_handle = ShutdownHandle::new();
+    with_test_timeout(async {
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
 
-    shutdown_handle.request();
-    restart_handle.request();
+        shutdown_handle.request();
+        restart_handle.request();
 
-    let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
-    assert_eq!(outcome, RunOutcome::Exit);
+        let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
+        assert_eq!(outcome, RunOutcome::Exit);
+    })
+    .await;
 }
 
 #[test]

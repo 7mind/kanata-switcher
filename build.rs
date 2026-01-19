@@ -44,7 +44,12 @@ fn main() {
         let src = src_dir.join(file);
         let dst = target_gnome_dir.join(file);
         fs::copy(&src, &dst).unwrap_or_else(|e| {
-            panic!("Failed to copy {} to {}: {}", src.display(), dst.display(), e)
+            panic!(
+                "Failed to copy {} to {}: {}",
+                src.display(),
+                dst.display(),
+                e
+            )
         });
     }
 
@@ -61,7 +66,12 @@ fn main() {
             .expect("GNOME extension JS filename must be valid UTF-8");
         let dst = target_gnome_dir.join(filename);
         fs::copy(&path, &dst).unwrap_or_else(|e| {
-            panic!("Failed to copy {} to {}: {}", path.display(), dst.display(), e)
+            panic!(
+                "Failed to copy {} to {}: {}",
+                path.display(),
+                dst.display(),
+                e
+            )
         });
     }
 
@@ -71,7 +81,12 @@ fn main() {
         let src = src_dir.join(file);
         let dst = target_gnome_dir.join(file);
         fs::copy(&src, &dst).unwrap_or_else(|e| {
-            panic!("Failed to copy {} to {}: {}", src.display(), dst.display(), e)
+            panic!(
+                "Failed to copy {} to {}: {}",
+                src.display(),
+                dst.display(),
+                e
+            )
         });
     }
 
