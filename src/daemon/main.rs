@@ -1832,9 +1832,11 @@ async fn resolve_logind_session_path(
     .await?;
 
     if let Ok(session_id) = env::var("XDG_SESSION_ID") {
+        println!("[Logind] Using XDG_SESSION_ID={}", session_id);
         let path: OwnedObjectPath = manager.call("GetSession", &(session_id)).await?;
         return Ok(path);
     }
+    println!("[Logind] XDG_SESSION_ID not set; resolving session via logind");
 
     let pid = std::process::id();
     match manager.call("GetSessionByPID", &(pid)).await {
