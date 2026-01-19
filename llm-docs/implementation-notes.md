@@ -163,7 +163,7 @@ SNI indicator (non-GNOME):
 - Optional StatusNotifier item for KDE/wlroots/COSMIC/X11; menu includes Pause/Restart and “Show app layer only”
 - Uses the same layer + virtual key formatting as GNOME; pause toggles through local handlers on non-DBus backends
 - Tooltip: shows current layer; if any VKs are held, also lists the VK names (comma-separated)
-- Persists "Show app layer only" via GSettings key `show-focus-layer-only` in schema `org.gnome.shell.extensions.kanata-switcher` when available; `--tray-focus-only true|false` skips the GSettings read
+- Persists "Show app layer only" via GSettings key `show-focus-layer-only` in schema `org.gnome.shell.extensions.kanata-switcher` when available; `--indicator-focus-only true|false` skips the GSettings read
 
 ## Virtual Key Support
 

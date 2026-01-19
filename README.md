@@ -57,7 +57,7 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 
 If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but native terminal switching is disabled; a warning is logged on startup.
 
-For non-GNOME desktops, the SNI tray menu's "Show app layer only" setting is persisted via the GNOME extension's GSettings schema when available. Use `--tray-focus-only true|false` to override it at startup.
+For non-GNOME desktops, the SNI tray menu's "Show app layer only" setting is persisted via the GNOME extension's GSettings schema when available. Use `--indicator-focus-only true|false` to override it at startup.
 
 ### Config Format
 
@@ -393,21 +393,21 @@ passed on the command line. To update the entry, rerun the install command with 
 ### Daemon Options
 
 ```
--p, --port PORT              Kanata TCP port (default: 10000)
--H, --host HOST              Kanata host (default: 127.0.0.1)
--c, --config PATH            Config file path
--q, --quiet                  Suppress focus/layer-switch messages
---quiet-focus                Suppress focus messages only
---install-autostart          Install autostart desktop entry and exit
---uninstall-autostart        Uninstall autostart desktop entry and exit
---install-gnome-extension    Auto-install GNOME extension if missing (default)
---no-install-gnome-extension Do not auto-install GNOME extension
---no-indicator               Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
---tray-focus-only true|false Override SNI focus-only mode and skip GSettings read
---restart                    Send Restart request to an existing daemon and exit
---pause                      Send Pause request to an existing daemon and exit
---unpause                    Send Unpause request to an existing daemon and exit
--h, --help                   Show help
+-p, --port PORT                    Kanata TCP port (default: 10000)
+-H, --host HOST                    Kanata host (default: 127.0.0.1)
+-c, --config PATH                  Config file path
+-q, --quiet                        Suppress focus/layer-switch messages
+--quiet-focus                      Suppress focus messages only
+--install-autostart                Install autostart desktop entry and exit
+--uninstall-autostart              Uninstall autostart desktop entry and exit
+--install-gnome-extension          Auto-install GNOME extension if missing (default)
+--no-install-gnome-extension       Do not auto-install GNOME extension
+--no-indicator                     Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
+--indicator-focus-only true|false  Override StatusNotifier (SNI) indicator focus-only mode
+--restart                          Send Restart request to an existing daemon and exit
+--pause                            Send Pause request to an existing daemon and exit
+--unpause                          Send Unpause request to an existing daemon and exit
+-h, --help                         Show help
 ```
 
 Systemd units use `--quiet-focus` by default to reduce log noise.

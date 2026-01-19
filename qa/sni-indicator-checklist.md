@@ -21,7 +21,7 @@ Environment: (DE/compositor, panel/bar, session type)
 
 ## Persistence
 - [ ] "Show app layer only" persists across daemon restarts when GSettings is available
-- [ ] `--tray-focus-only true|false` overrides startup value without locking the toggle
+- [ ] `--indicator-focus-only true|false` overrides startup value without locking the toggle
 
 ## Failure behavior
 - [ ] If SNI cannot be started, daemon keeps running and logs error

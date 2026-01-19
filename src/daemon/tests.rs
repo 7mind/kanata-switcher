@@ -285,14 +285,14 @@ fn test_autostart_passthrough_args_tray_focus_only() {
     let matches = Args::command().get_matches_from([
         "kanata-switcher",
         "--install-autostart",
-        "--tray-focus-only",
+        "--indicator-focus-only",
         "false",
     ]);
     let args = Args::from_arg_matches(&matches).unwrap();
     let exec_args = autostart_passthrough_args(&matches, &args);
     assert_eq!(
         exec_args,
-        vec!["--tray-focus-only".to_string(), "false".to_string()]
+        vec!["--indicator-focus-only".to_string(), "false".to_string()]
     );
 }
 

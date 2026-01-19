@@ -369,7 +369,7 @@ fn autostart_passthrough_args(matches: &ArgMatches, args: &Args) -> Vec<String> 
                 let value = args
                     .tray_focus_only
                     .expect("tray_focus_only missing after command-line input");
-                exec_args.push("--tray-focus-only".to_string());
+                exec_args.push("--indicator-focus-only".to_string());
                 exec_args.push(value.as_arg().to_string());
             }
             _ => {
