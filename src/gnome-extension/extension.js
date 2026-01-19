@@ -53,6 +53,10 @@ export default class KanataSwitcherExtension extends Extension {
       DBUS_INTERFACE,
       null
     );
+    this._daemonNameOwnerChangedId = this._daemonProxy.connect(
+      'notify::g-name-owner',
+      () => this._onDaemonOwnerChanged()
+    );
 
     this._daemonProxySignalId = this._daemonProxy.connect(
       'g-signal',
@@ -76,6 +80,7 @@ export default class KanataSwitcherExtension extends Extension {
     this._notifyFocus();
     this._refreshStatusFromDaemon();
     this._refreshPausedFromDaemon();
+    this._onDaemonOwnerChanged();
     this._syncIndicator();
 
     console.log('[KanataSwitcher] Extension enabled (push mode)');
@@ -99,6 +104,10 @@ export default class KanataSwitcherExtension extends Extension {
     if (this._daemonProxySignalId) {
       this._daemonProxy.disconnect(this._daemonProxySignalId);
       this._daemonProxySignalId = null;
+    }
+    if (this._daemonNameOwnerChangedId) {
+      this._daemonProxy.disconnect(this._daemonNameOwnerChangedId);
+      this._daemonNameOwnerChangedId = null;
     }
 
     if (this._indicator) {
@@ -267,6 +276,44 @@ export default class KanataSwitcherExtension extends Extension {
     this._isUpdatingPauseItem = true;
     this._pauseMenuItem.setToggleState(this._paused);
     this._isUpdatingPauseItem = false;
+  }
+
+  _onDaemonOwnerChanged() {
+    if (!this._daemonProxy) {
+      return;
+    }
+
+    let owner = null;
+    try {
+      owner = this._daemonProxy.get_name_owner();
+    } catch (error) {
+      owner = null;
+    }
+
+    if (!owner) {
+      this._setDisconnected();
+      return;
+    }
+
+    this._refreshStatusFromDaemon();
+    this._refreshPausedFromDaemon();
+  }
+
+  _setDisconnected() {
+    this._status = {
+      layer: '',
+      virtualKeys: [],
+      source: 'external'
+    };
+    this._focusStatus = {
+      layer: '',
+      virtualKeys: [],
+      source: 'focus'
+    };
+    this._lastStatus = this._status;
+    this._paused = false;
+    this._syncPauseMenuItem();
+    this._applyStatusToIndicator();
   }
 
   _requestRestart() {
