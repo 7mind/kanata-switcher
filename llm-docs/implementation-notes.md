@@ -95,6 +95,11 @@ KanataClient handles disconnects automatically:
 - Queues pending layer change during disconnect, applies on reconnect
 - Initial connection also retries with same backoff
 
+## Shutdown
+
+- Signal handler requests shutdown via a watch channel; backends exit cleanly on shutdown.
+- Cleanup is handled in Drop guards (default layer reset, SNI shutdown, KWin script unload + temp file removal).
+
 ## Unfocus Handling
 
 When all windows are closed (no window focused), the daemon switches to the default layer:

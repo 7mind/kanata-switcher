@@ -8,17 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::os::fd::AsFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::sync::{watch, Mutex as TokioMutex};
 use wayland_client::{
-    backend::ObjectId,
+    backend::{ObjectId, WaylandError},
     globals::{registry_queue_init, GlobalListContents},
     protocol::wl_registry,
     Connection as WaylandConnection, Dispatch, Proxy, QueueHandle,
@@ -921,7 +924,27 @@ struct PauseBroadcaster {
     sender: watch::Sender<bool>,
 }
 
+#[derive(Clone, Debug)]
+struct ShutdownHandle {
+    sender: watch::Sender<bool>,
+}
+
 impl RestartHandle {
+    fn new() -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender }
+    }
+
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.sender.subscribe()
+    }
+
+    fn request(&self) {
+        self.sender.send_replace(true);
+    }
+}
+
+impl ShutdownHandle {
     fn new() -> Self {
         let (sender, _) = watch::channel(false);
         Self { sender }
@@ -1016,6 +1039,32 @@ impl StatusBroadcaster {
         updater(&mut next);
         if next != current {
             self.sender.send_replace(next);
+        }
+    }
+}
+
+async fn wait_for_restart_or_shutdown(
+    restart_handle: &RestartHandle,
+    shutdown_handle: &ShutdownHandle,
+) -> RunOutcome {
+    let mut restart_receiver = restart_handle.subscribe();
+    let mut shutdown_receiver = shutdown_handle.subscribe();
+
+    if *shutdown_receiver.borrow() {
+        return RunOutcome::Exit;
+    }
+    if *restart_receiver.borrow() {
+        return RunOutcome::Restart;
+    }
+
+    tokio::select! {
+        _ = shutdown_receiver.changed() => RunOutcome::Exit,
+        _ = restart_receiver.changed() => {
+            if *shutdown_receiver.borrow() {
+                RunOutcome::Exit
+            } else {
+                RunOutcome::Restart
+            }
         }
     }
 }
@@ -1536,6 +1585,23 @@ async fn refresh_focus_from_cache(
         handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
     {
         execute_focus_actions(kanata, actions).await;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RawFdWatcher {
+    fd: RawFd,
+}
+
+impl RawFdWatcher {
+    fn new(fd: RawFd) -> Self {
+        Self { fd }
+    }
+}
+
+impl AsRawFd for RawFdWatcher {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
     }
 }
 
@@ -2590,6 +2656,7 @@ async fn run_wayland(
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
+    shutdown_handle: ShutdownHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = WaylandConnection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
@@ -2618,6 +2685,10 @@ async fn run_wayland(
 
     println!("[Wayland] Listening for focus events...");
 
+    let raw_fd = connection.as_fd().as_raw_fd();
+    let async_fd = AsyncFd::new(RawFdWatcher::new(raw_fd))?;
+    let mut shutdown_receiver = shutdown_handle.subscribe();
+
     // Process initial state
     let win = state.get_active_window();
     let default_layer = kanata.default_layer_sync();
@@ -2627,16 +2698,53 @@ async fn run_wayland(
         execute_focus_actions(&kanata, actions).await;
     }
 
-    // Event loop - block until events arrive
     loop {
-        // blocking_dispatch waits for events instead of polling
-        let result = tokio::task::block_in_place(|| queue.blocking_dispatch(&mut state));
-
-        if let Err(e) = result {
-            eprintln!("[Wayland] Dispatch error: {}", e);
-            return Err(e.into());
+        if *shutdown_receiver.borrow() {
+            return Ok(());
         }
 
+        let dispatched = queue.dispatch_pending(&mut state)?;
+        if dispatched > 0 {
+            let win = state.get_active_window();
+            let default_layer = kanata.default_layer_sync();
+            if let Some(actions) = handle_focus_event(
+                &handler,
+                &status_broadcaster,
+                &pause_broadcaster,
+                &win,
+                &default_layer,
+            ) {
+                execute_focus_actions(&kanata, actions).await;
+            }
+            continue;
+        }
+
+        connection.flush()?;
+        let guard = match queue.prepare_read() {
+            Some(guard) => guard,
+            None => continue,
+        };
+
+        let mut readiness = tokio::select! {
+            _ = shutdown_receiver.changed() => {
+                return Ok(());
+            }
+            readiness = async_fd.readable() => readiness?,
+        };
+
+        let read_result = guard.read();
+        readiness.clear_ready();
+
+        match read_result {
+            Ok(_) => {}
+            Err(WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                eprintln!("[Wayland] Read error: {}", error);
+                return Err(error.into());
+            }
+        }
+
+        let _ = queue.dispatch_pending(&mut state)?;
         let win = state.get_active_window();
         let default_layer = kanata.default_layer_sync();
 
@@ -2765,6 +2873,7 @@ async fn run_x11(
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
+    shutdown_handle: ShutdownHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = X11State::new()?;
 
@@ -2781,30 +2890,43 @@ async fn run_x11(
 
     println!("[X11] Listening for focus events...");
 
+    let raw_fd = state.connection.stream().as_raw_fd();
+    let async_fd = AsyncFd::new(RawFdWatcher::new(raw_fd))?;
+    let mut shutdown_receiver = shutdown_handle.subscribe();
+
     // Event loop - wait for PropertyNotify events on _NET_ACTIVE_WINDOW
     loop {
-        // block_in_place allows blocking I/O in async context
-        let event = tokio::task::block_in_place(|| state.connection.wait_for_event());
+        if *shutdown_receiver.borrow() {
+            return Ok(());
+        }
 
-        match event {
-            Ok(X11Event::PropertyNotify(e)) if e.atom == state.atoms._NET_ACTIVE_WINDOW => {
-                let win = state.get_active_window();
-                let default_layer = kanata.default_layer_sync();
+        while let Some(event) = state.connection.poll_for_event()? {
+            match event {
+                X11Event::PropertyNotify(e) if e.atom == state.atoms._NET_ACTIVE_WINDOW => {
+                    let win = state.get_active_window();
+                    let default_layer = kanata.default_layer_sync();
 
-                if let Some(actions) =
-                    handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
-                {
-                    execute_focus_actions(&kanata, actions).await;
+                    if let Some(actions) = handle_focus_event(
+                        &handler,
+                        &status_broadcaster,
+                        &pause_broadcaster,
+                        &win,
+                        &default_layer,
+                    ) {
+                        execute_focus_actions(&kanata, actions).await;
+                    }
                 }
-            }
-            Ok(_) => {
-                // Ignore other events
-            }
-            Err(e) => {
-                eprintln!("[X11] Connection error: {}", e);
-                return Err(e.into());
+                _ => {}
             }
         }
+
+        let mut readiness = tokio::select! {
+            _ = shutdown_receiver.changed() => {
+                return Ok(());
+            }
+            readiness = async_fd.readable() => readiness?,
+        };
+        readiness.clear_ready();
     }
 }
 
@@ -3564,6 +3686,7 @@ async fn run_gnome(
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
+    shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
     register_dbus_service(
@@ -3577,12 +3700,82 @@ async fn run_gnome(
     .await?;
 
     println!("[GNOME] Listening for focus events from extension...");
-    let mut receiver = restart_handle.subscribe();
-    let _ = receiver.changed().await;
-    Ok(RunOutcome::Restart)
+    let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
+    Ok(outcome)
 }
 
 // === KDE Backend ===
+
+#[derive(Debug)]
+struct KwinScriptGuard {
+    connection: Connection,
+    runtime_handle: tokio::runtime::Handle,
+    script_path: String,
+    script_obj_path: OwnedObjectPath,
+    script_interface: String,
+}
+
+impl KwinScriptGuard {
+    fn new(
+        connection: Connection,
+        runtime_handle: tokio::runtime::Handle,
+        script_path: String,
+        script_obj_path: OwnedObjectPath,
+        script_interface: &str,
+    ) -> Self {
+        Self {
+            connection,
+            runtime_handle,
+            script_path,
+            script_obj_path,
+            script_interface: script_interface.to_string(),
+        }
+    }
+}
+
+impl Drop for KwinScriptGuard {
+    fn drop(&mut self) {
+        let connection = self.connection.clone();
+        let runtime_handle = self.runtime_handle.clone();
+        let script_path = self.script_path.clone();
+        let script_obj_path = self.script_obj_path.clone();
+        let script_interface = self.script_interface.clone();
+
+        runtime_handle.block_on(async move {
+            let stop_result = connection
+                .call_method(
+                    Some("org.kde.KWin"),
+                    script_obj_path.clone(),
+                    Some(script_interface.as_str()),
+                    "stop",
+                    &(),
+                )
+                .await;
+            if let Err(error) = stop_result {
+                panic!("[KDE] Failed to stop KWin script: {}", error);
+            }
+
+            let unload_result = connection
+                .call_method(
+                    Some("org.kde.KWin"),
+                    "/Scripting",
+                    Some("org.kde.kwin.Scripting"),
+                    "unloadScript",
+                    &(&script_path,),
+                )
+                .await;
+            if let Err(error) = unload_result {
+                panic!("[KDE] Failed to unload KWin script: {}", error);
+            }
+        });
+
+        if let Err(error) = fs::remove_file(&self.script_path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                panic!("[KDE] Failed to remove KWin script file: {}", error);
+            }
+        }
+    }
+}
 
 async fn run_kde(
     kanata: KanataClient,
@@ -3590,8 +3783,10 @@ async fn run_kde(
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
+    shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
+    let runtime_handle = tokio::runtime::Handle::current();
     register_dbus_service(
         &connection,
         kanata,
@@ -3682,7 +3877,15 @@ notifyFocus(workspace.{active});
         "org.kde.kwin.Scripting"
     };
 
-    let script_obj_path = zbus::zvariant::ObjectPath::try_from(script_obj_path_str.as_str())?;
+    let script_obj_path: OwnedObjectPath = script_obj_path_str.as_str().try_into()?;
+
+    let _kwin_script_guard = KwinScriptGuard::new(
+        connection.clone(),
+        runtime_handle.clone(),
+        script_path.clone(),
+        script_obj_path.clone(),
+        script_interface,
+    );
 
     connection
         .call_method(
@@ -3696,9 +3899,8 @@ notifyFocus(workspace.{active});
 
     println!("[KDE] KWin script injected, listening for window focus events...");
 
-    let mut receiver = restart_handle.subscribe();
-    let _ = receiver.changed().await;
-    Ok(RunOutcome::Restart)
+    let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
+    Ok(outcome)
 }
 
 // === Main ===
@@ -3762,6 +3964,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     let status_broadcaster = StatusBroadcaster::new();
     let restart_handle = RestartHandle::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let shutdown_handle = ShutdownHandle::new();
     let runtime_handle = tokio::runtime::Handle::current();
     let kanata = KanataClient::new(
         &args.host,
@@ -3798,7 +4001,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     let _shutdown_guard = ShutdownGuard::new(kanata.clone());
 
     // Set up signal handlers
-    let kanata_for_signal = kanata.clone();
+    let shutdown_handle_for_signal = shutdown_handle.clone();
     tokio::spawn(async move {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to install SIGTERM handler");
@@ -3819,9 +4022,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             }
         }
 
-        // Switch to default layer using existing connection, then exit
-        kanata_for_signal.switch_to_default_if_connected_sync();
-        std::process::exit(0);
+        shutdown_handle_for_signal.request();
     });
 
     let enable_indicator = !args.no_indicator && env != Environment::Gnome;
@@ -3875,6 +4076,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                 status_broadcaster,
                 restart_handle,
                 pause_broadcaster,
+                shutdown_handle,
             )
             .await;
         }
@@ -3886,16 +4088,31 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                 status_broadcaster,
                 restart_handle,
                 pause_broadcaster,
+                shutdown_handle,
             )
             .await;
         }
         Environment::Wayland => {
             let handler = focus_handler.expect("Focus handler missing for Wayland backend");
-            run_wayland(kanata, handler, status_broadcaster, pause_broadcaster).await?;
+            run_wayland(
+                kanata,
+                handler,
+                status_broadcaster,
+                pause_broadcaster,
+                shutdown_handle,
+            )
+            .await?;
         }
         Environment::X11 => {
             let handler = focus_handler.expect("Focus handler missing for X11 backend");
-            run_x11(kanata, handler, status_broadcaster, pause_broadcaster).await?;
+            run_x11(
+                kanata,
+                handler,
+                status_broadcaster,
+                pause_broadcaster,
+                shutdown_handle,
+            )
+            .await?;
         }
         Environment::Unknown => {
             eprintln!("[Error] Could not detect display environment");
