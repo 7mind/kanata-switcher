@@ -1,5 +1,8 @@
 # Autostart Checklist
 
+Last tested: YYYY-MM-DD
+Environment: (distro, DE/compositor, session type)
+
 ## Preconditions
 - Built `kanata-switcher` binary available in a known location
 - Desktop environment provides autostart support (GNOME/KDE/XFCE/etc.)
@@ -21,5 +24,3 @@
 - Daemon launches on login when autostart file is present
 - Autostart entry is removed cleanly
 - Daemon no longer starts automatically after removal
-
-Last tested: NOT TESTED
