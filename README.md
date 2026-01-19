@@ -36,7 +36,7 @@ This project features comprehensive automated test suite and supports an unusual
 
 ### Supported Environments
 
-All environments use the unified daemon (`src/daemon/`). All backends are event-driven (no polling).
+All environments use the unified daemon (`src/daemon/`). Backends are event-driven, with one-shot focus queries on startup and unpause.
 
 | Environment                          | How it works                                                      |
 |--------------------------------------|-------------------------------------------------------------------|

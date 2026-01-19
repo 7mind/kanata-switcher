@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const POLL_TIMEOUT: Duration = Duration::from_secs(60);
+static WAYLAND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Wait for a condition to become true, polling at 50ms intervals.
 /// Returns Ok(T) when the condition returns Some(T), or Err after 1 minute timeout.
@@ -53,6 +54,69 @@ where
     Err("Timeout waiting for condition")
 }
 
+async fn pause_daemon_direct(
+    pause_broadcaster: &PauseBroadcaster,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    kanata: &KanataClient,
+    request_label: &str,
+) {
+    if !pause_broadcaster.set_paused(true) {
+        println!("[Pause] Pause requested {} (already paused)", request_label);
+        return;
+    }
+    println!("[Pause] Pausing daemon");
+    let virtual_keys = {
+        let mut handler = handler.lock().unwrap();
+        let keys = handler.current_virtual_keys();
+        handler.reset();
+        keys
+    };
+    let default_layer = kanata.default_layer().await.unwrap_or_default();
+
+    for vk in virtual_keys.iter().rev() {
+        kanata.act_on_fake_key(vk, "Release").await;
+    }
+
+    if !default_layer.is_empty() {
+        let _ = kanata.change_layer(&default_layer).await;
+    }
+
+    status_broadcaster.set_paused_status(default_layer);
+    kanata.pause_disconnect().await;
+}
+
+async fn unpause_daemon_direct(
+    env: Environment,
+    connection: Option<Connection>,
+    is_kde6: bool,
+    pause_broadcaster: &PauseBroadcaster,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    kanata: &KanataClient,
+    request_label: &str,
+) {
+    if !pause_broadcaster.set_paused(false) {
+        println!("[Pause] Unpause requested {} (already running)", request_label);
+        return;
+    }
+    println!("[Pause] Resuming daemon");
+    kanata.unpause_connect().await;
+    if let Err(error) = apply_focus_for_env(
+        env,
+        connection.as_ref(),
+        is_kde6,
+        handler,
+        status_broadcaster,
+        pause_broadcaster,
+        kanata,
+    )
+    .await
+    {
+        panic!("[Pause] Failed to refresh focus after unpause: {}", error);
+    }
+}
+
 // === Mock Kanata Server ===
 
 /// Messages that can be sent to the mock Kanata server
@@ -63,6 +127,43 @@ enum KanataMessage {
     RequestLayerNames,
 }
 
+struct FocusService {
+    call_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[zbus::interface(name = "com.github.kanata.Switcher.Gnome")]
+impl FocusService {
+    #[allow(non_snake_case)]
+    fn GetFocus(&self) -> (String, String) {
+        self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ("gnome-app".to_string(), "Gnome Window".to_string())
+    }
+}
+
+fn wait_for_kanata_message(
+    server: &MockKanataServer,
+    message: KanataMessage,
+    timeout_duration: Duration,
+) {
+    let start = Instant::now();
+    while start.elapsed() < timeout_duration {
+        if let Some(msg) = server.recv_timeout(Duration::from_millis(50)) {
+            if msg == message {
+                return;
+            }
+        }
+    }
+    panic!("Timeout waiting for {:?}", message);
+}
+
+fn drain_kanata_messages(server: &MockKanataServer, duration: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < duration {
+        if server.recv_timeout(Duration::from_millis(20)).is_none() {
+            break;
+        }
+    }
+}
 /// A mock Kanata TCP server for testing
 struct MockKanataServer {
     port: u16,
@@ -132,8 +233,8 @@ impl MockKanataServer {
                     }
                 }
             }
-        });
 
+        });
         Self {
             port,
             handle: Some(handle),
@@ -159,6 +260,370 @@ impl Drop for MockKanataServer {
             let _ = handle.join();
         }
     }
+}
+
+// === GNOME Focus Query Tests ===
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_gnome_focus_query_on_start_and_unpause() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let call_count_clone = call_count.clone();
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .name(GNOME_SHELL_BUS_NAME)
+        .expect("Failed to set bus name")
+        .serve_at(GNOME_FOCUS_OBJECT_PATH, FocusService { call_count: call_count_clone })
+        .expect("Failed to serve mock focus service")
+        .build()
+        .await
+        .expect("Failed to build focus service connection");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection)
+        .await
+        .expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy
+                .name_has_owner(GNOME_SHELL_BUS_NAME.try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    })
+    .await
+    .expect("Timeout waiting for GNOME focus service registration");
+
+    let mock_server = MockKanataServer::start();
+    let rules = vec![Rule {
+        class: Some("gnome-app".to_string()),
+        title: None,
+        on_native_terminal: None,
+        layer: Some("terminal".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let pause_broadcaster = PauseBroadcaster::new();
+
+    let client_connection = Builder::address(address.clone())
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    apply_focus_for_env(
+        Environment::Gnome,
+        Some(&client_connection),
+        false,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await
+    .expect("Failed to apply GNOME focus on startup");
+
+    wait_for_kanata_message(
+        &mock_server,
+        KanataMessage::ChangeLayer {
+            new: "terminal".to_string(),
+        },
+        Duration::from_secs(2),
+    );
+
+    pause_daemon_direct(
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    )
+    .await;
+
+    drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+    unpause_daemon_direct(
+        Environment::Gnome,
+        Some(client_connection.clone()),
+        false,
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    ).await;
+
+    wait_for_kanata_message(
+        &mock_server,
+        KanataMessage::ChangeLayer {
+            new: "terminal".to_string(),
+        },
+        Duration::from_secs(2),
+    );
+
+    let call_count = call_count.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(call_count >= 2, "expected focus query on start and unpause");
+}
+
+// === KDE Focus Query Tests ===
+
+struct MockKwinScripting {
+    scripts: Arc<Mutex<HashMap<String, i32>>>,
+    next_id: Arc<Mutex<i32>>,
+    object_server: zbus::ObjectServer,
+    is_kde6: bool,
+}
+
+#[zbus::interface(name = "org.kde.kwin.Scripting")]
+impl MockKwinScripting {
+    #[zbus(name = "loadScript")]
+    async fn load_script(&self, path: &str) -> i32 {
+        let script_id = {
+            let mut scripts = self.scripts.lock().unwrap();
+            let mut next_id = self.next_id.lock().unwrap();
+            let script_id = *next_id;
+            *next_id += 1;
+            scripts.insert(path.to_string(), script_id);
+            script_id
+        };
+        let obj_path = if self.is_kde6 {
+            format!("/Scripting/Script{}", script_id)
+        } else {
+            format!("/{}", script_id)
+        };
+        let script = MockKwinScript {
+            path: path.to_string(),
+        };
+        self.object_server
+            .at(obj_path.as_str(), script)
+            .await
+            .expect("Failed to register script object");
+        script_id
+    }
+
+    #[zbus(name = "unloadScript")]
+    async fn unload_script(&self, path: &str) {
+        let mut scripts = self.scripts.lock().unwrap();
+        scripts.remove(path);
+    }
+}
+
+
+
+struct MockKwinScript {
+    path: String,
+}
+
+#[zbus::interface(name = "org.kde.kwin.Script")]
+impl MockKwinScript {
+    #[zbus(name = "run")]
+    async fn run(&self) {
+        let script_contents = std::fs::read_to_string(&self.path).expect("Failed to read script");
+        let parts = extract_call_dbus_parts(&script_contents);
+        let bus_name = parts.get(0).expect("Missing bus name");
+        let object_path = parts.get(1).expect("Missing object path");
+    let address: zbus::Address = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .expect("DBUS_SESSION_BUS_ADDRESS not set")
+        .parse()
+        .expect("Invalid DBUS_SESSION_BUS_ADDRESS");
+    let connection = zbus::connection::Builder::address(address)
+        .expect("Failed to create connection builder")
+        .build()
+        .await
+        .expect("Failed to connect to private bus");
+    let _ = connection
+        .call_method(
+            Some(bus_name.as_str()),
+            object_path.as_str(),
+            Some(KDE_QUERY_INTERFACE),
+            KDE_QUERY_METHOD,
+            &("kde-app", "KDE Window"),
+        )
+            .await
+            .expect("Failed to call KDE query callback");
+    }
+
+    #[zbus(name = "stop")]
+    fn stop(&self) {}
+}
+
+fn extract_call_dbus_parts(contents: &str) -> Vec<String> {
+    let start = contents
+        .find("callDBus(")
+        .expect("callDBus not found in script");
+    let args = &contents[start + "callDBus(".len()..];
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_str = false;
+    for ch in args.chars() {
+        if ch == '"' {
+            if in_str {
+                parts.push(current.clone());
+                current.clear();
+                in_str = false;
+            } else {
+                in_str = true;
+            }
+            continue;
+        }
+        if in_str {
+            current.push(ch);
+        } else if ch == ')' {
+            break;
+        }
+    }
+    parts
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_kde_focus_query_on_start_and_unpause() {
+    use zbus::connection::Builder;
+
+    let dbus = DbusSessionGuard::start()
+        .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+    let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+    let scripts = Arc::new(Mutex::new(HashMap::new()));
+    unsafe {
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", dbus.address());
+    }
+
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to create connection builder")
+        .name("org.kde.KWin")
+        .expect("Failed to set bus name")
+        .build()
+        .await
+        .expect("Failed to build scripting service");
+    service_connection
+        .object_server()
+        .at(
+            "/Scripting",
+            MockKwinScripting {
+                scripts: scripts.clone(),
+                next_id: Arc::new(Mutex::new(1)),
+                object_server: service_connection.object_server().clone(),
+                is_kde6: true,
+            },
+        )
+        .await
+        .expect("Failed to register mock scripting interface");
+
+    let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection)
+        .await
+        .expect("Failed to create DBus proxy");
+    wait_for_async(|| {
+        let proxy = dbus_proxy.clone();
+        async move {
+            proxy
+                .name_has_owner("org.kde.KWin".try_into().unwrap())
+                .await
+                .ok()
+                .filter(|&has_owner| has_owner)
+        }
+    })
+    .await
+    .expect("Timeout waiting for KDE mock service registration");
+
+    let mock_server = MockKanataServer::start();
+    let rules = vec![Rule {
+        class: Some("kde-app".to_string()),
+        title: None,
+        on_native_terminal: None,
+        layer: Some("terminal".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let pause_broadcaster = PauseBroadcaster::new();
+
+    let client_connection = Builder::address(address.clone())
+        .expect("Failed to create client builder")
+        .build()
+        .await
+        .expect("Failed to connect client");
+
+    apply_focus_for_env(
+        Environment::Kde,
+        Some(&client_connection),
+        true,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await
+    .expect("Failed to apply KDE focus on startup");
+
+    wait_for_kanata_message(
+        &mock_server,
+        KanataMessage::ChangeLayer {
+            new: "terminal".to_string(),
+        },
+        Duration::from_secs(2),
+    );
+
+    pause_daemon_direct(
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    )
+    .await;
+
+    drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+    unpause_daemon_direct(
+        Environment::Kde,
+        Some(client_connection.clone()),
+        true,
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    ).await;
+
+    wait_for_kanata_message(
+        &mock_server,
+        KanataMessage::ChangeLayer {
+            new: "terminal".to_string(),
+        },
+        Duration::from_secs(2),
+    );
 }
 
 // === DBus Integration Tests ===
@@ -206,7 +671,7 @@ async fn test_dbus_service_layer_switching() {
     server.recv_timeout(Duration::from_secs(1));
 
     // Create the DBus service handler directly (without actual DBus)
-    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
 
     // Simulate WindowFocus call for firefox
     {
@@ -558,6 +1023,8 @@ async fn test_dbus_service_real_bus() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -651,6 +1118,8 @@ async fn test_dbus_get_status_initial_layer() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -743,6 +1212,8 @@ async fn test_dbus_get_status_focus_source() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -844,6 +1315,8 @@ async fn test_dbus_restart_request() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -928,6 +1401,8 @@ async fn test_control_command_restart_private_dbus() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -1008,6 +1483,8 @@ async fn test_dbus_pause_unpause() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -1156,6 +1633,8 @@ async fn test_dbus_paused_changed_signal() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -1285,6 +1764,8 @@ async fn test_dbus_status_changed_focus_signal() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -1523,23 +2004,17 @@ async fn test_pause_daemon_releases_virtual_keys_and_resets_layer() {
         assert!(actions.is_some());
     }
 
-    let runtime_handle = tokio::runtime::Handle::current();
     let pause_broadcaster = pause_broadcaster.clone();
     let handler = handler.clone();
     let status_broadcaster = status_broadcaster.clone();
     let kanata = kanata.clone();
-    let runtime_handle = runtime_handle.clone();
-    let pause_task = tokio::task::spawn_blocking(move || {
-        pause_daemon(
-            &pause_broadcaster,
-            &handler,
-            &status_broadcaster,
-            &kanata,
-            &runtime_handle,
-            "test",
-        );
-    });
-    pause_task.await.expect("pause_daemon panicked");
+    pause_daemon_direct(
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    ).await;
 
     let msg = mock_server.recv_timeout(Duration::from_secs(2));
     assert_eq!(
@@ -1600,6 +2075,8 @@ async fn test_control_command_pause_unpause_private_dbus() {
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     register_dbus_service(
         &service_connection,
+        Environment::Gnome,
+        false,
         kanata,
         handler,
         status_broadcaster,
@@ -1652,15 +2129,19 @@ async fn test_control_command_pause_unpause_private_dbus() {
 /// the daemon correctly handles toplevel events.
 mod wayland_mock {
     use wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
+        Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New,
     };
+    use wayland_backend::server::InvalidId;
     use wayland_protocols_wlr::foreign_toplevel::v1::server::{
         zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
         zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
     };
+    use std::thread;
 
-    /// State for the mock compositor
-    pub struct MockCompositorState;
+    #[derive(Default)]
+    pub struct MockCompositorState {
+        manager: Option<ZwlrForeignToplevelManagerV1>,
+    }
 
     // Dispatch for the manager global
     impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for MockCompositorState {
@@ -1672,7 +2153,8 @@ mod wayland_mock {
             _global_data: &(),
             data_init: &mut DataInit<'_, Self>,
         ) {
-            data_init.init(resource, ());
+            let manager = data_init.init(resource, ());
+            _state.manager = Some(manager);
         }
     }
 
@@ -1709,6 +2191,279 @@ mod wayland_mock {
             }
         }
     }
+
+    pub struct WaylandMockServer {
+        socket_name: String,
+        #[allow(dead_code)]
+        event_sender: std::sync::mpsc::Sender<(String, String)>,
+        thread_handle: Option<std::thread::JoinHandle<()>>,
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        #[allow(dead_code)]
+        runtime_dir: tempfile::TempDir,
+        previous_runtime_dir: Option<std::ffi::OsString>,
+        previous_wayland_display: Option<std::ffi::OsString>,
+    }
+
+    impl WaylandMockServer {
+        pub fn start() -> Self {
+            let runtime_dir = tempfile::tempdir().expect("Failed to create Wayland runtime dir");
+            let previous_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+            let previous_wayland_display = std::env::var_os("WAYLAND_DISPLAY");
+            unsafe {
+                std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            }
+
+            let display = Display::<MockCompositorState>::new()
+                .expect("Failed to create Wayland display");
+            let handle = display.handle();
+            handle.create_global::<MockCompositorState, ZwlrForeignToplevelManagerV1, ()>(3, ());
+
+            let socket =
+                wayland_server::ListeningSocket::bind_auto("kanata-switcher-test", 1..1000)
+                    .expect("Failed to create Wayland socket");
+
+            let socket_name = socket
+                .socket_name()
+                .expect("Socket name missing")
+                .to_string_lossy()
+                .to_string();
+            unsafe {
+                std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+            }
+
+            let (event_sender, event_receiver) = std::sync::mpsc::channel();
+            let mut server = Self {
+                socket_name,
+                event_sender,
+                thread_handle: None,
+                shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                runtime_dir,
+                previous_runtime_dir,
+                previous_wayland_display,
+            };
+
+            server.spawn_event_loop(display, handle, socket, event_receiver);
+            server
+        }
+
+        pub fn socket_name(&self) -> &str {
+            &self.socket_name
+        }
+
+        #[allow(dead_code)]
+        pub fn send_active_window(&mut self, app_id: &str, title: &str) {
+            self.event_sender
+                .send((app_id.to_string(), title.to_string()))
+                .expect("Failed to queue Wayland toplevel");
+        }
+
+        fn spawn_event_loop(
+            &mut self,
+            mut display: Display<MockCompositorState>,
+            mut handle: DisplayHandle,
+            socket: wayland_server::ListeningSocket,
+            event_receiver: std::sync::mpsc::Receiver<(String, String)>,
+        ) {
+            let shutdown = self.shutdown.clone();
+            let mut client_slot: Option<Client> = None;
+            let mut pending_window: Option<(String, String)> = None;
+            self.thread_handle = Some(thread::spawn(move || {
+                let mut state = MockCompositorState::default();
+                loop {
+                    if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                if let Ok(Some(stream)) = socket.accept() {
+                    let client = handle
+                        .insert_client(stream, std::sync::Arc::new(()))
+                        .expect("Failed to insert client");
+                    client_slot = Some(client);
+                }
+
+                while let Ok((app_id, title)) = event_receiver.try_recv() {
+                    pending_window = Some((app_id, title));
+                }
+
+                display.dispatch_clients(&mut state).ok();
+
+                if let (Some(client), Some((app_id, title))) =
+                    (client_slot.clone(), pending_window.take())
+                {
+                    if state.manager.is_some() {
+                        if send_active_window_to_client(
+                            &mut display,
+                            &handle,
+                            &mut state,
+                            &client,
+                            &app_id,
+                            &title,
+                        )
+                        .is_err()
+                        {
+                            pending_window = Some((app_id, title));
+                        }
+                    } else {
+                        pending_window = Some((app_id, title));
+                    }
+                }
+
+                display.flush_clients().ok();
+                }
+            }));
+        }
+    }
+
+    fn send_active_window_to_client(
+        display: &mut Display<MockCompositorState>,
+        handle: &DisplayHandle,
+        state: &mut MockCompositorState,
+        client: &Client,
+        app_id: &str,
+        title: &str,
+    ) -> Result<(), InvalidId> {
+        let manager = state
+            .manager
+            .as_ref()
+            .expect("Wayland manager not bound");
+        let toplevel = client
+            .create_resource::<ZwlrForeignToplevelHandleV1, _, MockCompositorState>(handle, 1, ())
+            .map_err(|_| InvalidId)?;
+        manager.toplevel(&toplevel);
+        toplevel.app_id(app_id.to_string());
+        toplevel.title(title.to_string());
+        let activated = zwlr_foreign_toplevel_handle_v1::State::Activated as u8;
+        toplevel.state(vec![activated]);
+        toplevel.done();
+        display.flush_clients().expect("Failed to flush clients");
+        Ok(())
+    }
+
+    impl Drop for WaylandMockServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(handle) = self.thread_handle.take() {
+                handle.join().ok();
+            }
+            if let Some(value) = self.previous_wayland_display.take() {
+                unsafe {
+                    std::env::set_var("WAYLAND_DISPLAY", value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("WAYLAND_DISPLAY");
+                }
+            }
+            if let Some(value) = self.previous_runtime_dir.take() {
+                unsafe {
+                    std::env::set_var("XDG_RUNTIME_DIR", value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("XDG_RUNTIME_DIR");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_wayland_focus_query_on_start_and_unpause() {
+    let _lock = WAYLAND_ENV_LOCK.lock().unwrap();
+    let _server = wayland_mock::WaylandMockServer::start();
+
+    let mock_server = MockKanataServer::start();
+    let rules = vec![Rule {
+        class: Some("wayland-app".to_string()),
+        title: None,
+        on_native_terminal: None,
+        layer: Some("terminal".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let pause_broadcaster = PauseBroadcaster::new();
+
+    let initial_queries = super::wayland_query_count();
+    let handler_start = handler.clone();
+    let status_start = status_broadcaster.clone();
+    let pause_start = pause_broadcaster.clone();
+    let kanata_start = kanata.clone();
+    let apply_task = tokio::spawn(async move {
+        apply_focus_for_env(
+            Environment::Wayland,
+            None,
+            false,
+            &handler_start,
+            &status_start,
+            &pause_start,
+            &kanata_start,
+        )
+        .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    apply_task
+        .await
+        .expect("Wayland apply task failed")
+        .expect("Failed to apply Wayland focus on startup");
+
+    let after_start = super::wayland_query_count();
+    assert!(
+        after_start > initial_queries,
+        "expected Wayland focus query on startup"
+    );
+
+    pause_daemon_direct(
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    )
+    .await;
+    drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+    let before_unpause = super::wayland_query_count();
+    let handler_unpause = handler.clone();
+    let status_unpause = status_broadcaster.clone();
+    let pause_unpause = pause_broadcaster.clone();
+    let kanata_unpause = kanata.clone();
+    let unpause_task = tokio::spawn(async move {
+        unpause_daemon_direct(
+            Environment::Wayland,
+            None,
+            false,
+            &pause_unpause,
+            &handler_unpause,
+            &status_unpause,
+            &kanata_unpause,
+            "test",
+        )
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    unpause_task.await.expect("Wayland unpause task failed");
+    let after_unpause = super::wayland_query_count();
+    assert!(
+        after_unpause > before_unpause,
+        "expected Wayland focus query on unpause"
+    );
 }
 
 /// Test WaylandState directly by simulating protocol events
@@ -1716,79 +2471,10 @@ mod wayland_mock {
 /// This tests that WaylandState correctly processes toplevel events and
 /// returns the right WindowInfo.
 #[test]
-fn test_wayland_state_window_tracking() {
-    // Test the WaylandState struct's window tracking logic
-    let state = WaylandState::default();
-
-    // Simulate a toplevel being created and activated
-    // We can't easily create real ObjectIds, but we can test the logic
-    // by checking that the state correctly tracks windows
-
-    // Initially no active window
-    let info = state.get_active_window();
-    assert_eq!(info.class, "");
-    assert_eq!(info.title, "");
-}
-
-/// Test the mock compositor can be created and globals registered
-///
-/// This verifies the server-side infrastructure is correctly set up.
-/// Full protocol testing with client-server communication would require
-/// a proper event loop which is complex to coordinate in a unit test.
-#[test]
-fn test_wayland_mock_compositor_creation() {
-    use wayland_server::Display;
-    use wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1 as ServerManager;
-
-    // Create the mock compositor
-    let display = Display::<wayland_mock::MockCompositorState>::new().unwrap();
-    let dh = display.handle();
-
-    // Create the global for the manager (server-side type)
-    let global: wayland_server::backend::GlobalId = dh.create_global::<wayland_mock::MockCompositorState, ServerManager, ()>(3, ());
-
-    // Verify global was created (it should have a valid ID)
-    // GlobalId doesn't have a simple way to check validity, but if we get here without panic, it worked
-    assert!(!format!("{:?}", global).is_empty());
-}
-
-/// Test that WaylandState correctly tracks multiple windows
-#[test]
-fn test_wayland_state_multiple_windows() {
-    let state = WaylandState::default();
-
-    // Simulate adding windows by directly manipulating state
-    // (In real usage, this happens via Dispatch implementations)
-
-    // Create fake object IDs using backend internals is not straightforward,
-    // so we test the public interface behavior
-
-    // Initially empty
-    assert!(state.windows.is_empty());
-    assert!(state.active_window.is_none());
-
-    // get_active_window returns default WindowInfo when no window is active
-    let info = state.get_active_window();
-    assert_eq!(info.class, "");
-    assert_eq!(info.title, "");
-}
-
-/// Test that WaylandState correctly parses activation state changes
-#[test]
-fn test_wayland_state_activation_tracking() {
-    let state = WaylandState::default();
-
-    // Since we can't easily create real Wayland objects in unit tests,
-    // we test the state machine logic directly
-
-    // No windows initially
-    assert!(state.active_window.is_none());
-    assert!(state.windows.is_empty());
-
-    // After processing events, get_active_window should return default
-    let info = state.get_active_window();
-    assert_eq!(info.class, "");
-    assert_eq!(info.title, "");
+fn test_wayland_mock_compositor_startup() {
+    let _lock = WAYLAND_ENV_LOCK.lock().unwrap();
+    let server = wayland_mock::WaylandMockServer::start();
+    assert!(!server.socket_name().is_empty());
 }
 
 // === X11/Xvfb Integration Tests ===
@@ -2167,6 +2853,130 @@ fn test_x11_multiple_focus_changes() {
     assert_eq!(info.class, "");
     let actions = handler.handle(&info, "default").unwrap();
     assert!(actions.actions.contains(&FocusAction::ChangeLayer("default".to_string())));
+}
+
+/// Test that the daemon queries focused window on startup and unpause (X11).
+/// Requires Xvfb. Run via `nix run .#test` or install Xvfb manually.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_x11_focus_query_on_start_and_unpause() {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::*;
+    use x11rb::wrapper::ConnectionExt as WrapperExt;
+
+    let xvfb = XvfbGuard::start(103)
+        .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
+
+    unsafe {
+        std::env::set_var("DISPLAY", &xvfb.display);
+    }
+
+    let (conn, screen) = xvfb.connect().expect("Failed to connect");
+    let root = conn.setup().roots[screen].root;
+    let atoms = X11Atoms::new(&conn).unwrap().reply().unwrap();
+
+    let win = conn.generate_id().unwrap();
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        win,
+        root,
+        0, 0, 100, 100, 0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::default(),
+    )
+    .unwrap();
+
+    WrapperExt::change_property8(
+        &conn,
+        PropMode::REPLACE,
+        win,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"instance\0X11App\0",
+    )
+    .unwrap();
+    WrapperExt::change_property32(
+        &conn,
+        PropMode::REPLACE,
+        root,
+        atoms._NET_ACTIVE_WINDOW,
+        AtomEnum::WINDOW,
+        &[win],
+    )
+    .unwrap();
+    conn.flush().unwrap();
+
+    let mock_server = MockKanataServer::start();
+    let rules = vec![Rule {
+        class: Some("X11App".to_string()),
+        title: None,
+        on_native_terminal: None,
+        layer: Some("terminal".to_string()),
+        virtual_key: None,
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        mock_server.port(),
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+    kanata.connect_with_retry().await;
+    mock_server.recv_timeout(Duration::from_secs(1));
+
+    let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let pause_broadcaster = PauseBroadcaster::new();
+
+    apply_focus_for_env(
+        Environment::X11,
+        None,
+        false,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await
+    .expect("Failed to apply X11 focus on startup");
+
+    wait_for_kanata_message(
+        &mock_server,
+        KanataMessage::ChangeLayer {
+            new: "terminal".to_string(),
+        },
+        Duration::from_secs(2),
+    );
+
+    pause_daemon_direct(
+    &pause_broadcaster,
+    &handler,
+    &status_broadcaster,
+    &kanata,
+    "test",
+    ).await;
+    drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+    unpause_daemon_direct(
+        Environment::X11,
+        None,
+        false,
+        &pause_broadcaster,
+        &handler,
+        &status_broadcaster,
+        &kanata,
+        "test",
+    ).await;
+
+    wait_for_kanata_message(
+        &mock_server,
+        KanataMessage::ChangeLayer {
+            new: "terminal".to_string(),
+        },
+        Duration::from_secs(2),
+    );
 }
 
 // === GNOME Shell Extension Detection Integration Tests ===

@@ -112,7 +112,7 @@ When all windows are closed (no window focused), the daemon switches to the defa
 
 ## Native Terminal Handling
 
-The daemon watches `org.freedesktop.login1.Session.Active` on the system bus. When the session becomes inactive (Ctrl+Alt+F*), it applies the `on_native_terminal` rule if present, otherwise it behaves like an unfocused state. When the session becomes active again, it refreshes focus (querying the backend on Wayland/X11, using the cached GUI focus for GNOME/KDE).
+The daemon watches `org.freedesktop.login1.Session.Active` on the system bus. When the session becomes inactive (Ctrl+Alt+F*), it applies the `on_native_terminal` rule if present, otherwise it behaves like an unfocused state. When the session becomes active again, it refreshes focus by querying the backend (GNOME GetFocus DBus, KDE script callback, Wayland/X11 active-window query).
 
 Session resolution prefers `XDG_SESSION_ID`, otherwise `GetSessionByPID`. If the PID is not in a logind session (common for systemd user services with lingering), it falls back to the user’s `Display` session via `GetUserByPID` + `org.freedesktop.login1.User.Display`.
 
@@ -129,7 +129,7 @@ Uses x11rb with pure Rust connection (no libxcb dependency). Implementation in `
 
 X11 is fallback - only used if GNOME/KDE/Wayland not detected.
 
-## GNOME Extension (Push Model)
+## GNOME Extension (Push Model + Pull API)
 
 Extension subscribes to `global.display.connect('notify::focus-window')` and calls daemon's DBus `WindowFocus(class, title)` method on changes. Handles:
 - Initial state: calls `_notifyFocus()` in `enable()`
@@ -153,7 +153,10 @@ Top bar indicator:
 - Focus updates force-broadcast via `StatusBroadcaster::update_focus_layer` so the indicator refreshes on focus events
 - Indicator menu includes Pause, Settings, and Restart; Pause calls daemon DBus `Pause`/`Unpause`
 - Pause handling releases managed virtual keys, switches to the default layer, disconnects from kanata, clears handler state, and ignores focus events for action execution
-- Focus events are still cached while paused so unpause can reapply the current focused window
+- The daemon proactively queries current focus on startup and unpause:
+  - GNOME: extension exposes `GetFocus` over DBus (`com.github.kanata.Switcher.Gnome`).
+  - KDE: daemon injects a one-shot KWin script that calls back over DBus with the current focus.
+  - Wayland/X11: daemon queries the active window directly.
 - GJS test also validates focus-only selection logic via `selectStatus()`
 
 SNI indicator (non-GNOME):

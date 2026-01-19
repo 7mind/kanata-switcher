@@ -39,7 +39,10 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
 
 Detection order: GNOME → KDE → Wayland → X11 → Unknown
 
-All backends are event-driven (push model) - no polling.
+Backends are event-driven but the daemon performs one-shot focus queries on startup and unpause:
+- GNOME: extension provides GetFocus over DBus
+- KDE: daemon injects a one-shot KWin script and receives a DBus callback
+- Wayland/X11: daemon queries the active window directly
 
 ## Wayland Toplevel Protocol
 

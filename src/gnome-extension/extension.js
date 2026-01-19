@@ -12,10 +12,23 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { formatLayerLetter, formatVirtualKeys, selectStatus } from './format.js';
 import { unpackSingleBoolean } from './dbus.js';
 import { disconnectedState, isDaemonOwnerAvailable } from './daemon-state.js';
+import { extractFocus } from './focus.js';
 
 const DBUS_NAME = 'com.github.kanata.Switcher';
 const DBUS_PATH = '/com/github/kanata/Switcher';
 const DBUS_INTERFACE = 'com.github.kanata.Switcher';
+const FOCUS_DBUS_PATH = '/com/github/kanata/Switcher/Gnome';
+const FOCUS_DBUS_INTERFACE = 'com.github.kanata.Switcher.Gnome';
+const FOCUS_DBUS_XML = `
+  <node>
+    <interface name="${FOCUS_DBUS_INTERFACE}">
+      <method name="GetFocus">
+        <arg type="s" direction="out" name="class"/>
+        <arg type="s" direction="out" name="title"/>
+      </method>
+    </interface>
+  </node>
+`;
 
 const SETTINGS_KEY_SHOW_ICON = 'show-top-bar-icon';
 const SETTINGS_KEY_FOCUS_ONLY = 'show-focus-layer-only';
@@ -54,6 +67,8 @@ export default class KanataSwitcherExtension extends Extension {
       DBUS_INTERFACE,
       null
     );
+    this._focusDbus = Gio.DBusExportedObject.wrapJSObject(FOCUS_DBUS_XML, this);
+    this._focusDbus.export(Gio.DBus.session, FOCUS_DBUS_PATH);
     this._daemonNameOwnerChangedId = this._daemonProxy.connect(
       'notify::g-name-owner',
       () => this._onDaemonOwnerChanged()
@@ -111,6 +126,12 @@ export default class KanataSwitcherExtension extends Extension {
       this._daemonNameOwnerChangedId = null;
     }
 
+    if (this._focusDbus) {
+      this._focusDbus.flush();
+      this._focusDbus.unexport();
+      this._focusDbus = null;
+    }
+
     if (this._indicator) {
       this._indicator.destroy();
       this._indicator = null;
@@ -127,20 +148,7 @@ export default class KanataSwitcherExtension extends Extension {
   }
 
   _notifyFocus() {
-    const win = global.display.focus_window;
-    let windowClass = '';
-    let windowTitle = '';
-
-    if (win) {
-      const classValue = win.get_wm_class();
-      const titleValue = win.get_title();
-      if (classValue) {
-        windowClass = classValue;
-      }
-      if (titleValue) {
-        windowTitle = titleValue;
-      }
-    }
+    const { windowClass, windowTitle } = this._currentFocus();
 
     Gio.DBus.session.call(
       DBUS_NAME,
@@ -154,6 +162,15 @@ export default class KanataSwitcherExtension extends Extension {
       null,
       null
     );
+  }
+
+  _currentFocus() {
+    return extractFocus(global.display.focus_window);
+  }
+
+  GetFocus() {
+    const { windowClass, windowTitle } = this._currentFocus();
+    return [windowClass, windowTitle];
   }
 
   _refreshStatusFromDaemon() {

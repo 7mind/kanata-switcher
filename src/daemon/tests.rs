@@ -1476,11 +1476,13 @@ async fn test_logind_monitor_startup_failure_is_non_fatal() {
 
     let started = start_logind_session_monitor_best_effort(
         Environment::Wayland,
+        None,
+        false,
         handler,
         status_broadcaster.clone(),
         pause_broadcaster,
         kanata,
-        |_env, _handler, _status, _pause, _kanata| async {
+        |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async {
             Err(std::io::Error::new(std::io::ErrorKind::Other, "logind unavailable").into())
         },
     )
@@ -1498,11 +1500,13 @@ async fn test_logind_monitor_startup_success_returns_true() {
 
     let started = start_logind_session_monitor_best_effort(
         Environment::Wayland,
+        None,
+        false,
         handler,
         status_broadcaster.clone(),
         pause_broadcaster,
         kanata,
-        |_env, _handler, _status, _pause, _kanata| async { Ok(()) },
+        |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async { Ok(()) },
     )
     .await;
 

@@ -13,13 +13,14 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream as TokioTcpStream;
-use tokio::sync::{watch, Mutex as TokioMutex};
+use tokio::sync::{oneshot, watch, Mutex as TokioMutex};
 use wayland_client::{
     backend::{ObjectId, WaylandError},
     globals::{registry_queue_init, GlobalListContents},
@@ -87,6 +88,11 @@ const XDG_DATA_DIRS_FALLBACK: &str = "/usr/local/share:/usr/share";
 const DBUS_NAME: &str = "com.github.kanata.Switcher";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
+const GNOME_FOCUS_OBJECT_PATH: &str = "/com/github/kanata/Switcher/Gnome";
+const GNOME_FOCUS_INTERFACE: &str = "com.github.kanata.Switcher.Gnome";
+const GNOME_FOCUS_METHOD: &str = "GetFocus";
+const KDE_QUERY_INTERFACE: &str = "com.github.kanata.Switcher.KdeQuery";
+const KDE_QUERY_METHOD: &str = "Focus";
 const LOGIND_BUS_NAME: &str = "org.freedesktop.login1";
 const LOGIND_MANAGER_PATH: &str = "/org/freedesktop/login1";
 const LOGIND_MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
@@ -636,7 +642,6 @@ struct FocusHandler {
     last_effective_layer: String,
     /// Currently held virtual keys, in order they were pressed (top-to-bottom rule order)
     current_virtual_keys: Vec<String>,
-    last_gui_window: Option<WindowInfo>,
     quiet_focus: bool,
 }
 
@@ -650,7 +655,6 @@ impl FocusHandler {
             last_matched_rules: Vec::new(),
             last_effective_layer: String::new(),
             current_virtual_keys: Vec::new(),
-            last_gui_window: None,
             quiet_focus,
         }
     }
@@ -786,7 +790,6 @@ impl FocusHandler {
         self.last_title = win.title.clone();
         self.last_matched_rules = matched_indices;
         self.current_virtual_keys = result.new_managed_vks.clone();
-        self.last_gui_window = Some(win.clone());
 
         if result.is_empty() {
             None
@@ -799,24 +802,12 @@ impl FocusHandler {
         self.current_virtual_keys.clone()
     }
 
-    fn last_gui_window(&self) -> Option<WindowInfo> {
-        self.last_gui_window.clone()
-    }
-
-    fn cache_gui_window(&mut self, win: &WindowInfo) {
-        if win.is_native_terminal {
-            return;
-        }
-        self.last_gui_window = Some(win.clone());
-    }
-
     fn reset(&mut self) {
         self.last_class.clear();
         self.last_title.clear();
         self.last_matched_rules.clear();
         self.last_effective_layer.clear();
         self.current_virtual_keys.clear();
-        // Preserve last_gui_window to restore focus on unpause.
     }
 
     fn handle_unfocused(&mut self, default_layer: &str) -> Option<FocusActions> {
@@ -838,7 +829,6 @@ impl FocusHandler {
         self.last_effective_layer = default_layer.to_string();
         self.last_class.clear();
         self.last_title.clear();
-        self.last_gui_window = None;
         if result.is_empty() {
             None
         } else {
@@ -1287,6 +1277,9 @@ struct SniLocalControl {
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
+    env: Environment,
+    connection: Option<Connection>,
+    is_kde6: bool,
 }
 
 #[derive(Clone)]
@@ -1364,6 +1357,9 @@ impl SniControlOps for SniControl {
         match self {
             SniControl::Local(control) => {
                 unpause_daemon(
+                    control.env,
+                    control.connection.clone(),
+                    control.is_kde6,
                     &control.pause_broadcaster,
                     &control.handler,
                     &control.status_broadcaster,
@@ -1711,7 +1707,6 @@ fn handle_focus_event(
     default_layer: &str,
 ) -> Option<FocusActions> {
     if pause_broadcaster.is_paused() {
-        cache_focus_window(handler, win);
         return None;
     }
     update_status_for_focus(handler, status_broadcaster, win, default_layer)
@@ -1725,30 +1720,7 @@ fn native_terminal_window() -> WindowInfo {
     }
 }
 
-fn cached_gui_window(handler: &Arc<Mutex<FocusHandler>>) -> WindowInfo {
-    let handler = handler.lock().unwrap();
-    handler.last_gui_window().unwrap_or_default()
-}
-
-fn cache_focus_window(handler: &Arc<Mutex<FocusHandler>>, win: &WindowInfo) {
-    let mut handler = handler.lock().unwrap();
-    handler.cache_gui_window(win);
-}
-
-async fn refresh_focus_from_cache(
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    pause_broadcaster: &PauseBroadcaster,
-    kanata: &KanataClient,
-) {
-    let win = cached_gui_window(handler);
-    let default_layer = kanata.default_layer().await.unwrap_or_default();
-    if let Some(actions) =
-        handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
-    {
-        execute_focus_actions(kanata, actions).await;
-    }
-}
+ 
 
 #[derive(Clone, Copy, Debug)]
 struct RawFdWatcher {
@@ -1768,6 +1740,10 @@ impl AsRawFd for RawFdWatcher {
 }
 
 fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(test)]
+    {
+        WAYLAND_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
+    }
     let connection = WaylandConnection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
     let mut state = WaylandState::default();
@@ -1782,8 +1758,18 @@ fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error
         return Err("No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into());
     }
 
-    queue.roundtrip(&mut state)?;
+    for _ in 0..5 {
+        queue.roundtrip(&mut state)?;
+        if state.active_window.is_some() {
+            break;
+        }
+    }
     Ok(state.get_active_window())
+}
+
+#[cfg(test)]
+fn wayland_query_count() -> usize {
+    WAYLAND_QUERY_COUNTER.load(Ordering::SeqCst)
 }
 
 fn query_x11_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
@@ -1791,25 +1777,252 @@ fn query_x11_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + S
     Ok(state.get_active_window())
 }
 
-async fn apply_session_focus(
-    active: bool,
+static KDE_QUERY_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static WAYLAND_QUERY_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug)]
+struct KdeFocusQueryService {
+    sender: TokioMutex<Option<oneshot::Sender<WindowInfo>>>,
+}
+
+#[zbus::interface(name = "com.github.kanata.Switcher.KdeQuery")]
+impl KdeFocusQueryService {
+    #[allow(non_snake_case)]
+    async fn Focus(&self, window_class: &str, window_title: &str) {
+        let win = WindowInfo {
+            class: window_class.to_string(),
+            title: window_title.to_string(),
+            is_native_terminal: false,
+        };
+        let mut sender = self.sender.lock().await;
+        if let Some(tx) = sender.take() {
+            let _ = tx.send(win);
+        }
+    }
+}
+
+fn kwin_script_object_path(
+    script_num: i32,
+    is_kde6: bool,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    let path = if is_kde6 {
+        format!("/Scripting/Script{}", script_num)
+    } else {
+        format!("/{}", script_num)
+    };
+    let obj_path: OwnedObjectPath = path.as_str().try_into()?;
+    Ok(obj_path)
+}
+
+async fn load_kwin_script(
+    connection: &Connection,
+    script_path: &str,
+    is_kde6: bool,
+    cleanup_existing: bool,
+) -> Result<(OwnedObjectPath, &'static str), Box<dyn std::error::Error + Send + Sync>> {
+    if cleanup_existing {
+        for _ in 0..5 {
+            let result = connection
+                .call_method(
+                    Some("org.kde.KWin"),
+                    "/Scripting",
+                    Some("org.kde.kwin.Scripting"),
+                    "loadScript",
+                    &(&script_path,),
+                )
+                .await;
+
+            if result.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+
+        let _ = connection
+            .call_method(
+                Some("org.kde.KWin"),
+                "/Scripting",
+                Some("org.kde.kwin.Scripting"),
+                "unloadScript",
+                &(&script_path,),
+            )
+            .await;
+    }
+
+    let load_result = connection
+        .call_method(
+            Some("org.kde.KWin"),
+            "/Scripting",
+            Some("org.kde.kwin.Scripting"),
+            "loadScript",
+            &(&script_path,),
+        )
+        .await?;
+
+    let script_num: i32 = load_result.body().deserialize()?;
+    let obj_path = kwin_script_object_path(script_num, is_kde6)?;
+    Ok((obj_path, "org.kde.kwin.Script"))
+}
+
+fn build_kde_query_script(
+    is_kde6: bool,
+    bus_name: &str,
+    object_path: &str,
+) -> String {
+    let active_window = if is_kde6 { "activeWindow" } else { "activeClient" };
+    format!(
+        r#"function reportFocus(client) {{
+  callDBus(
+    "{bus}",
+    "{path}",
+    "{iface}",
+    "{method}",
+    client ? (client.resourceClass || "") : "",
+    client ? (client.caption || "") : ""
+  );
+}}
+reportFocus(workspace.{active});
+"#,
+        bus = bus_name,
+        path = object_path,
+        iface = KDE_QUERY_INTERFACE,
+        method = KDE_QUERY_METHOD,
+        active = active_window
+    )
+}
+
+async fn query_kde_focus(
+    connection: &Connection,
+    is_kde6: bool,
+) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let unique_name = connection
+        .unique_name()
+        .ok_or("KDE focus query requires a unique DBus name")?;
+    let query_id = KDE_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let query_path = format!("/com/github/kanata/Switcher/KdeQuery{}", query_id);
+    let (sender, receiver) = oneshot::channel();
+    let service = KdeFocusQueryService {
+        sender: TokioMutex::new(Some(sender)),
+    };
+    connection.object_server().at(query_path.as_str(), service).await?;
+
+    let uid = unsafe { libc::getuid() };
+    let script_path = format!("/tmp/kanata-switcher-kwin-query-{}-{}.js", uid, query_id);
+    let script = build_kde_query_script(is_kde6, unique_name.as_str(), query_path.as_str());
+    fs::write(&script_path, script)?;
+
+    let (script_obj_path, script_interface) =
+        load_kwin_script(connection, &script_path, is_kde6, false).await?;
+
+    let _kwin_query_guard = KwinScriptGuard::new(
+        connection.clone(),
+        tokio::runtime::Handle::current(),
+        script_path.clone(),
+        script_obj_path.clone(),
+        script_interface,
+    );
+
+    connection
+        .call_method(
+            Some("org.kde.KWin"),
+            script_obj_path,
+            Some(script_interface),
+            "run",
+            &(),
+        )
+        .await?;
+
+    let win = tokio::time::timeout(Duration::from_secs(5), receiver)
+        .await
+        .map_err(|_| "Timed out waiting for KDE focus callback")?
+        .map_err(|_| "KDE focus callback sender dropped")?;
+
+    Ok(win)
+}
+
+async fn query_gnome_focus(
+    connection: &Connection,
+) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let reply = connection
+        .call_method(
+            Some(GNOME_SHELL_BUS_NAME),
+            GNOME_FOCUS_OBJECT_PATH,
+            Some(GNOME_FOCUS_INTERFACE),
+            GNOME_FOCUS_METHOD,
+            &(),
+        )
+        .await?;
+    let (class, title): (String, String) = reply.body().deserialize()?;
+    Ok(WindowInfo {
+        class,
+        title,
+        is_native_terminal: false,
+    })
+}
+
+async fn query_focus_for_env(
     env: Environment,
+    connection: Option<&Connection>,
+    is_kde6: bool,
+) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    match env {
+        Environment::Gnome => {
+            let conn = connection.expect("GNOME focus query requires session connection");
+            query_gnome_focus(conn).await
+        }
+        Environment::Kde => {
+            let conn = connection.expect("KDE focus query requires session connection");
+            query_kde_focus(conn, is_kde6).await
+        }
+        Environment::Wayland => tokio::task::block_in_place(query_wayland_active_window),
+        Environment::X11 => tokio::task::block_in_place(query_x11_active_window),
+        Environment::Unknown => Ok(WindowInfo::default()),
+    }
+}
+
+async fn apply_focus_for_env(
+    env: Environment,
+    connection: Option<&Connection>,
+    is_kde6: bool,
     handler: &Arc<Mutex<FocusHandler>>,
     status_broadcaster: &StatusBroadcaster,
     pause_broadcaster: &PauseBroadcaster,
     kanata: &KanataClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let win = if active {
-        match env {
-            Environment::Wayland => tokio::task::block_in_place(query_wayland_active_window)?,
-            Environment::X11 => tokio::task::block_in_place(query_x11_active_window)?,
-            Environment::Gnome | Environment::Kde => cached_gui_window(handler),
-            Environment::Unknown => WindowInfo::default(),
-        }
-    } else {
-        native_terminal_window()
-    };
+    let win = query_focus_for_env(env, connection, is_kde6).await?;
+    let default_layer = kanata.default_layer().await.unwrap_or_default();
+    if let Some(actions) =
+        handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
+    {
+        execute_focus_actions(kanata, actions).await;
+    }
+    Ok(())
+}
+async fn apply_session_focus(
+    active: bool,
+    env: Environment,
+    connection: Option<&Connection>,
+    is_kde6: bool,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    pause_broadcaster: &PauseBroadcaster,
+    kanata: &KanataClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if active {
+        return apply_focus_for_env(
+            env,
+            connection,
+            is_kde6,
+            handler,
+            status_broadcaster,
+            pause_broadcaster,
+            kanata,
+        )
+        .await;
+    }
 
+    let win = native_terminal_window();
     let default_layer = kanata.default_layer().await.unwrap_or_default();
     if let Some(actions) =
         handle_focus_event(handler, status_broadcaster, pause_broadcaster, &win, &default_layer)
@@ -1840,7 +2053,10 @@ async fn resolve_logind_session_path(
     println!("[Logind] XDG_SESSION_ID not set; resolving session via logind");
 
     let pid = std::process::id();
-    match manager.call("GetSessionByPID", &(pid)).await {
+    match manager
+        .call::<_, _, OwnedObjectPath>("GetSessionByPID", &(pid))
+        .await
+    {
         Ok(path) => {
             println!("[Logind] Using session path: {}", path.as_str());
             Ok(path)
@@ -1888,6 +2104,8 @@ async fn resolve_logind_display_session_path(
 
 async fn start_logind_session_monitor(
     env: Environment,
+    session_connection: Option<Connection>,
+    is_kde6: bool,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
@@ -1908,6 +2126,8 @@ async fn start_logind_session_monitor(
         apply_session_focus(
             false,
             env,
+            session_connection.as_ref(),
+            is_kde6,
             &handler,
             &status_broadcaster,
             &pause_broadcaster,
@@ -1923,6 +2143,7 @@ async fn start_logind_session_monitor(
         .await?;
     let mut signals = properties_proxy.receive_properties_changed().await?;
 
+    let session_connection = session_connection.clone();
     tokio::spawn(async move {
         let mut last_active = active;
         while let Some(signal) = signals.next().await {
@@ -1952,6 +2173,8 @@ async fn start_logind_session_monitor(
             if let Err(error) = apply_session_focus(
                 next_active,
                 env,
+                session_connection.as_ref(),
+                is_kde6,
                 &handler,
                 &status_broadcaster,
                 &pause_broadcaster,
@@ -1970,6 +2193,8 @@ async fn start_logind_session_monitor(
 
 async fn start_logind_session_monitor_best_effort<F, Fut>(
     env: Environment,
+    session_connection: Option<Connection>,
+    is_kde6: bool,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
@@ -1979,6 +2204,8 @@ async fn start_logind_session_monitor_best_effort<F, Fut>(
 where
     F: FnOnce(
         Environment,
+        Option<Connection>,
+        bool,
         Arc<Mutex<FocusHandler>>,
         StatusBroadcaster,
         PauseBroadcaster,
@@ -1986,7 +2213,17 @@ where
     ) -> Fut,
     Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 {
-    match starter(env, handler, status_broadcaster, pause_broadcaster, kanata).await {
+    match starter(
+        env,
+        session_connection,
+        is_kde6,
+        handler,
+        status_broadcaster,
+        pause_broadcaster,
+        kanata,
+    )
+    .await
+    {
         Ok(()) => true,
         Err(error) => {
             eprintln!(
@@ -2036,6 +2273,9 @@ fn pause_daemon(
 }
 
 fn unpause_daemon(
+    env: Environment,
+    connection: Option<Connection>,
+    is_kde6: bool,
     pause_broadcaster: &PauseBroadcaster,
     handler: &Arc<Mutex<FocusHandler>>,
     status_broadcaster: &StatusBroadcaster,
@@ -2054,7 +2294,19 @@ fn unpause_daemon(
     let kanata = kanata.clone();
     runtime_handle.block_on(async move {
         kanata.unpause_connect().await;
-        refresh_focus_from_cache(&handler, &status_broadcaster, &pause_broadcaster, &kanata).await;
+        if let Err(error) = apply_focus_for_env(
+            env,
+            connection.as_ref(),
+            is_kde6,
+            &handler,
+            &status_broadcaster,
+            &pause_broadcaster,
+            &kanata,
+        )
+        .await
+        {
+            panic!("[Pause] Failed to refresh focus after unpause: {}", error);
+        }
     });
 }
 
@@ -2896,14 +3148,16 @@ async fn run_wayland(
     let async_fd = AsyncFd::new(RawFdWatcher::new(raw_fd))?;
     let mut shutdown_receiver = shutdown_handle.subscribe();
 
-    // Process initial state
-    let win = state.get_active_window();
-    let default_layer = kanata.default_layer_sync();
-    if let Some(actions) =
-        handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
-    {
-        execute_focus_actions(&kanata, actions).await;
-    }
+    apply_focus_for_env(
+        Environment::Wayland,
+        None,
+        false,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await?;
 
     loop {
         if *shutdown_receiver.borrow() {
@@ -3086,14 +3340,16 @@ async fn run_x11(
 
     println!("[X11] Connected to display");
 
-    // Process initial state at boot
-    let win = state.get_active_window();
-    let default_layer = kanata.default_layer_sync();
-    if let Some(actions) =
-        handle_focus_event(&handler, &status_broadcaster, &pause_broadcaster, &win, &default_layer)
-    {
-        execute_focus_actions(&kanata, actions).await;
-    }
+    apply_focus_for_env(
+        Environment::X11,
+        None,
+        false,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await?;
 
     println!("[X11] Listening for focus events...");
 
@@ -3331,6 +3587,8 @@ const EMBEDDED_FORMAT_JS: &str = include_str!(gnome_ext_file!("format.js"));
 #[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_DBUS_JS: &str = include_str!(gnome_ext_file!("dbus.js"));
 #[cfg(feature = "embed-gnome-extension")]
+const EMBEDDED_FOCUS_JS: &str = include_str!(gnome_ext_file!("focus.js"));
+#[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_GSETTINGS_SCHEMA: &str = include_str!(gnome_ext_file!(
     "schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"
 ));
@@ -3348,6 +3606,7 @@ fn gnome_extension_fs_exists() -> bool {
         && path.join("prefs.js").exists()
         && path.join("format.js").exists()
         && path.join("dbus.js").exists()
+        && path.join("focus.js").exists()
         && path.join(GNOME_EXTENSION_SCHEMA_FILE).exists()
         && path.join(GNOME_EXTENSION_SCHEMA_COMPILED).exists()
 }
@@ -3375,6 +3634,7 @@ fn write_embedded_extension_to_dir(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join("prefs.js"), EMBEDDED_PREFS_JS)?;
     fs::write(dir.join("format.js"), EMBEDDED_FORMAT_JS)?;
     fs::write(dir.join("dbus.js"), EMBEDDED_DBUS_JS)?;
+    fs::write(dir.join("focus.js"), EMBEDDED_FOCUS_JS)?;
     let schema_dir = dir.join("schemas");
     fs::create_dir_all(&schema_dir)?;
     fs::write(dir.join(GNOME_EXTENSION_SCHEMA_FILE), EMBEDDED_GSETTINGS_SCHEMA)?;
@@ -3811,6 +4071,9 @@ struct DbusWindowFocusService {
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
+    env: Environment,
+    connection: Connection,
+    is_kde6: bool,
 }
 
 #[zbus::interface(name = "com.github.kanata.Switcher")]
@@ -3823,7 +4086,6 @@ impl DbusWindowFocusService {
         };
 
         if self.pause_broadcaster.is_paused() {
-            cache_focus_window(&self.handler, &win);
             return;
         }
 
@@ -3891,6 +4153,9 @@ impl DbusWindowFocusService {
 
     async fn unpause(&self) {
         unpause_daemon(
+            self.env,
+            Some(self.connection.clone()),
+            self.is_kde6,
             &self.pause_broadcaster,
             &self.handler,
             &self.status_broadcaster,
@@ -3903,6 +4168,8 @@ impl DbusWindowFocusService {
 
 async fn register_dbus_service(
     connection: &Connection,
+    env: Environment,
+    is_kde6: bool,
     kanata: KanataClient,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
@@ -3916,6 +4183,9 @@ async fn register_dbus_service(
         status_broadcaster: status_broadcaster.clone(),
         restart_handle,
         pause_broadcaster: pause_broadcaster.clone(),
+        env,
+        connection: connection.clone(),
+        is_kde6,
     };
 
     connection
@@ -3997,11 +4267,24 @@ async fn run_gnome(
     let connection = Connection::session().await?;
     register_dbus_service(
         &connection,
-        kanata,
-        handler,
-        status_broadcaster,
+        Environment::Gnome,
+        false,
+        kanata.clone(),
+        handler.clone(),
+        status_broadcaster.clone(),
         restart_handle.clone(),
-        pause_broadcaster,
+        pause_broadcaster.clone(),
+    )
+    .await?;
+
+    apply_focus_for_env(
+        Environment::Gnome,
+        Some(&connection),
+        false,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
     )
     .await?;
 
@@ -4047,7 +4330,7 @@ impl Drop for KwinScriptGuard {
         let script_obj_path = self.script_obj_path.clone();
         let script_interface = self.script_interface.clone();
 
-        runtime_handle.block_on(async move {
+        let cleanup = async move {
             let stop_result = connection
                 .call_method(
                     Some("org.kde.KWin"),
@@ -4073,7 +4356,15 @@ impl Drop for KwinScriptGuard {
             if let Err(error) = unload_result {
                 panic!("[KDE] Failed to unload KWin script: {}", error);
             }
-        });
+        };
+
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| {
+                runtime_handle.block_on(cleanup);
+            });
+        } else {
+            runtime_handle.block_on(cleanup);
+        }
 
         if let Err(error) = fs::remove_file(&self.script_path) {
             if error.kind() != std::io::ErrorKind::NotFound {
@@ -4093,19 +4384,31 @@ async fn run_kde(
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
     let runtime_handle = tokio::runtime::Handle::current();
-    register_dbus_service(
-        &connection,
-        kanata,
-        handler,
-        status_broadcaster,
-        restart_handle.clone(),
-        pause_broadcaster,
-    )
-    .await?;
-
     let is_kde6 = env::var("KDE_SESSION_VERSION")
         .map(|v| v == "6")
         .unwrap_or(false);
+    register_dbus_service(
+        &connection,
+        Environment::Kde,
+        is_kde6,
+        kanata.clone(),
+        handler.clone(),
+        status_broadcaster.clone(),
+        restart_handle.clone(),
+        pause_broadcaster.clone(),
+    )
+    .await?;
+
+    apply_focus_for_env(
+        Environment::Kde,
+        Some(&connection),
+        is_kde6,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await?;
 
     // Inject KWin script (DBus service is ready to receive calls)
     let api = if is_kde6 { "windowActivated" } else { "clientActivated" };
@@ -4292,8 +4595,18 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     };
 
     if let Some(handler) = focus_handler.clone() {
+        let session_connection = if matches!(env, Environment::Gnome | Environment::Kde) {
+            Some(Connection::session().await?)
+        } else {
+            None
+        };
+        let is_kde6 = env::var("KDE_SESSION_VERSION")
+            .map(|v| v == "6")
+            .unwrap_or(false);
         start_logind_session_monitor_best_effort(
             env,
+            session_connection,
+            is_kde6,
             handler,
             status_broadcaster.clone(),
             pause_broadcaster.clone(),
@@ -4360,6 +4673,9 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                     status_broadcaster: status_broadcaster.clone(),
                     pause_broadcaster: pause_broadcaster.clone(),
                     restart_handle: restart_handle.clone(),
+                    env,
+                    connection: None,
+                    is_kde6: false,
                 }))
             }
             _ => None,
