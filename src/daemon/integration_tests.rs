@@ -2206,8 +2206,10 @@ async fn test_handle_focus_event_ignored_when_paused() {
             &status_broadcaster,
             &pause_broadcaster,
             &win,
+            &kanata,
             "default",
-        );
+        )
+        .await;
         assert!(actions.is_none(), "Expected no actions while paused");
         let msg = mock_server.recv_timeout(Duration::from_millis(500));
         assert!(msg.is_none(), "Expected no Kanata messages while paused");
@@ -2218,8 +2220,10 @@ async fn test_handle_focus_event_ignored_when_paused() {
             &status_broadcaster,
             &pause_broadcaster,
             &win,
+            &kanata,
             "default",
-        );
+        )
+        .await;
         assert!(actions.is_some(), "Expected actions after unpause");
         if let Some(actions) = actions {
             execute_focus_actions(&kanata, actions).await;
@@ -2292,8 +2296,10 @@ async fn test_unfocus_ignored_when_paused() {
             &status_broadcaster,
             &pause_broadcaster,
             &unfocus,
+            &kanata,
             "default",
-        );
+        )
+        .await;
         assert!(actions.is_none(), "Expected no actions while paused");
         let msg = mock_server.recv_timeout(Duration::from_millis(500));
         assert!(msg.is_none(), "Expected no Kanata messages while paused");

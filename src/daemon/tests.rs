@@ -717,14 +717,22 @@ fn test_sni_tooltip_includes_virtual_keys() {
     assert!(tooltip.contains("vk_media"));
 }
 
-#[test]
-fn test_update_status_for_focus_updates_snapshot() {
+#[tokio::test]
+async fn test_update_status_for_focus_updates_snapshot() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
 
     let win = win("firefox", "");
-    let actions = update_status_for_focus(&handler, &status_broadcaster, &win, "default");
+    let actions = update_status_for_focus(
+        &handler,
+        &status_broadcaster,
+        &win,
+        &kanata,
+        "default",
+    )
+    .await;
     assert!(actions.is_some());
 
     let snapshot = status_broadcaster.snapshot();
@@ -732,12 +740,50 @@ fn test_update_status_for_focus_updates_snapshot() {
     assert_eq!(snapshot.layer_source, LayerSource::Focus);
 }
 
-#[test]
-fn test_handle_focus_event_ignored_when_paused_no_status_change() {
+#[tokio::test]
+async fn test_update_status_for_focus_unknown_layer_uses_default() {
+    let rules = vec![rule(Some("firefox"), None, Some("browser"))];
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        10000,
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+
+    {
+        let mut inner = kanata
+            .inner
+            .try_lock()
+            .expect("Expected KanataClient lock");
+        inner.known_layers = vec!["default".to_string()];
+    }
+
+    let win = win("firefox", "");
+    let actions = update_status_for_focus(
+        &handler,
+        &status_broadcaster,
+        &win,
+        &kanata,
+        "default",
+    )
+    .await;
+    assert!(actions.is_some());
+
+    let snapshot = status_broadcaster.snapshot();
+    assert_eq!(snapshot.layer, "default");
+    assert_eq!(snapshot.layer_source, LayerSource::Focus);
+}
+
+#[tokio::test]
+async fn test_handle_focus_event_ignored_when_paused_no_status_change() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
 
     pause_broadcaster.set_paused(true);
     let win = win("firefox", "");
@@ -746,8 +792,10 @@ fn test_handle_focus_event_ignored_when_paused_no_status_change() {
         &status_broadcaster,
         &pause_broadcaster,
         &win,
+        &kanata,
         "default",
-    );
+    )
+    .await;
     assert!(actions.is_none());
     let snapshot = status_broadcaster.snapshot();
     assert!(snapshot.layer.is_empty());
@@ -758,20 +806,23 @@ fn test_handle_focus_event_ignored_when_paused_no_status_change() {
         &status_broadcaster,
         &pause_broadcaster,
         &win,
+        &kanata,
         "default",
-    );
+    )
+    .await;
     assert!(actions.is_some());
     let snapshot = status_broadcaster.snapshot();
     assert_eq!(snapshot.layer, "browser");
     assert_eq!(snapshot.layer_source, LayerSource::Focus);
 }
 
-#[test]
-fn test_handle_focus_event_unfocus_paused_does_not_switch_layer() {
+#[tokio::test]
+async fn test_handle_focus_event_unfocus_paused_does_not_switch_layer() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];
     let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
     let status_broadcaster = StatusBroadcaster::new();
     let pause_broadcaster = PauseBroadcaster::new();
+    let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
 
     status_broadcaster.update_layer("current".to_string(), LayerSource::External);
     pause_broadcaster.set_paused(true);
@@ -781,8 +832,10 @@ fn test_handle_focus_event_unfocus_paused_does_not_switch_layer() {
         &status_broadcaster,
         &pause_broadcaster,
         &WindowInfo::default(),
+        &kanata,
         "default",
-    );
+    )
+    .await;
     assert!(actions.is_none());
     let snapshot = status_broadcaster.snapshot();
     assert_eq!(snapshot.layer, "current");

@@ -1676,10 +1676,11 @@ fn extract_focus_layer(actions: &FocusActions) -> Option<String> {
     })
 }
 
-fn update_status_for_focus(
+async fn update_status_for_focus(
     handler: &Arc<Mutex<FocusHandler>>,
     status_broadcaster: &StatusBroadcaster,
     win: &WindowInfo,
+    kanata: &KanataClient,
     default_layer: &str,
 ) -> Option<FocusActions> {
     let (actions, virtual_keys, focus_layer) = {
@@ -1694,23 +1695,26 @@ fn update_status_for_focus(
 
     status_broadcaster.update_virtual_keys(virtual_keys);
     if let Some(layer) = focus_layer {
-        status_broadcaster.update_focus_layer(layer);
+        if let Some(resolved_layer) = kanata.resolve_layer_name(&layer, false).await {
+            status_broadcaster.update_focus_layer(resolved_layer);
+        }
     }
 
     actions
 }
 
-fn handle_focus_event(
+async fn handle_focus_event(
     handler: &Arc<Mutex<FocusHandler>>,
     status_broadcaster: &StatusBroadcaster,
     pause_broadcaster: &PauseBroadcaster,
     win: &WindowInfo,
+    kanata: &KanataClient,
     default_layer: &str,
 ) -> Option<FocusActions> {
     if pause_broadcaster.is_paused() {
         return None;
     }
-    update_status_for_focus(handler, status_broadcaster, win, default_layer)
+    update_status_for_focus(handler, status_broadcaster, win, kanata, default_layer).await
 }
 
 fn native_terminal_window() -> WindowInfo {
@@ -2001,8 +2005,11 @@ async fn apply_focus_for_env(
         status_broadcaster,
         pause_broadcaster,
         &win,
+        kanata,
         &default_layer,
-    ) {
+    )
+    .await
+    {
         execute_focus_actions(kanata, actions).await;
     }
     Ok(())
@@ -2037,8 +2044,11 @@ async fn apply_session_focus(
         status_broadcaster,
         pause_broadcaster,
         &win,
+        kanata,
         &default_layer,
-    ) {
+    )
+    .await
+    {
         execute_focus_actions(kanata, actions).await;
     }
 
@@ -2537,6 +2547,33 @@ impl KanataClient {
         }
     }
 
+    fn resolve_layer_name_from_inner(
+        inner: &KanataClientInner,
+        layer_name: &str,
+        warn_unknown: bool,
+    ) -> Option<String> {
+        if !inner.known_layers.is_empty()
+            && !inner.known_layers.iter().any(|layer| layer == layer_name)
+        {
+            if warn_unknown && !inner.quiet {
+                eprintln!(
+                    "[Kanata] Warning: Unknown layer \"{}\", switching to default instead",
+                    layer_name
+                );
+            }
+            return inner
+                .config_default_layer
+                .clone()
+                .or_else(|| inner.auto_default_layer.clone());
+        }
+        Some(layer_name.to_string())
+    }
+
+    async fn resolve_layer_name(&self, layer_name: &str, warn_unknown: bool) -> Option<String> {
+        let inner = self.inner.lock().await;
+        Self::resolve_layer_name_from_inner(&inner, layer_name, warn_unknown)
+    }
+
     pub async fn connect_with_retry(&self) {
         let delays = [0, 1000, 2000, 5000];
         let mut attempt = 0;
@@ -2744,28 +2781,11 @@ impl KanataClient {
     pub async fn change_layer(&self, layer_name: &str) -> bool {
         let mut inner = self.inner.lock().await;
 
-        // Validate layer exists if we have known layers
-        let target_layer = if !inner.known_layers.is_empty()
-            && !inner.known_layers.iter().any(|l| l == layer_name)
-        {
-            // Unknown layer - warn and fall back to default
-            if !inner.quiet {
-                eprintln!(
-                    "[Kanata] Warning: Unknown layer \"{}\", switching to default instead",
-                    layer_name
-                );
-            }
-            let default = inner
-                .config_default_layer
-                .clone()
-                .or_else(|| inner.auto_default_layer.clone());
-            match default {
-                Some(d) => d,
+        let target_layer =
+            match Self::resolve_layer_name_from_inner(&inner, layer_name, true) {
+                Some(layer) => layer,
                 None => return false,
-            }
-        } else {
-            layer_name.to_string()
-        };
+            };
 
         let current = inner.current_layer.clone();
         if current.as_deref() == Some(&target_layer) {
@@ -3303,8 +3323,11 @@ async fn run_wayland(
                 &status_broadcaster,
                 &pause_broadcaster,
                 &win,
+                &kanata,
                 &default_layer,
-            ) {
+            )
+            .await
+            {
                 execute_focus_actions(&kanata, actions).await;
             }
             continue;
@@ -3344,8 +3367,11 @@ async fn run_wayland(
             &status_broadcaster,
             &pause_broadcaster,
             &win,
+            &kanata,
             &default_layer,
-        ) {
+        )
+        .await
+        {
             execute_focus_actions(&kanata, actions).await;
         }
     }
@@ -3533,8 +3559,11 @@ async fn run_x11(
                         &status_broadcaster,
                         &pause_broadcaster,
                         &win,
+                        &kanata,
                         &default_layer,
-                    ) {
+                    )
+                    .await
+                    {
                         execute_focus_actions(&kanata, actions).await;
                     }
                 }
@@ -4276,12 +4305,16 @@ impl DbusWindowFocusService {
             .block_on(async { self.kanata.default_layer().await })
             .unwrap_or_default();
 
-        let actions = update_status_for_focus(
-            &self.handler,
-            &self.status_broadcaster,
-            &win,
-            &default_layer,
-        );
+        let actions = self.runtime_handle.block_on(async {
+            update_status_for_focus(
+                &self.handler,
+                &self.status_broadcaster,
+                &win,
+                &self.kanata,
+                &default_layer,
+            )
+            .await
+        });
 
         if let Some(actions) = actions {
             let kanata = self.kanata.clone();
