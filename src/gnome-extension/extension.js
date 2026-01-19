@@ -11,6 +11,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { formatLayerLetter, formatVirtualKeys, selectStatus } from './format.js';
 import { unpackSingleBoolean } from './dbus.js';
+import { disconnectedState, isDaemonOwnerAvailable } from './daemon-state.js';
 
 const DBUS_NAME = 'com.github.kanata.Switcher';
 const DBUS_PATH = '/com/github/kanata/Switcher';
@@ -290,7 +291,7 @@ export default class KanataSwitcherExtension extends Extension {
       owner = null;
     }
 
-    if (!owner) {
+    if (!isDaemonOwnerAvailable(owner)) {
       this._setDisconnected();
       return;
     }
@@ -300,18 +301,11 @@ export default class KanataSwitcherExtension extends Extension {
   }
 
   _setDisconnected() {
-    this._status = {
-      layer: '',
-      virtualKeys: [],
-      source: 'external'
-    };
-    this._focusStatus = {
-      layer: '',
-      virtualKeys: [],
-      source: 'focus'
-    };
-    this._lastStatus = this._status;
-    this._paused = false;
+    const state = disconnectedState();
+    this._status = state.status;
+    this._focusStatus = state.focusStatus;
+    this._lastStatus = state.lastStatus;
+    this._paused = state.paused;
     this._syncPauseMenuItem();
     this._applyStatusToIndicator();
   }
