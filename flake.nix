@@ -142,6 +142,22 @@
 
           checks = {
             tests = kanata-switcher-tests;
+            nixos-module-build =
+              (nixpkgs.lib.nixosSystem {
+                inherit system;
+                modules = [
+                  self.nixosModules.default
+                  {
+                    services.kanata-switcher.enable = true;
+                    boot.isContainer = true;
+                    fileSystems."/" = {
+                      device = "tmpfs";
+                      fsType = "tmpfs";
+                    };
+                    system.stateVersion = "23.11";
+                  }
+                ];
+              }).config.system.build.toplevel;
             gnome-schema = pkgs.runCommand "kanata-switcher-gnome-schema-check" {} ''
               test -f ${kanata-switcher-gnome-extension}/share/gnome-shell/extensions/kanata-switcher@7mind.io/schemas/gschemas.compiled
               touch $out
@@ -301,7 +317,7 @@
       mkModule = mkConfig: { config, lib, pkgs, ... }:
         let
           cfg = config.services.kanata-switcher;
-          packages = self.packages.${pkgs.system};
+          packages = self.packages.${pkgs.stdenv.hostPlatform.system};
           configFile =
             if cfg.configFile != null then cfg.configFile
             else if cfg.settings != null then pkgs.writeText "kanata-switcher.json" (builtins.toJSON cfg.settings)
@@ -346,6 +362,12 @@
             RestartSec = 5;
           };
           environment.XDG_DATA_DIRS = "/run/current-system/sw/share";
+          # restartTriggers adds X-Restart-Triggers to unit file, but NixOS doesn't
+          # process it for user services - only system services are handled.
+          # See: https://github.com/NixOS/nixpkgs/issues/246611
+          restartTriggers = [
+            (builtins.toJSON { settings = cfg.settings; configFile = cfg.configFile; })
+          ];
         };
 
         programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
@@ -365,6 +387,9 @@
             Description = "Kanata layer switcher daemon";
             After = [ "graphical-session.target" ];
             PartOf = [ "graphical-session.target" ];
+            X-Restart-Triggers = [
+              (toString (builtins.toJSON { settings = cfg.settings; configFile = cfg.configFile; }))
+            ];
           };
           Service = {
             Type = "simple";

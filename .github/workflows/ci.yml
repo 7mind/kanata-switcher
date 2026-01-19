@@ -23,5 +23,9 @@ jobs:
       - uses: 7mind/github-env@minimal
       - name: Build
         run: nix build -L
+      - name: Build NixOS module
+        run: nix build -L .#checks.x86_64-linux.nixos-module-build
+      - name: Build Home Manager module
+        run: nix build -L ./tests#checks.x86_64-linux.home-module-build
       - name: Run tests
         run: nix run .#test
