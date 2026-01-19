@@ -41,7 +41,7 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use zbus::Connection;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Structure, Value};
 
 // Generated COSMIC protocols
 mod cosmic_workspace {
@@ -2058,7 +2058,10 @@ async fn resolve_logind_session_path(
 
     if let Ok(session_id) = env::var("XDG_SESSION_ID") {
         println!("[Logind] Using XDG_SESSION_ID={}", session_id);
-        let path: OwnedObjectPath = manager.call("GetSession", &(session_id)).await?;
+        let path = parse_logind_object_path(
+            manager.call::<_, _, OwnedValue>("GetSession", &(session_id)).await?,
+            "GetSession",
+        )?;
         println!("[Logind] Using session path: {}", path.as_str());
         return Ok(path);
     }
@@ -2066,10 +2069,11 @@ async fn resolve_logind_session_path(
 
     let pid = std::process::id();
     match manager
-        .call::<_, _, OwnedObjectPath>("GetSessionByPID", &(pid))
+        .call::<_, _, OwnedValue>("GetSessionByPID", &(pid))
         .await
     {
-        Ok(path) => {
+        Ok(value) => {
+            let path = parse_logind_object_path(value, "GetSessionByPID")?;
             println!("[Logind] Using session path: {}", path.as_str());
             Ok(path)
         }
@@ -2093,12 +2097,61 @@ fn is_logind_empty_object_path(path: &OwnedObjectPath) -> bool {
     path.as_str() == LOGIND_EMPTY_OBJECT_PATH
 }
 
+fn parse_logind_object_path(
+    value: OwnedValue,
+    context: &str,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    let debug_value = format!("{:?}", value);
+    if let Ok(path) = OwnedObjectPath::try_from(value.try_clone()?) {
+        return Ok(path);
+    }
+    if let Ok(structure) = Structure::try_from(value.try_clone()?) {
+        if let Some(path) = parse_logind_object_path_from_structure(&structure) {
+            return Ok(path);
+        }
+    }
+    if let Ok(text) = String::try_from(value) {
+        return OwnedObjectPath::try_from(text).map_err(|error| {
+            format!(
+                "logind {} returned invalid object path string: {}",
+                context, error
+            )
+            .into()
+        });
+    }
+    Err(format!(
+        "logind {} returned unexpected value: {}",
+        context, debug_value
+    )
+    .into())
+}
+
+fn parse_logind_object_path_from_structure(structure: &Structure<'_>) -> Option<OwnedObjectPath> {
+    let fields = structure.fields();
+    if fields.len() != 1 {
+        return None;
+    }
+    logind_object_path_from_value(&fields[0])
+}
+
+fn logind_object_path_from_value(value: &Value<'_>) -> Option<OwnedObjectPath> {
+    match value {
+        Value::ObjectPath(path) => Some(OwnedObjectPath::from(path.clone())),
+        Value::Str(text) => OwnedObjectPath::try_from(text.as_str()).ok(),
+        Value::Value(inner) => logind_object_path_from_value(inner),
+        _ => None,
+    }
+}
+
 async fn resolve_logind_display_session_path(
     manager: &zbus::Proxy<'_>,
     connection: &Connection,
     pid: u32,
 ) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
-    let user_path: OwnedObjectPath = manager.call("GetUserByPID", &(pid)).await?;
+    let user_path = parse_logind_object_path(
+        manager.call::<_, _, OwnedValue>("GetUserByPID", &(pid)).await?,
+        "GetUserByPID",
+    )?;
     let user_proxy = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
@@ -2106,7 +2159,10 @@ async fn resolve_logind_display_session_path(
         LOGIND_USER_INTERFACE,
     )
     .await?;
-    let display: OwnedObjectPath = user_proxy.get_property("Display").await?;
+    let display = parse_logind_object_path(
+        user_proxy.get_property::<OwnedValue>("Display").await?,
+        "User.Display",
+    )?;
     if is_logind_empty_object_path(&display) {
         return Err("logind user has no display session".into());
     }

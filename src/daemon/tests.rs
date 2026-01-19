@@ -1783,3 +1783,36 @@ fn test_logind_empty_object_path_detection() {
     assert!(is_logind_empty_object_path(&empty));
     assert!(!is_logind_empty_object_path(&non_empty));
 }
+
+#[test]
+fn test_parse_logind_object_path_value() {
+    use zbus::zvariant::ObjectPath;
+
+    let path = ObjectPath::try_from("/org/freedesktop/login1/session/_1").unwrap();
+    let value = OwnedValue::from(path);
+    let parsed = parse_logind_object_path(value, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
+}
+
+#[test]
+fn test_parse_logind_object_path_structure_single_field() {
+    use zbus::zvariant::{ObjectPath, StructureBuilder};
+
+    let path = ObjectPath::try_from("/org/freedesktop/login1/session/_1").unwrap();
+    let structure = StructureBuilder::new().add_field(path).build().unwrap();
+    let value = OwnedValue::try_from(structure).unwrap();
+    let parsed = parse_logind_object_path(value, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
+}
+
+#[test]
+fn test_parse_logind_object_path_string() {
+    use zbus::zvariant::Str;
+
+    let value = OwnedValue::from(Str::from("/org/freedesktop/login1/session/_1"));
+    let parsed = parse_logind_object_path(value, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
+}
