@@ -2123,10 +2123,12 @@ fn parse_logind_object_path(
 
 fn parse_logind_object_path_from_structure(structure: &Structure<'_>) -> Option<OwnedObjectPath> {
     let fields = structure.fields();
-    if fields.len() != 1 {
+    if fields.is_empty() {
         return None;
     }
-    logind_object_path_from_value(&fields[0])
+    fields
+        .iter()
+        .find_map(|field| logind_object_path_from_value(field))
 }
 
 fn decode_logind_object_path_reply(

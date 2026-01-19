@@ -1848,6 +1848,25 @@ fn test_decode_logind_object_path_reply_structure() {
 }
 
 #[test]
+fn test_decode_logind_object_path_reply_structure_multi_field() {
+    use zbus::zvariant::{ObjectPath, StructureBuilder};
+
+    let path = ObjectPath::try_from("/org/freedesktop/login1/session/_311").unwrap();
+    let structure = StructureBuilder::new()
+        .add_field("11")
+        .add_field(path)
+        .build()
+        .unwrap();
+    let reply = Message::method_call("/org/freedesktop/login1", "GetSession")
+        .unwrap()
+        .build(&structure)
+        .unwrap();
+    let parsed = decode_logind_object_path_reply(&reply, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_311");
+}
+
+#[test]
 fn test_decode_logind_object_path_reply_variant() {
     use zbus::zvariant::{ObjectPath, Value};
 
