@@ -1,5 +1,6 @@
 use super::*;
 use clap::Parser;
+use zbus::Message;
 use proptest::prelude::*;
 use std::future::Future;
 use std::path::Path;
@@ -1813,6 +1814,50 @@ fn test_parse_logind_object_path_string() {
 
     let value = OwnedValue::from(Str::from("/org/freedesktop/login1/session/_1"));
     let parsed = parse_logind_object_path(value, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
+}
+
+#[test]
+fn test_decode_logind_object_path_reply_object_path() {
+    use zbus::zvariant::ObjectPath;
+
+    let path = ObjectPath::try_from("/org/freedesktop/login1/session/_1").unwrap();
+    let reply = Message::method_call("/org/freedesktop/login1", "GetSession")
+        .unwrap()
+        .build(&path)
+        .unwrap();
+    let parsed = decode_logind_object_path_reply(&reply, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
+}
+
+#[test]
+fn test_decode_logind_object_path_reply_structure() {
+    use zbus::zvariant::{ObjectPath, StructureBuilder};
+
+    let path = ObjectPath::try_from("/org/freedesktop/login1/session/_1").unwrap();
+    let structure = StructureBuilder::new().add_field(path).build().unwrap();
+    let reply = Message::method_call("/org/freedesktop/login1", "GetSession")
+        .unwrap()
+        .build(&structure)
+        .unwrap();
+    let parsed = decode_logind_object_path_reply(&reply, "test").unwrap();
+
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
+}
+
+#[test]
+fn test_decode_logind_object_path_reply_variant() {
+    use zbus::zvariant::{ObjectPath, Value};
+
+    let path = ObjectPath::try_from("/org/freedesktop/login1/session/_1").unwrap();
+    let value = OwnedValue::try_from(Value::from(path)).unwrap();
+    let reply = Message::method_call("/org/freedesktop/login1", "GetSession")
+        .unwrap()
+        .build(&value)
+        .unwrap();
+    let parsed = decode_logind_object_path_reply(&reply, "test").unwrap();
 
     assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
 }

@@ -2058,22 +2058,17 @@ async fn resolve_logind_session_path(
 
     if let Ok(session_id) = env::var("XDG_SESSION_ID") {
         println!("[Logind] Using XDG_SESSION_ID={}", session_id);
-        let path = parse_logind_object_path(
-            manager.call::<_, _, OwnedValue>("GetSession", &(session_id)).await?,
-            "GetSession",
-        )?;
+        let reply = manager.call_method("GetSession", &(session_id)).await?;
+        let path = decode_logind_object_path_reply(&reply, "GetSession")?;
         println!("[Logind] Using session path: {}", path.as_str());
         return Ok(path);
     }
     println!("[Logind] XDG_SESSION_ID not set; resolving session via logind");
 
     let pid = std::process::id();
-    match manager
-        .call::<_, _, OwnedValue>("GetSessionByPID", &(pid))
-        .await
-    {
-        Ok(value) => {
-            let path = parse_logind_object_path(value, "GetSessionByPID")?;
+    match manager.call_method("GetSessionByPID", &(pid)).await {
+        Ok(reply) => {
+            let path = decode_logind_object_path_reply(&reply, "GetSessionByPID")?;
             println!("[Logind] Using session path: {}", path.as_str());
             Ok(path)
         }
@@ -2134,6 +2129,48 @@ fn parse_logind_object_path_from_structure(structure: &Structure<'_>) -> Option<
     logind_object_path_from_value(&fields[0])
 }
 
+fn decode_logind_object_path_reply(
+    reply: &zbus::Message,
+    context: &str,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    let body = reply.body();
+    let signature = body.signature().to_string();
+    match signature.as_str() {
+        "o" => Ok(body.deserialize_unchecked::<OwnedObjectPath>()?),
+        "s" => {
+            let text = body.deserialize_unchecked::<String>()?;
+            OwnedObjectPath::try_from(text).map_err(|error| {
+                format!(
+                    "logind {} returned invalid object path string: {}",
+                    context, error
+                )
+                .into()
+            })
+        }
+        "v" => {
+            let value = body.deserialize::<OwnedValue>()?;
+            parse_logind_object_path(value, context)
+        }
+        _ => {
+            if signature.starts_with('(') {
+                let structure = body.deserialize::<Structure>()?;
+                return parse_logind_object_path_from_structure(&structure).ok_or_else(|| {
+                    format!(
+                        "logind {} returned unexpected structure: {}",
+                        context, signature
+                    )
+                    .into()
+                });
+            }
+            Err(format!(
+                "logind {} returned unexpected signature: {}",
+                context, signature
+            )
+            .into())
+        }
+    }
+}
+
 fn logind_object_path_from_value(value: &Value<'_>) -> Option<OwnedObjectPath> {
     match value {
         Value::ObjectPath(path) => Some(OwnedObjectPath::from(path.clone())),
@@ -2148,10 +2185,8 @@ async fn resolve_logind_display_session_path(
     connection: &Connection,
     pid: u32,
 ) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
-    let user_path = parse_logind_object_path(
-        manager.call::<_, _, OwnedValue>("GetUserByPID", &(pid)).await?,
-        "GetUserByPID",
-    )?;
+    let user_reply = manager.call_method("GetUserByPID", &(pid)).await?;
+    let user_path = decode_logind_object_path_reply(&user_reply, "GetUserByPID")?;
     let user_proxy = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
