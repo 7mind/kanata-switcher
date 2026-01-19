@@ -1834,13 +1834,17 @@ async fn resolve_logind_session_path(
     if let Ok(session_id) = env::var("XDG_SESSION_ID") {
         println!("[Logind] Using XDG_SESSION_ID={}", session_id);
         let path: OwnedObjectPath = manager.call("GetSession", &(session_id)).await?;
+        println!("[Logind] Using session path: {}", path.as_str());
         return Ok(path);
     }
     println!("[Logind] XDG_SESSION_ID not set; resolving session via logind");
 
     let pid = std::process::id();
     match manager.call("GetSessionByPID", &(pid)).await {
-        Ok(path) => Ok(path),
+        Ok(path) => {
+            println!("[Logind] Using session path: {}", path.as_str());
+            Ok(path)
+        }
         Err(error) => {
             if is_logind_no_session_error(&error) {
                 return resolve_logind_display_session_path(&manager, connection, pid).await;
@@ -1878,6 +1882,7 @@ async fn resolve_logind_display_session_path(
     if is_logind_empty_object_path(&display) {
         return Err("logind user has no display session".into());
     }
+    println!("[Logind] Using display session path: {}", display.as_str());
     Ok(display)
 }
 
