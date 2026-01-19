@@ -235,6 +235,25 @@ fn test_autostart_passthrough_args_skip_oneshot() {
 }
 
 #[test]
+fn test_autostart_passthrough_args_tray_focus_only() {
+    let matches = Args::command().get_matches_from([
+        "kanata-switcher",
+        "--install-autostart",
+        "--tray-focus-only",
+        "false",
+    ]);
+    let args = Args::from_arg_matches(&matches).unwrap();
+    let exec_args = autostart_passthrough_args(&matches, &args);
+    assert_eq!(
+        exec_args,
+        vec![
+            "--tray-focus-only".to_string(),
+            "false".to_string()
+        ]
+    );
+}
+
+#[test]
 fn test_autostart_desktop_content_escapes_exec() {
     let exec_path = Path::new("/tmp/kanata switcher");
     let exec_args = vec![
@@ -367,7 +386,7 @@ fn test_sni_indicator_state_focus_only() {
         virtual_keys: Vec::new(),
         layer_source: LayerSource::External,
     };
-    let mut state = SniIndicatorState::new(initial.clone());
+    let mut state = SniIndicatorState::new(initial.clone(), SNI_DEFAULT_SHOW_FOCUS_ONLY);
     assert_eq!(state.display_status().layer, "base");
 
     let focus_status = StatusSnapshot {
@@ -397,6 +416,32 @@ fn test_sni_indicator_state_focus_only() {
 }
 
 #[test]
+fn test_sni_indicator_state_initial_focus_only_false() {
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let mut state = SniIndicatorState::new(initial.clone(), false);
+
+    let focus_status = StatusSnapshot {
+        layer: "browser".to_string(),
+        virtual_keys: vec!["vk_browser".to_string()],
+        layer_source: LayerSource::Focus,
+    };
+    state.update_status(focus_status);
+
+    let external_status = StatusSnapshot {
+        layer: "external".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    state.update_status(external_status);
+
+    assert_eq!(state.display_status().layer, "external");
+}
+
+#[test]
 fn test_sni_menu_actions_dispatch_control() {
     let initial = StatusSnapshot {
         layer: "base".to_string(),
@@ -406,8 +451,9 @@ fn test_sni_menu_actions_dispatch_control() {
     let control = MockSniControl::new();
     let control_counts = control.clone();
     let mut indicator = SniIndicator {
-        state: SniIndicatorState::new(initial),
+        state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
         control: Arc::new(control),
+        settings: SniSettingsStore::disabled(),
     };
 
     let menu = indicator.menu();
@@ -443,8 +489,9 @@ fn test_sni_menu_toggle_affects_display() {
     };
     let control = MockSniControl::new();
     let mut indicator = SniIndicator {
-        state: SniIndicatorState::new(initial),
+        state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
         control: Arc::new(control),
+        settings: SniSettingsStore::disabled(),
     };
 
     let focus_status = StatusSnapshot {
@@ -487,8 +534,9 @@ fn test_sni_tooltip_includes_virtual_keys() {
     };
     let control = MockSniControl::new();
     let mut indicator = SniIndicator {
-        state: SniIndicatorState::new(initial),
+        state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
         control: Arc::new(control),
+        settings: SniSettingsStore::disabled(),
     };
 
     let focus_status = StatusSnapshot {

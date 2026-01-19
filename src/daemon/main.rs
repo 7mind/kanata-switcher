@@ -1,4 +1,4 @@
-use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 use futures_util::StreamExt;
 use ksni::menu::{CheckmarkItem, StandardItem};
@@ -80,6 +80,10 @@ use cosmic_workspace::{
 };
 
 const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
+const GSETTINGS_SCHEMA_ID: &str = "org.gnome.shell.extensions.kanata-switcher";
+const GSETTINGS_FOCUS_ONLY_KEY: &str = "show-focus-layer-only";
+const GSETTINGS_COMPILED_FILENAME: &str = "gschemas.compiled";
+const XDG_DATA_DIRS_FALLBACK: &str = "/usr/local/share:/usr/share";
 const DBUS_NAME: &str = "com.github.kanata.Switcher";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
@@ -115,6 +119,25 @@ impl ControlCommand {
 
 // === CLI ===
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TrayFocusOnly {
+    True,
+    False,
+}
+
+impl TrayFocusOnly {
+    fn as_bool(self) -> bool {
+        matches!(self, TrayFocusOnly::True)
+    }
+
+    fn as_arg(self) -> &'static str {
+        match self {
+            TrayFocusOnly::True => "true",
+            TrayFocusOnly::False => "false",
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "kanata-switcher")]
 #[command(about = "Switch kanata layers based on focused window")]
@@ -148,6 +171,10 @@ struct Args {
     #[arg(long)]
     no_indicator: bool,
 
+    /// Override SNI focus-only mode (true/false). When set, GSettings is not read.
+    #[arg(long, value_enum, value_name = "true|false")]
+    tray_focus_only: Option<TrayFocusOnly>,
+
     /// Install autostart desktop entry and exit
     #[arg(long, conflicts_with_all = ["uninstall_autostart", "restart", "pause", "unpause"])]
     install_autostart: bool,
@@ -179,6 +206,7 @@ const AUTOSTART_PASSTHROUGH_OPTIONS: &[&str] = &[
     "install_gnome_extension",
     "no_install_gnome_extension",
     "no_indicator",
+    "tray_focus_only",
 ];
 const AUTOSTART_ONESHOT_OPTIONS: &[&str] = &[
     "restart",
@@ -323,6 +351,13 @@ fn autostart_passthrough_args(matches: &ArgMatches, args: &Args) -> Vec<String> 
             }
             "no_indicator" => {
                 exec_args.push("--no-indicator".to_string());
+            }
+            "tray_focus_only" => {
+                let value = args
+                    .tray_focus_only
+                    .expect("tray_focus_only missing after command-line input");
+                exec_args.push("--tray-focus-only".to_string());
+                exec_args.push(value.as_arg().to_string());
             }
             _ => {
                 panic!("autostart passthrough option missing handler: {}", name);
@@ -1071,6 +1106,7 @@ async fn wait_for_restart_or_shutdown(
 
 // === SNI Indicator ===
 
+const SNI_DEFAULT_SHOW_FOCUS_ONLY: bool = true;
 const SNI_ICON_SIZE: usize = 24;
 const SNI_GLYPH_SIZE: usize = 8;
 const SNI_GLYPH_Y: usize = (SNI_ICON_SIZE - SNI_GLYPH_SIZE) / 2;
@@ -1087,6 +1123,62 @@ const SNI_INDICATOR_TITLE: &str = "Kanata Switcher";
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
 
 #[derive(Clone, Debug)]
+struct SniSettingsStore {
+    schema_dir: Option<PathBuf>,
+    available: bool,
+}
+
+impl SniSettingsStore {
+    fn new() -> Self {
+        Self {
+            schema_dir: find_gsettings_schema_dir(),
+            available: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            schema_dir: None,
+            available: false,
+        }
+    }
+
+    fn read_focus_only(&mut self) -> Option<bool> {
+        if !self.available {
+            return None;
+        }
+        match gsettings_get_bool(
+            self.schema_dir.as_deref(),
+            GSETTINGS_SCHEMA_ID,
+            GSETTINGS_FOCUS_ONLY_KEY,
+        ) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                eprintln!("[SNI] GSettings read failed: {}", error);
+                self.available = false;
+                None
+            }
+        }
+    }
+
+    fn write_focus_only(&mut self, value: bool) {
+        if !self.available {
+            return;
+        }
+        if let Err(error) = gsettings_set_bool(
+            self.schema_dir.as_deref(),
+            GSETTINGS_SCHEMA_ID,
+            GSETTINGS_FOCUS_ONLY_KEY,
+            value,
+        ) {
+            eprintln!("[SNI] GSettings write failed: {}", error);
+            self.available = false;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct SniIndicatorState {
     last_status: StatusSnapshot,
     focus_status: StatusSnapshot,
@@ -1095,12 +1187,12 @@ struct SniIndicatorState {
 }
 
 impl SniIndicatorState {
-    fn new(initial: StatusSnapshot) -> Self {
+    fn new(initial: StatusSnapshot, show_focus_only: bool) -> Self {
         Self {
             last_status: initial.clone(),
             focus_status: initial,
             paused: false,
-            show_focus_only: true,
+            show_focus_only,
         }
     }
 
@@ -1117,6 +1209,10 @@ impl SniIndicatorState {
 
     fn toggle_focus_only(&mut self) {
         self.show_focus_only = !self.show_focus_only;
+    }
+
+    fn focus_only_enabled(&self) -> bool {
+        self.show_focus_only
     }
 
     fn display_status(&self) -> StatusSnapshot {
@@ -1242,6 +1338,7 @@ impl SniControlOps for SniControl {
 struct SniIndicator {
     state: SniIndicatorState,
     control: Arc<dyn SniControlOps>,
+    settings: SniSettingsStore,
 }
 
 impl SniIndicator {
@@ -1255,6 +1352,8 @@ impl SniIndicator {
 
     fn toggle_focus_only(&mut self) {
         self.state.toggle_focus_only();
+        let show_focus_only = self.state.focus_only_enabled();
+        self.settings.write_focus_only(show_focus_only);
     }
 
     fn request_pause(&self) {
@@ -1485,6 +1584,16 @@ impl Tray for SniIndicator {
         eprintln!("[SNI] StatusNotifierWatcher offline");
         true
     }
+}
+
+fn resolve_sni_focus_only(
+    override_value: Option<TrayFocusOnly>,
+    settings: &mut SniSettingsStore,
+) -> bool {
+    if let Some(value) = override_value {
+        return value.as_bool();
+    }
+    settings.read_focus_only().unwrap_or(SNI_DEFAULT_SHOW_FOCUS_ONLY)
 }
 
 /// Execute focus actions in order
@@ -2934,13 +3043,17 @@ fn start_sni_indicator(
     control: SniControl,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
+    tray_focus_only: Option<TrayFocusOnly>,
 ) -> Option<ksni::Handle<SniIndicator>> {
     println!("[SNI] Starting StatusNotifier indicator");
     let initial_status = status_broadcaster.snapshot();
+    let mut settings = SniSettingsStore::new();
+    let show_focus_only = resolve_sni_focus_only(tray_focus_only, &mut settings);
     let control_handle: Arc<dyn SniControlOps> = Arc::new(control);
     let indicator = SniIndicator {
-        state: SniIndicatorState::new(initial_status),
+        state: SniIndicatorState::new(initial_status, show_focus_only),
         control: control_handle,
+        settings,
     };
     let service = TrayService::new(indicator);
     let handle = service.handle();
@@ -2997,6 +3110,101 @@ impl Drop for SniGuard {
             handle.shutdown();
         }
     }
+}
+
+fn xdg_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
+        if !xdg_data_home.is_empty() {
+            dirs.push(PathBuf::from(xdg_data_home));
+        }
+    } else if let Ok(home) = env::var("HOME") {
+        if !home.is_empty() {
+            dirs.push(PathBuf::from(home).join(".local/share"));
+        }
+    }
+
+    let data_dirs = env::var("XDG_DATA_DIRS").unwrap_or_else(|_| XDG_DATA_DIRS_FALLBACK.to_string());
+    for entry in data_dirs.split(':') {
+        if entry.is_empty() {
+            continue;
+        }
+        dirs.push(PathBuf::from(entry));
+    }
+
+    dirs
+}
+
+fn find_gsettings_schema_dir() -> Option<PathBuf> {
+    for data_dir in xdg_data_dirs() {
+        let schema_dir = data_dir
+            .join("gnome-shell")
+            .join("extensions")
+            .join(GNOME_EXTENSION_UUID)
+            .join("schemas");
+        if schema_dir.join(GSETTINGS_COMPILED_FILENAME).exists() {
+            return Some(schema_dir);
+        }
+    }
+
+    let schema_dir = get_gnome_extension_fs_path().join("schemas");
+    if schema_dir.join(GSETTINGS_COMPILED_FILENAME).exists() {
+        return Some(schema_dir);
+    }
+
+    None
+}
+
+fn gsettings_command(schema_dir: Option<&Path>) -> Command {
+    let mut command = Command::new("gsettings");
+    if let Some(dir) = schema_dir {
+        command.arg("--schemadir").arg(dir);
+    }
+    command
+}
+
+fn gsettings_get_bool(
+    schema_dir: Option<&Path>,
+    schema: &str,
+    key: &str,
+) -> Result<bool, String> {
+    let output = gsettings_command(schema_dir)
+        .args(["get", schema, key])
+        .output()
+        .map_err(|error| format!("gsettings get failed: {}", error))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gsettings get failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match stdout.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(format!("unexpected gsettings output: {}", value)),
+    }
+}
+
+fn gsettings_set_bool(
+    schema_dir: Option<&Path>,
+    schema: &str,
+    key: &str,
+    value: bool,
+) -> Result<(), String> {
+    let value_str = if value { "true" } else { "false" };
+    let output = gsettings_command(schema_dir)
+        .args(["set", schema, key, value_str])
+        .output()
+        .map_err(|error| format!("gsettings set failed: {}", error))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gsettings set failed: {}", stderr.trim()));
+    }
+
+    Ok(())
 }
 
 // === GNOME Extension Management ===
@@ -4063,7 +4271,12 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     };
 
     let sni_handle = sni_control.and_then(|control| {
-        start_sni_indicator(control, status_broadcaster.clone(), pause_broadcaster.clone())
+        start_sni_indicator(
+            control,
+            status_broadcaster.clone(),
+            pause_broadcaster.clone(),
+            args.tray_focus_only,
+        )
     });
     let _sni_guard = SniGuard::new(sni_handle);
 

@@ -25,6 +25,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] Add GJS test for GNOME top bar character formatting (Nix check)
 - [x] GNOME indicator updates on focus-based layer changes with focus-only toggle
 - [x] Add DBus GetStatus test for focus source
+- [x] Persist SNI focus-only setting via GSettings with CLI override
 - [ ] Add config file watching for hot-reload
 - [ ] Package for distribution
 
