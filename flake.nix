@@ -119,6 +119,7 @@
             echo '[workspace]' > Cargo.toml
             HOME="$WORK_DIR" ${pkgs.xvfb-run}/bin/xvfb-run -s "-screen 0 800x600x24" \
               ${pkgs.cargo-nextest}/bin/cargo-nextest nextest run \
+              --no-fail-fast \
               --archive-file ${kanata-switcher-test-archive}/archive.tar.zst \
               --workspace-remap . "$@"
           '';

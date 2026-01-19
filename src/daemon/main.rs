@@ -186,7 +186,7 @@ struct Args {
 
     /// Override SNI focus-only mode (true/false). When set, GSettings is not read.
     #[arg(long, value_enum, value_name = "true|false")]
-    tray_focus_only: Option<TrayFocusOnly>,
+    indicator_focus_only: Option<TrayFocusOnly>,
 
     /// Install autostart desktop entry and exit
     #[arg(long, conflicts_with_all = ["uninstall_autostart", "restart", "pause", "unpause"])]
@@ -219,7 +219,7 @@ const AUTOSTART_PASSTHROUGH_OPTIONS: &[&str] = &[
     "install_gnome_extension",
     "no_install_gnome_extension",
     "no_indicator",
-    "tray_focus_only",
+    "indicator_focus_only",
 ];
 const AUTOSTART_ONESHOT_OPTIONS: &[&str] = &[
     "restart",
@@ -365,10 +365,10 @@ fn autostart_passthrough_args(matches: &ArgMatches, args: &Args) -> Vec<String> 
             "no_indicator" => {
                 exec_args.push("--no-indicator".to_string());
             }
-            "tray_focus_only" => {
+            "indicator_focus_only" => {
                 let value = args
-                    .tray_focus_only
-                    .expect("tray_focus_only missing after command-line input");
+                    .indicator_focus_only
+                    .expect("indicator_focus_only missing after command-line input");
                 exec_args.push("--indicator-focus-only".to_string());
                 exec_args.push(value.as_arg().to_string());
             }
@@ -3463,12 +3463,12 @@ fn start_sni_indicator(
     control: SniControl,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
-    tray_focus_only: Option<TrayFocusOnly>,
+    indicator_focus_only: Option<TrayFocusOnly>,
 ) -> Option<ksni::Handle<SniIndicator>> {
     println!("[SNI] Starting StatusNotifier indicator");
     let initial_status = status_broadcaster.snapshot();
     let mut settings = SniSettingsStore::new();
-    let show_focus_only = resolve_sni_focus_only(tray_focus_only, &mut settings);
+    let show_focus_only = resolve_sni_focus_only(indicator_focus_only, &mut settings);
     let control_handle: Arc<dyn SniControlOps> = Arc::new(control);
     let indicator = SniIndicator {
         state: SniIndicatorState::new(initial_status, show_focus_only),
@@ -4792,7 +4792,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             control,
             status_broadcaster.clone(),
             pause_broadcaster.clone(),
-            args.tray_focus_only,
+            args.indicator_focus_only,
         )
     });
     let _sni_guard = SniGuard::new(sni_handle);

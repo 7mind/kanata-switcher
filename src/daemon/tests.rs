@@ -281,7 +281,7 @@ fn test_autostart_passthrough_args_skip_oneshot() {
 }
 
 #[test]
-fn test_autostart_passthrough_args_tray_focus_only() {
+fn test_autostart_passthrough_args_indicator_focus_only() {
     let matches = Args::command().get_matches_from([
         "kanata-switcher",
         "--install-autostart",
