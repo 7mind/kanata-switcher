@@ -65,6 +65,13 @@ where
         .expect("test timeout")
 }
 
+fn start_wayland_test_server(
+) -> (std::sync::MutexGuard<'static, ()>, wayland_mock::WaylandMockServer) {
+    let lock = WAYLAND_ENV_LOCK.lock().unwrap();
+    let server = wayland_mock::WaylandMockServer::start();
+    (lock, server)
+}
+
 async fn pause_daemon_direct(
     pause_broadcaster: &PauseBroadcaster,
     handler: &Arc<Mutex<FocusHandler>>,
@@ -2729,8 +2736,7 @@ mod wayland_mock {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_wayland_focus_query_on_start_and_unpause() {
     with_test_timeout(async {
-        let _lock = WAYLAND_ENV_LOCK.lock().unwrap();
-        let _server = wayland_mock::WaylandMockServer::start();
+        let (_lock, _server) = start_wayland_test_server();
 
         let mock_server = MockKanataServer::start();
         let rules = vec![Rule {
@@ -2835,8 +2841,7 @@ async fn test_wayland_focus_query_on_start_and_unpause() {
 /// returns the right WindowInfo.
 #[test]
 fn test_wayland_mock_compositor_startup() {
-    let _lock = WAYLAND_ENV_LOCK.lock().unwrap();
-    let server = wayland_mock::WaylandMockServer::start();
+    let (_lock, server) = start_wayland_test_server();
     assert!(!server.socket_name().is_empty());
 }
 
