@@ -1122,10 +1122,49 @@ const SNI_MIN_MULTI_VK_COUNT: usize = 2;
 const SNI_INDICATOR_TITLE: &str = "Kanata Switcher";
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
 
-#[derive(Clone, Debug)]
+trait GsettingsBackend: Send + Sync {
+    fn get_bool(
+        &self,
+        schema_dir: Option<&Path>,
+        schema: &str,
+        key: &str,
+    ) -> Result<bool, String>;
+    fn set_bool(
+        &self,
+        schema_dir: Option<&Path>,
+        schema: &str,
+        key: &str,
+        value: bool,
+    ) -> Result<(), String>;
+}
+
+struct ShellGsettingsBackend;
+
+impl GsettingsBackend for ShellGsettingsBackend {
+    fn get_bool(
+        &self,
+        schema_dir: Option<&Path>,
+        schema: &str,
+        key: &str,
+    ) -> Result<bool, String> {
+        gsettings_get_bool(schema_dir, schema, key)
+    }
+
+    fn set_bool(
+        &self,
+        schema_dir: Option<&Path>,
+        schema: &str,
+        key: &str,
+        value: bool,
+    ) -> Result<(), String> {
+        gsettings_set_bool(schema_dir, schema, key, value)
+    }
+}
+
 struct SniSettingsStore {
     schema_dir: Option<PathBuf>,
     available: bool,
+    backend: Box<dyn GsettingsBackend>,
 }
 
 impl SniSettingsStore {
@@ -1133,6 +1172,16 @@ impl SniSettingsStore {
         Self {
             schema_dir: find_gsettings_schema_dir(),
             available: true,
+            backend: Box::new(ShellGsettingsBackend),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_backend(schema_dir: Option<PathBuf>, backend: Box<dyn GsettingsBackend>) -> Self {
+        Self {
+            schema_dir,
+            available: true,
+            backend,
         }
     }
 
@@ -1141,6 +1190,7 @@ impl SniSettingsStore {
         Self {
             schema_dir: None,
             available: false,
+            backend: Box::new(ShellGsettingsBackend),
         }
     }
 
@@ -1148,7 +1198,7 @@ impl SniSettingsStore {
         if !self.available {
             return None;
         }
-        match gsettings_get_bool(
+        match self.backend.get_bool(
             self.schema_dir.as_deref(),
             GSETTINGS_SCHEMA_ID,
             GSETTINGS_FOCUS_ONLY_KEY,
@@ -1166,7 +1216,7 @@ impl SniSettingsStore {
         if !self.available {
             return;
         }
-        if let Err(error) = gsettings_set_bool(
+        if let Err(error) = self.backend.set_bool(
             self.schema_dir.as_deref(),
             GSETTINGS_SCHEMA_ID,
             GSETTINGS_FOCUS_ONLY_KEY,

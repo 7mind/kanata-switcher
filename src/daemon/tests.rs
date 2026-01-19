@@ -379,6 +379,66 @@ impl SniControlOps for MockSniControl {
     }
 }
 
+#[derive(Default)]
+struct MockGsettingsState {
+    get_calls: usize,
+    set_calls: Vec<bool>,
+}
+
+struct MockGsettingsBackend {
+    state: Arc<Mutex<MockGsettingsState>>,
+    get_result: Result<bool, String>,
+    set_result: Result<(), String>,
+}
+
+impl MockGsettingsBackend {
+    fn new(
+        state: Arc<Mutex<MockGsettingsState>>,
+        get_result: Result<bool, String>,
+        set_result: Result<(), String>,
+    ) -> Self {
+        Self {
+            state,
+            get_result,
+            set_result,
+        }
+    }
+}
+
+impl GsettingsBackend for MockGsettingsBackend {
+    fn get_bool(
+        &self,
+        _schema_dir: Option<&Path>,
+        _schema: &str,
+        _key: &str,
+    ) -> Result<bool, String> {
+        let mut state = self.state.lock().unwrap();
+        state.get_calls += 1;
+        self.get_result.clone()
+    }
+
+    fn set_bool(
+        &self,
+        _schema_dir: Option<&Path>,
+        _schema: &str,
+        _key: &str,
+        value: bool,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap();
+        state.set_calls.push(value);
+        self.set_result.clone()
+    }
+}
+
+fn mock_gsettings_backend(
+    get_result: Result<bool, String>,
+    set_result: Result<(), String>,
+) -> (Box<dyn GsettingsBackend>, Arc<Mutex<MockGsettingsState>>) {
+    let state = Arc::new(Mutex::new(MockGsettingsState::default()));
+    let backend = MockGsettingsBackend::new(state.clone(), get_result, set_result);
+    (Box::new(backend), state)
+}
+
 #[test]
 fn test_sni_indicator_state_focus_only() {
     let initial = StatusSnapshot {
@@ -439,6 +499,61 @@ fn test_sni_indicator_state_initial_focus_only_false() {
     state.update_status(external_status);
 
     assert_eq!(state.display_status().layer, "external");
+}
+
+#[test]
+fn test_sni_settings_store_reads_from_gsettings() {
+    let (backend, state) = mock_gsettings_backend(Ok(false), Ok(()));
+    let mut store = SniSettingsStore::with_backend(None, backend);
+    let value = store.read_focus_only();
+    assert_eq!(value, Some(false));
+    let state = state.lock().unwrap();
+    assert_eq!(state.get_calls, 1);
+    assert!(state.set_calls.is_empty());
+}
+
+#[test]
+fn test_sni_settings_store_read_error_disables_write() {
+    let (backend, state) = mock_gsettings_backend(Err("missing schema".to_string()), Ok(()));
+    let mut store = SniSettingsStore::with_backend(None, backend);
+    let value = store.read_focus_only();
+    assert_eq!(value, None);
+    store.write_focus_only(true);
+    let state = state.lock().unwrap();
+    assert_eq!(state.get_calls, 1);
+    assert!(state.set_calls.is_empty());
+}
+
+#[test]
+fn test_resolve_sni_focus_only_override_skips_gsettings() {
+    let (backend, state) = mock_gsettings_backend(Ok(false), Ok(()));
+    let mut store = SniSettingsStore::with_backend(None, backend);
+    let value = resolve_sni_focus_only(Some(TrayFocusOnly::True), &mut store);
+    assert!(value);
+    let state = state.lock().unwrap();
+    assert_eq!(state.get_calls, 0);
+    assert!(state.set_calls.is_empty());
+}
+
+#[test]
+fn test_sni_toggle_persists_to_gsettings() {
+    let (backend, state) = mock_gsettings_backend(Ok(true), Ok(()));
+    let store = SniSettingsStore::with_backend(None, backend);
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let control = MockSniControl::new();
+    let mut indicator = SniIndicator {
+        state: SniIndicatorState::new(initial, true),
+        control: Arc::new(control),
+        settings: store,
+    };
+
+    indicator.toggle_focus_only();
+    let state = state.lock().unwrap();
+    assert_eq!(state.set_calls, vec![false]);
 }
 
 #[test]
