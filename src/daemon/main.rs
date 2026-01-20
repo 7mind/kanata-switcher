@@ -1293,12 +1293,36 @@ impl SniSettingsStore {
     }
 }
 
+struct MenuRefresh {
+    sender: watch::Sender<u64>,
+    version: u64,
+}
+
+impl MenuRefresh {
+    fn new() -> (Self, watch::Receiver<u64>) {
+        let (sender, receiver) = watch::channel(0u64);
+        (
+            Self {
+                sender,
+                version: 0,
+            },
+            receiver,
+        )
+    }
+
+    fn notify(&mut self) {
+        self.version += 1;
+        self.sender.send_replace(self.version);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SniIndicatorState {
     last_status: StatusSnapshot,
     focus_status: StatusSnapshot,
     paused: bool,
     show_focus_only: bool,
+    menu_revision: u64,
 }
 
 impl SniIndicatorState {
@@ -1308,6 +1332,7 @@ impl SniIndicatorState {
             focus_status: initial,
             paused: false,
             show_focus_only,
+            menu_revision: 0,
         }
     }
 
@@ -1328,6 +1353,10 @@ impl SniIndicatorState {
 
     fn focus_only_enabled(&self) -> bool {
         self.show_focus_only
+    }
+
+    fn bump_menu_revision(&mut self) {
+        self.menu_revision = self.menu_revision.wrapping_add(1);
     }
 
     fn display_status(&self) -> StatusSnapshot {
@@ -1460,6 +1489,7 @@ struct SniIndicator {
     state: SniIndicatorState,
     control: Arc<dyn SniControlOps>,
     settings: SniSettingsStore,
+    menu_refresh: MenuRefresh,
 }
 
 impl SniIndicator {
@@ -1475,6 +1505,7 @@ impl SniIndicator {
         self.state.toggle_focus_only();
         let show_focus_only = self.state.focus_only_enabled();
         self.settings.write_focus_only(show_focus_only);
+        self.menu_refresh.notify();
     }
 
     fn request_pause(&self) {
@@ -3658,11 +3689,13 @@ fn start_sni_indicator(
     let initial_status = status_broadcaster.snapshot();
     let mut settings = SniSettingsStore::new();
     let show_focus_only = resolve_sni_focus_only(indicator_focus_only, &mut settings);
+    let (menu_refresh, mut menu_refresh_receiver) = MenuRefresh::new();
     let control_handle: Arc<dyn SniControlOps> = Arc::new(control);
     let indicator = SniIndicator {
         state: SniIndicatorState::new(initial_status, show_focus_only),
         control: control_handle,
         settings,
+        menu_refresh,
     };
     let service = TrayService::new(indicator);
     let handle = service.handle();
@@ -3691,6 +3724,16 @@ fn start_sni_indicator(
             }
             let paused = *pause_receiver.borrow();
             pause_handle.update(|state| state.set_paused(paused));
+        }
+    });
+
+    let menu_handle = handle.clone();
+    tokio::spawn(async move {
+        loop {
+            if menu_refresh_receiver.changed().await.is_err() {
+                break;
+            }
+            menu_handle.update(|state| state.state.bump_menu_revision());
         }
     });
 

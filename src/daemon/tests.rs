@@ -653,15 +653,38 @@ fn test_sni_toggle_persists_to_gsettings() {
         layer_source: LayerSource::External,
     };
     let control = MockSniControl::new();
+    let (menu_refresh, _menu_receiver) = MenuRefresh::new();
     let mut indicator = SniIndicator {
         state: SniIndicatorState::new(initial, true),
         control: Arc::new(control),
         settings: store,
+        menu_refresh,
     };
 
     indicator.toggle_focus_only();
     let state = state.lock().unwrap();
     assert_eq!(state.set_calls, vec![false]);
+}
+
+#[test]
+fn test_sni_toggle_sends_menu_refresh() {
+    let (menu_refresh, receiver) = MenuRefresh::new();
+    let receiver = receiver;
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let control = MockSniControl::new();
+    let mut indicator = SniIndicator {
+        state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
+        control: Arc::new(control),
+        settings: SniSettingsStore::disabled(),
+        menu_refresh,
+    };
+
+    indicator.toggle_focus_only();
+    assert_eq!(*receiver.borrow(), 1);
 }
 
 #[test]
@@ -673,10 +696,12 @@ fn test_sni_menu_actions_dispatch_control() {
     };
     let control = MockSniControl::new();
     let control_counts = control.clone();
+    let (menu_refresh, _menu_receiver) = MenuRefresh::new();
     let mut indicator = SniIndicator {
         state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
         control: Arc::new(control),
         settings: SniSettingsStore::disabled(),
+        menu_refresh,
     };
 
     let menu = indicator.menu();
@@ -711,10 +736,12 @@ fn test_sni_menu_toggle_affects_display() {
         layer_source: LayerSource::External,
     };
     let control = MockSniControl::new();
+    let (menu_refresh, _menu_receiver) = MenuRefresh::new();
     let mut indicator = SniIndicator {
         state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
         control: Arc::new(control),
         settings: SniSettingsStore::disabled(),
+        menu_refresh,
     };
 
     let focus_status = StatusSnapshot {
@@ -756,10 +783,12 @@ fn test_sni_tooltip_includes_virtual_keys() {
         layer_source: LayerSource::External,
     };
     let control = MockSniControl::new();
+    let (menu_refresh, _menu_receiver) = MenuRefresh::new();
     let mut indicator = SniIndicator {
         state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
         control: Arc::new(control),
         settings: SniSettingsStore::disabled(),
+        menu_refresh,
     };
 
     let focus_status = StatusSnapshot {
