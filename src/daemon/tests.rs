@@ -392,6 +392,26 @@ fn test_sni_format_virtual_keys() {
     assert_eq!(SniIndicator::format_virtual_keys(&keys), "∞");
 }
 
+fn sni_buffer_has_color(buffer: &[u8], color: [u8; 4]) -> bool {
+    buffer
+        .chunks_exact(4)
+        .any(|chunk| chunk == color)
+}
+
+#[test]
+fn test_sni_icon_color_layers_and_vks() {
+    let icon = SniIndicator::render_icon("A", "B");
+    assert!(sni_buffer_has_color(&icon.data, SNI_COLOR_LAYER));
+    assert!(sni_buffer_has_color(&icon.data, SNI_COLOR_VK));
+}
+
+#[test]
+fn test_sni_icon_color_layer_only() {
+    let icon = SniIndicator::render_icon("A", "");
+    assert!(sni_buffer_has_color(&icon.data, SNI_COLOR_LAYER));
+    assert!(!sni_buffer_has_color(&icon.data, SNI_COLOR_VK));
+}
+
 #[derive(Clone, Default)]
 struct MockSniControlCounts {
     restart: usize,

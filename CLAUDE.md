@@ -16,6 +16,7 @@ These apply __ONLY__ to editing llm-docs:
 ### Env
 
 - You are running in a sandboxed environment, your options for live testing changes are limited. Especially given the fact that the project in question relies on user interaction.
+- If a user requests worktrees, create a separate branch and worktree under `local/worktrees/`, and use `nix develop` in that worktree instead of `direnv exec`.
 
 ### README
 

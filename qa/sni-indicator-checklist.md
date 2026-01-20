@@ -11,6 +11,7 @@ Environment: (DE/compositor, panel/bar, session type)
 ## Visual behavior
 - [ ] Layer glyph updates on focus changes
 - [ ] VK glyph updates (single key / count / infinity)
+- [ ] Layer glyph is white and VK glyph is cyan (matches GNOME indicator)
 - [ ] Tooltip shows layer and virtual keys
 
 ## Menu actions
