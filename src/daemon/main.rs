@@ -89,6 +89,10 @@ const GSETTINGS_SCHEMA_ID: &str = "org.gnome.shell.extensions.kanata-switcher";
 const GSETTINGS_FOCUS_ONLY_KEY: &str = "show-focus-layer-only";
 const GSETTINGS_COMPILED_FILENAME: &str = "gschemas.compiled";
 const XDG_DATA_DIRS_FALLBACK: &str = "/usr/local/share:/usr/share";
+const NIXOS_SYSTEM_PROFILE: &str = "/run/current-system/sw/share";
+const NIXOS_DEFAULT_PROFILE: &str = "/nix/var/nix/profiles/default/share";
+const NIXOS_PER_USER_PROFILE_PREFIX: &str = "/etc/profiles/per-user";
+const NIXOS_PER_USER_PROFILE_ALT_PREFIX: &str = "/nix/var/nix/profiles/per-user";
 const DBUS_NAME: &str = "com.github.kanata.Switcher";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
@@ -1159,8 +1163,24 @@ impl GsettingsBackend for ShellGsettingsBackend {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GsettingsSchemaTarget {
+    Default,
+    Dir(PathBuf),
+}
+
+impl GsettingsSchemaTarget {
+    fn as_option(&self) -> Option<&Path> {
+        match self {
+            GsettingsSchemaTarget::Default => None,
+            GsettingsSchemaTarget::Dir(dir) => Some(dir.as_path()),
+        }
+    }
+}
+
 struct SniSettingsStore {
-    schema_dir: Option<PathBuf>,
+    schema_dirs: Vec<PathBuf>,
+    active_schema: Option<GsettingsSchemaTarget>,
     available: bool,
     backend: Box<dyn GsettingsBackend>,
 }
@@ -1168,16 +1188,18 @@ struct SniSettingsStore {
 impl SniSettingsStore {
     fn new() -> Self {
         Self {
-            schema_dir: find_gsettings_schema_dir(),
+            schema_dirs: find_gsettings_schema_dirs(),
+            active_schema: None,
             available: true,
             backend: Box::new(ShellGsettingsBackend),
         }
     }
 
     #[cfg(test)]
-    fn with_backend(schema_dir: Option<PathBuf>, backend: Box<dyn GsettingsBackend>) -> Self {
+    fn with_backend(schema_dirs: Vec<PathBuf>, backend: Box<dyn GsettingsBackend>) -> Self {
         Self {
-            schema_dir,
+            schema_dirs,
+            active_schema: None,
             available: true,
             backend,
         }
@@ -1186,42 +1208,87 @@ impl SniSettingsStore {
     #[cfg(test)]
     fn disabled() -> Self {
         Self {
-            schema_dir: None,
+            schema_dirs: Vec::new(),
+            active_schema: None,
             available: false,
             backend: Box::new(ShellGsettingsBackend),
         }
+    }
+
+    fn schema_targets(&self) -> Vec<GsettingsSchemaTarget> {
+        let mut targets = Vec::new();
+        if let Some(active) = self.active_schema.clone() {
+            targets.push(active);
+        }
+        targets.push(GsettingsSchemaTarget::Default);
+        for dir in &self.schema_dirs {
+            let target = GsettingsSchemaTarget::Dir(dir.clone());
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        targets
     }
 
     fn read_focus_only(&mut self) -> Option<bool> {
         if !self.available {
             return None;
         }
-        match self.backend.get_bool(
-            self.schema_dir.as_deref(),
-            GSETTINGS_SCHEMA_ID,
-            GSETTINGS_FOCUS_ONLY_KEY,
-        ) {
-            Ok(value) => Some(value),
-            Err(error) => {
-                eprintln!("[SNI] GSettings read failed: {}", error);
-                self.available = false;
-                None
+        let mut last_error: Option<String> = None;
+        for target in self.schema_targets() {
+            match self.backend.get_bool(
+                target.as_option(),
+                GSETTINGS_SCHEMA_ID,
+                GSETTINGS_FOCUS_ONLY_KEY,
+            ) {
+                Ok(value) => {
+                    self.active_schema = Some(target);
+                    return Some(value);
+                }
+                Err(error) => {
+                    if is_gsettings_unavailable(&error) {
+                        self.available = false;
+                        last_error = Some(error);
+                        break;
+                    }
+                    last_error = Some(error);
+                }
             }
         }
+        if let Some(error) = last_error {
+            eprintln!("[SNI] GSettings read failed: {}", error);
+        }
+        None
     }
 
     fn write_focus_only(&mut self, value: bool) {
         if !self.available {
             return;
         }
-        if let Err(error) = self.backend.set_bool(
-            self.schema_dir.as_deref(),
-            GSETTINGS_SCHEMA_ID,
-            GSETTINGS_FOCUS_ONLY_KEY,
-            value,
-        ) {
+        let mut last_error: Option<String> = None;
+        for target in self.schema_targets() {
+            match self.backend.set_bool(
+                target.as_option(),
+                GSETTINGS_SCHEMA_ID,
+                GSETTINGS_FOCUS_ONLY_KEY,
+                value,
+            ) {
+                Ok(()) => {
+                    self.active_schema = Some(target);
+                    return;
+                }
+                Err(error) => {
+                    if is_gsettings_unavailable(&error) {
+                        self.available = false;
+                        last_error = Some(error);
+                        break;
+                    }
+                    last_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = last_error {
             eprintln!("[SNI] GSettings write failed: {}", error);
-            self.available = false;
         }
     }
 }
@@ -3654,16 +3721,49 @@ impl Drop for SniGuard {
     }
 }
 
+fn push_unique_dir(dirs: &mut Vec<PathBuf>, path: PathBuf) {
+    if dirs.iter().any(|existing| existing == &path) {
+        return;
+    }
+    dirs.push(path);
+}
+
+fn nixos_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_dir(&mut dirs, PathBuf::from(NIXOS_SYSTEM_PROFILE));
+    push_unique_dir(&mut dirs, PathBuf::from(NIXOS_DEFAULT_PROFILE));
+
+    if let Ok(user) = env::var("USER") {
+        if !user.is_empty() {
+            push_unique_dir(
+                &mut dirs,
+                PathBuf::from(NIXOS_PER_USER_PROFILE_PREFIX)
+                    .join(&user)
+                    .join("share"),
+            );
+            push_unique_dir(
+                &mut dirs,
+                PathBuf::from(NIXOS_PER_USER_PROFILE_ALT_PREFIX)
+                    .join(&user)
+                    .join("profile")
+                    .join("share"),
+            );
+        }
+    }
+
+    dirs
+}
+
 fn xdg_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
         if !xdg_data_home.is_empty() {
-            dirs.push(PathBuf::from(xdg_data_home));
+            push_unique_dir(&mut dirs, PathBuf::from(xdg_data_home));
         }
     } else if let Ok(home) = env::var("HOME") {
         if !home.is_empty() {
-            dirs.push(PathBuf::from(home).join(".local/share"));
+            push_unique_dir(&mut dirs, PathBuf::from(home).join(".local/share"));
         }
     }
 
@@ -3673,30 +3773,40 @@ fn xdg_data_dirs() -> Vec<PathBuf> {
         if entry.is_empty() {
             continue;
         }
-        dirs.push(PathBuf::from(entry));
+        push_unique_dir(&mut dirs, PathBuf::from(entry));
+    }
+
+    for nix_dir in nixos_data_dirs() {
+        push_unique_dir(&mut dirs, nix_dir);
     }
 
     dirs
 }
 
-fn find_gsettings_schema_dir() -> Option<PathBuf> {
+fn push_schema_dir_if_exists(dirs: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.join(GSETTINGS_COMPILED_FILENAME).exists() {
+        push_unique_dir(dirs, path);
+    }
+}
+
+fn find_gsettings_schema_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
     for data_dir in xdg_data_dirs() {
-        let schema_dir = data_dir
-            .join("gnome-shell")
-            .join("extensions")
-            .join(GNOME_EXTENSION_UUID)
-            .join("schemas");
-        if schema_dir.join(GSETTINGS_COMPILED_FILENAME).exists() {
-            return Some(schema_dir);
-        }
+        push_schema_dir_if_exists(&mut dirs, data_dir.join("glib-2.0").join("schemas"));
+        push_schema_dir_if_exists(
+            &mut dirs,
+            data_dir
+                .join("gnome-shell")
+                .join("extensions")
+                .join(GNOME_EXTENSION_UUID)
+                .join("schemas"),
+        );
     }
 
-    let schema_dir = get_gnome_extension_fs_path().join("schemas");
-    if schema_dir.join(GSETTINGS_COMPILED_FILENAME).exists() {
-        return Some(schema_dir);
-    }
+    push_schema_dir_if_exists(&mut dirs, get_gnome_extension_fs_path().join("schemas"));
 
-    None
+    dirs
 }
 
 fn gsettings_command(schema_dir: Option<&Path>) -> Command {
@@ -3744,6 +3854,11 @@ fn gsettings_set_bool(
     }
 
     Ok(())
+}
+
+fn is_gsettings_unavailable(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("no such file or directory") || lower.contains("not found")
 }
 
 // === GNOME Extension Management ===
