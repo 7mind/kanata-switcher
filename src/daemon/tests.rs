@@ -803,6 +803,35 @@ fn test_sni_tooltip_includes_virtual_keys() {
     assert!(tooltip.contains("vk_media"));
 }
 
+#[test]
+fn test_sni_title_text_is_single_line() {
+    let initial = StatusSnapshot {
+        layer: "base".to_string(),
+        virtual_keys: Vec::new(),
+        layer_source: LayerSource::External,
+    };
+    let control = MockSniControl::new();
+    let (menu_refresh, _menu_receiver) = MenuRefresh::new();
+    let mut indicator = SniIndicator {
+        state: SniIndicatorState::new(initial, SNI_DEFAULT_SHOW_FOCUS_ONLY),
+        control: Arc::new(control),
+        settings: SniSettingsStore::disabled(),
+        menu_refresh,
+    };
+
+    let focus_status = StatusSnapshot {
+        layer: "browser".to_string(),
+        virtual_keys: vec!["vk_browser".to_string(), "vk_media".to_string()],
+        layer_source: LayerSource::Focus,
+    };
+    indicator.update_status(focus_status);
+
+    let title = indicator.title_text();
+    assert!(title.contains("Layer: browser"));
+    assert!(title.contains("Virtual keys:"));
+    assert!(!title.contains('\n'));
+}
+
 #[tokio::test]
 async fn test_update_status_for_focus_updates_snapshot() {
     let rules = vec![rule(Some("firefox"), None, Some("browser"))];

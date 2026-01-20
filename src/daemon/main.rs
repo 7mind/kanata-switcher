@@ -1131,7 +1131,6 @@ const SNI_COLOR_VK: [u8; 4] = [255, 0, 255, 255];
 const SNI_INFINITY_SYMBOL: char = '∞';
 const SNI_MAX_VK_COUNT_DIGIT: usize = 9;
 const SNI_MIN_MULTI_VK_COUNT: usize = 2;
-const SNI_INDICATOR_TITLE: &str = "Kanata Switcher";
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
 
 trait GsettingsBackend: Send + Sync {
@@ -1665,6 +1664,14 @@ impl SniIndicator {
             status.virtual_keys.join(", ")
         )
     }
+
+    fn title_text(&self) -> String {
+        let status = self.state.display_status();
+        if status.virtual_keys.is_empty() {
+            return format!("Layer: {}", status.layer);
+        }
+        format!("Layer: {} | Virtual keys: {}", status.layer, status.virtual_keys.join(", "))
+    }
 }
 
 impl Tray for SniIndicator {
@@ -1673,7 +1680,7 @@ impl Tray for SniIndicator {
     }
 
     fn title(&self) -> String {
-        SNI_INDICATOR_TITLE.to_string()
+        self.title_text()
     }
 
     fn status(&self) -> SniStatus {
@@ -1687,7 +1694,7 @@ impl Tray for SniIndicator {
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
-            title: SNI_INDICATOR_TITLE.to_string(),
+            title: self.title_text(),
             description: self.tooltip_text(),
             ..ToolTip::default()
         }
