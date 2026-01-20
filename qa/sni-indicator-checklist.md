@@ -10,8 +10,9 @@ Environment: (DE/compositor, panel/bar, session type)
 
 ## Visual behavior
 - [ ] Layer glyph updates on focus changes
-- [ ] VK glyph updates (single key / count / infinity)
+- [ ] VK glyph updates (single key / count / overflow)
 - [ ] Layer glyph is white and VK glyph is cyan (matches GNOME indicator)
+- [ ] Glyphs use Noto Sans Mono bitmap (size 32) and VK overflow shows "9+"
 - [ ] Tooltip shows layer and virtual keys
 
 ## Menu actions

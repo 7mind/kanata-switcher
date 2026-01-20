@@ -389,27 +389,39 @@ fn test_sni_format_virtual_keys() {
         .into_iter()
         .map(String::from)
         .collect::<Vec<_>>();
-    assert_eq!(SniIndicator::format_virtual_keys(&keys), "∞");
+    assert_eq!(SniIndicator::format_virtual_keys(&keys), "9+");
 }
 
-fn sni_buffer_has_color(buffer: &[u8], color: [u8; 4]) -> bool {
-    buffer
-        .chunks_exact(4)
-        .any(|chunk| chunk == color)
+fn sni_buffer_has_layer_pixels(buffer: &[u8]) -> bool {
+    buffer.chunks_exact(4).any(|chunk| {
+        let [red, green, blue, alpha] = chunk else {
+            return false;
+        };
+        *alpha > 0 && *red > 0 && *red == *green && *green == *blue
+    })
+}
+
+fn sni_buffer_has_vk_pixels(buffer: &[u8]) -> bool {
+    buffer.chunks_exact(4).any(|chunk| {
+        let [red, green, blue, alpha] = chunk else {
+            return false;
+        };
+        *alpha > 0 && *red == 0 && *green > 0 && *blue > 0
+    })
 }
 
 #[test]
 fn test_sni_icon_color_layers_and_vks() {
     let icon = SniIndicator::render_icon("A", "B");
-    assert!(sni_buffer_has_color(&icon.data, SNI_COLOR_LAYER));
-    assert!(sni_buffer_has_color(&icon.data, SNI_COLOR_VK));
+    assert!(sni_buffer_has_layer_pixels(&icon.data));
+    assert!(sni_buffer_has_vk_pixels(&icon.data));
 }
 
 #[test]
 fn test_sni_icon_color_layer_only() {
     let icon = SniIndicator::render_icon("A", "");
-    assert!(sni_buffer_has_color(&icon.data, SNI_COLOR_LAYER));
-    assert!(!sni_buffer_has_color(&icon.data, SNI_COLOR_VK));
+    assert!(sni_buffer_has_layer_pixels(&icon.data));
+    assert!(!sni_buffer_has_vk_pixels(&icon.data));
 }
 
 #[derive(Clone, Default)]

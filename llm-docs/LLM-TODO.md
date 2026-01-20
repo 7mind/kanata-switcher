@@ -41,3 +41,4 @@ The project daemon is located at `src/daemon/` (Rust).
 - 2026-01-18: logind session resolution now falls back to the user’s `Display` session when `GetSessionByPID` reports no session (systemd user service with lingering).
 - 2026-01-19: logind object path parsing accepts signatures `o`, `s`, `v`, or structures containing an object path (robust reply decoding).
 - 2026-01-20: SNI indicator icon colors aligned with GNOME (layer white, VK cyan).
+- 2026-01-20: SNI indicator glyphs use Noto Sans Mono bitmap size 32; VK overflow renders as "9+".

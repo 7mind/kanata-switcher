@@ -1,8 +1,8 @@
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
 use futures_util::StreamExt;
 use ksni::menu::{CheckmarkItem, StandardItem};
 use ksni::{Icon as SniIcon, MenuItem, Status as SniStatus, ToolTip, Tray, TrayService};
+use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1119,16 +1119,14 @@ async fn wait_for_restart_or_shutdown(
 // === SNI Indicator ===
 
 const SNI_DEFAULT_SHOW_FOCUS_ONLY: bool = true;
-const SNI_ICON_SIZE: usize = 24;
-const SNI_GLYPH_SIZE: usize = 8;
-const SNI_GLYPH_Y: usize = (SNI_ICON_SIZE - SNI_GLYPH_SIZE) / 2;
-const SNI_GLYPH_MARGIN: usize = 3;
-const SNI_LAYER_X_SINGLE: usize = (SNI_ICON_SIZE - SNI_GLYPH_SIZE) / 2;
-const SNI_LAYER_X_DOUBLE: usize = SNI_GLYPH_MARGIN;
-const SNI_VK_X_DOUBLE: usize = SNI_ICON_SIZE - SNI_GLYPH_SIZE - SNI_GLYPH_MARGIN;
+const SNI_FONT_WEIGHT: FontWeight = FontWeight::Regular;
+const SNI_RASTER_HEIGHT: RasterHeight = RasterHeight::Size32;
+const SNI_GLYPH_WIDTH: usize = get_raster_width(SNI_FONT_WEIGHT, SNI_RASTER_HEIGHT);
+const SNI_GLYPH_HEIGHT: usize = SNI_RASTER_HEIGHT.val();
+const SNI_GLYPH_GAP: usize = 4;
+const SNI_ICON_HEIGHT: usize = SNI_GLYPH_HEIGHT;
 const SNI_COLOR_LAYER: [u8; 4] = [255, 255, 255, 255];
 const SNI_COLOR_VK: [u8; 4] = [0, 255, 255, 255];
-const SNI_INFINITY_SYMBOL: char = '∞';
 const SNI_MAX_VK_COUNT_DIGIT: usize = 9;
 const SNI_MIN_MULTI_VK_COUNT: usize = 2;
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
@@ -1551,22 +1549,15 @@ impl SniIndicator {
             return String::new();
         }
         if count > SNI_MAX_VK_COUNT_DIGIT {
-            return SNI_INFINITY_SYMBOL.to_string();
+            return format!("{}+", SNI_MAX_VK_COUNT_DIGIT);
         }
         count.to_string()
     }
 
-    fn glyph_for_char(ch: char) -> [u8; 8] {
-        const INFINITY_GLYPH: [u8; 8] = [
-            0b00000000, 0b00111100, 0b01000010, 0b10011001, 0b10011001, 0b01000010, 0b00111100,
-            0b00000000,
-        ];
-        if ch == SNI_INFINITY_SYMBOL {
-            return INFINITY_GLYPH;
-        }
-        BASIC_FONTS
-            .get(ch)
-            .unwrap_or_else(|| BASIC_FONTS.get('?').unwrap_or([0; 8]))
+    fn glyph_for_char(ch: char) -> RasterizedChar {
+        get_raster(ch, SNI_FONT_WEIGHT, SNI_RASTER_HEIGHT)
+            .or_else(|| get_raster('?', SNI_FONT_WEIGHT, SNI_RASTER_HEIGHT))
+            .expect("SNI glyph lookup failed")
     }
 
     fn draw_glyph(
@@ -1575,73 +1566,95 @@ impl SniIndicator {
         height: usize,
         x: usize,
         y: usize,
-        glyph: [u8; 8],
+        glyph: &RasterizedChar,
         color: [u8; 4],
     ) {
-        for (row_index, row) in glyph.iter().enumerate() {
+        for (row_index, row) in glyph.raster().iter().enumerate() {
             let dest_y = y + row_index;
             if dest_y >= height {
                 continue;
             }
-            for col_index in 0..SNI_GLYPH_SIZE {
+            for (col_index, intensity) in row.iter().enumerate() {
                 let dest_x = x + col_index;
                 if dest_x >= width {
                     continue;
                 }
-                if row & (1 << col_index) == 0 {
+                if *intensity == 0 {
                     continue;
                 }
                 let offset = (dest_y * width + dest_x) * 4;
-                buffer[offset] = color[0];
-                buffer[offset + 1] = color[1];
-                buffer[offset + 2] = color[2];
-                buffer[offset + 3] = color[3];
+                let alpha = (u16::from(color[3]) * u16::from(*intensity) / 255) as u8;
+                let red = (u16::from(color[0]) * u16::from(*intensity) / 255) as u8;
+                let green = (u16::from(color[1]) * u16::from(*intensity) / 255) as u8;
+                let blue = (u16::from(color[2]) * u16::from(*intensity) / 255) as u8;
+                buffer[offset] = red;
+                buffer[offset + 1] = green;
+                buffer[offset + 2] = blue;
+                buffer[offset + 3] = alpha;
             }
         }
     }
 
-    fn render_icon(layer_text: &str, vk_text: &str) -> SniIcon {
-        let mut buffer = vec![0u8; SNI_ICON_SIZE * SNI_ICON_SIZE * 4];
-        let layer_char = layer_text.chars().next().unwrap_or('?');
-        let vk_char = vk_text.chars().next();
+    fn text_width(text: &str) -> usize {
+        SNI_GLYPH_WIDTH * text.chars().count()
+    }
 
-        if let Some(vk_char) = vk_char {
-            let layer_glyph = Self::glyph_for_char(layer_char);
-            let vk_glyph = Self::glyph_for_char(vk_char);
-            Self::draw_glyph(
-                &mut buffer,
-                SNI_ICON_SIZE,
-                SNI_ICON_SIZE,
-                SNI_LAYER_X_DOUBLE,
-                SNI_GLYPH_Y,
-                layer_glyph,
-                SNI_COLOR_LAYER,
-            );
-            Self::draw_glyph(
-                &mut buffer,
-                SNI_ICON_SIZE,
-                SNI_ICON_SIZE,
-                SNI_VK_X_DOUBLE,
-                SNI_GLYPH_Y,
-                vk_glyph,
-                SNI_COLOR_VK,
-            );
+    fn draw_text(
+        buffer: &mut [u8],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        text: &str,
+        color: [u8; 4],
+    ) -> usize {
+        let mut cursor_x = x;
+        for ch in text.chars() {
+            let glyph = Self::glyph_for_char(ch);
+            Self::draw_glyph(buffer, width, height, cursor_x, y, &glyph, color);
+            cursor_x += glyph.width();
+        }
+        cursor_x - x
+    }
+
+    fn render_icon(layer_text: &str, vk_text: &str) -> SniIcon {
+        let layer_width = Self::text_width(layer_text);
+        let vk_width = Self::text_width(vk_text);
+        let gap = if vk_text.is_empty() {
+            0
         } else {
-            let layer_glyph = Self::glyph_for_char(layer_char);
-            Self::draw_glyph(
+            SNI_GLYPH_GAP
+        };
+        let icon_width = layer_width + gap + vk_width;
+        let mut buffer = vec![0u8; icon_width * SNI_ICON_HEIGHT * 4];
+        let glyph_y = (SNI_ICON_HEIGHT - SNI_GLYPH_HEIGHT) / 2;
+        let layer_x = 0;
+        let vk_x = layer_x + layer_width + gap;
+
+        Self::draw_text(
+            &mut buffer,
+            icon_width,
+            SNI_ICON_HEIGHT,
+            layer_x,
+            glyph_y,
+            layer_text,
+            SNI_COLOR_LAYER,
+        );
+        if !vk_text.is_empty() {
+            Self::draw_text(
                 &mut buffer,
-                SNI_ICON_SIZE,
-                SNI_ICON_SIZE,
-                SNI_LAYER_X_SINGLE,
-                SNI_GLYPH_Y,
-                layer_glyph,
-                SNI_COLOR_LAYER,
+                icon_width,
+                SNI_ICON_HEIGHT,
+                vk_x,
+                glyph_y,
+                vk_text,
+                SNI_COLOR_VK,
             );
         }
 
         SniIcon {
-            width: SNI_ICON_SIZE as i32,
-            height: SNI_ICON_SIZE as i32,
+            width: icon_width as i32,
+            height: SNI_ICON_HEIGHT as i32,
             data: buffer,
         }
     }
