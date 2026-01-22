@@ -1679,11 +1679,7 @@ impl SniIndicator {
     }
 
     fn title_text(&self) -> String {
-        let status = self.state.display_status();
-        if status.virtual_keys.is_empty() {
-            return format!("Layer: {}", status.layer);
-        }
-        format!("Layer: {} | Virtual keys: {}", status.layer, status.virtual_keys.join(", "))
+        "Kanata Switcher".to_string()
     }
 }
 

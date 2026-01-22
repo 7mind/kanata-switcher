@@ -859,9 +859,7 @@ fn test_sni_title_text_is_single_line() {
     indicator.update_status(focus_status);
 
     let title = indicator.title_text();
-    assert!(title.contains("Layer: browser"));
-    assert!(title.contains("Virtual keys:"));
-    assert!(!title.contains('\n'));
+    assert!(title == "Kanata Switcher");
 }
 
 #[tokio::test]
