@@ -1,16 +1,16 @@
 # Installation Checklist
 
-Last tested: YYYY-MM-DD
-Environment: (distro, DE/compositor, session type)
+Last tested: 2026-01-22
+Environment: NixOS, KDE, Wayland
 
 ## Cargo install
 - [ ] `cargo install --path .` succeeds
 - [ ] Binary is on PATH (or invoked directly)
-- [ ] `kanata-switcher --help` shows CLI options
+- [x] `kanata-switcher --help` shows CLI options
 
 ## Nix install
-- [ ] `nix build` succeeds
-- [ ] `nix run` starts the daemon
+- [x] `nix build` succeeds
+- [x] `nix run` starts the daemon
 
 ## GNOME extension auto-install (GNOME only)
 - [ ] First run installs extension without manual steps
@@ -22,6 +22,6 @@ Environment: (distro, DE/compositor, session type)
 - [ ] Manual `gnome-extensions pack/install/enable` works
 
 ## Config discovery
-- [ ] Default config path `~/.config/kanata/kanata-switcher.json` is used
+- [x] Default config path `~/.config/kanata/kanata-switcher.json` is used
 - [ ] Missing config errors show example config
 - [ ] Explicit `--config` path is honored

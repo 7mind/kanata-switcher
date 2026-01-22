@@ -1,14 +1,14 @@
 # Desktop Backends Checklist
 
-Last tested: YYYY-MM-DD
-Environment: (distro, DE/compositor, session type)
+Last tested: 2026-01-22
+Environment: NixOS, KDE, Wayland
 
 ## KDE Plasma
-- [ ] KWin script loads automatically
-- [ ] Focus changes trigger expected actions
-- [ ] Daemon start applies current focused window without extra focus change
-- [ ] Pause/unpause re-queries current focus (no cached focus)
-- [ ] DBus backend stays connected
+- [x] KWin script loads automatically
+- [x] Focus changes trigger expected actions
+- [x] Daemon start applies current focused window without extra focus change
+- [x] Pause/unpause re-queries current focus (no cached focus)
+- [x] DBus backend stays connected
 
 ## wlroots (Sway/Hyprland/Niri)
 - [ ] wlr-foreign-toplevel events received

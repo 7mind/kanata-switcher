@@ -1,29 +1,31 @@
 # SNI Indicator Checklist (Non-GNOME)
 
-Last tested: YYYY-MM-DD
-Environment: (DE/compositor, panel/bar, session type)
+Last tested: 2026-01-22
+Environment: KDE, KDE Panel, Wayland
 
 ## Indicator lifecycle
-- [ ] SNI indicator appears by default on non-GNOME
-- [ ] `--no-indicator` suppresses it
-- [ ] Logs show SNI startup and watcher online/offline
+- [x] SNI indicator appears by default on non-GNOME
+- [x] `--no-indicator` suppresses it
+- [x] Logs show SNI startup and watcher online/offline
+- [ ] Logs show SNI watcher offline
 
 ## Visual behavior
-- [ ] Layer glyph updates on focus changes
-- [ ] VK glyph updates (single key / count / overflow)
-- [ ] Layer glyph is white and VK glyph is cyan (matches GNOME indicator)
+- [x] Layer glyph updates on focus changes
+- [x] VK glyph updates (single key / count / overflow)
+- [x] Layer glyph is white and VK glyph is cyan (matches GNOME indicator)
 - [ ] Glyphs use Noto Sans Mono bitmap (size 32) and VK overflow shows "9+"
-- [ ] Tooltip shows layer and virtual keys
+- [x] Tooltip shows layer and virtual keys
 
 ## Menu actions
-- [ ] Pause toggles pause state
-- [ ] Unpause resumes focus processing
-- [ ] "Show app layer only" toggles focus-only view
-- [ ] Restart restarts daemon
+- [x] Pause toggles pause state
+- [x] Unpause resumes focus processing
+- [x] "Show app layer only" toggles focus-only view
+- [x] Restart restarts daemon
 
 ## Persistence
-- [ ] "Show app layer only" persists across daemon restarts when GSettings is available
-- [ ] `--indicator-focus-only true|false` overrides startup value without locking the toggle
+- [x] "Show app layer only" persists across daemon restarts when GSettings is available
+- [ ] "Show app layer only" persists across daemon restarts when daemon is launched via systemd unit
+- [x] `--indicator-focus-only true|false` overrides startup value without locking the toggle
 
 ## Failure behavior
 - [ ] If SNI cannot be started, daemon keeps running and logs error

@@ -1,21 +1,21 @@
 # CLI Control Commands Checklist
 
-Last tested: YYYY-MM-DD
-Environment: (distro, DE/compositor, session type)
+Last tested: 2026-01-22
+Environment: NixOS, KDE, Wayland
 
 ## Restart
-- [ ] Start daemon normally
-- [ ] Run `kanata-switcher --restart`
-- [ ] Running daemon restarts (log shows restart)
-- [ ] Caller exits cleanly
+- [x] Start daemon normally
+- [x] Run `kanata-switcher --restart`
+- [x] Running daemon restarts (log shows restart)
+- [x] Caller exits cleanly
 
 ## Pause
-- [ ] Run `kanata-switcher --pause`
-- [ ] Daemon logs pause and stops reacting to focus
-- [ ] Managed virtual keys released
-- [ ] Layer resets to default
+- [x] Run `kanata-switcher --pause`
+- [x] Daemon logs pause and stops reacting to focus
+- [x] Managed virtual keys released
+- [x] Layer resets to default
 
 ## Unpause
-- [ ] Run `kanata-switcher --unpause`
-- [ ] Daemon resumes focus processing
-- [ ] Focus changes trigger expected actions
+- [x] Run `kanata-switcher --unpause`
+- [x] Daemon resumes focus processing
+- [x] Focus changes trigger expected actions

@@ -1,17 +1,17 @@
 # Systemd Service Checklist
 
-Last tested: YYYY-MM-DD
-Environment: (distro, DE/compositor, session type)
+Last tested: 2026-01-22
+Environment: NixOS, GNOME, Wayland
 
 ## User service setup
 - [ ] `systemd/kanata-switcher.service` copied to user unit dir
-- [ ] `systemctl --user daemon-reload` succeeds
-- [ ] `systemctl --user enable --now kanata-switcher` starts service
+- [x] `systemctl --user daemon-reload` succeeds
+- [x] `systemctl --user enable --now kanata-switcher` starts service
 
 ## Logging
-- [ ] `journalctl --user -u kanata-switcher` shows startup logs
-- [ ] `--quiet-focus` reduces focus spam
+- [x] `journalctl --user -u kanata-switcher` shows startup logs
+- [x] `--quiet-focus` reduces focus spam
 
 ## Shutdown
-- [ ] SIGTERM/SIGINT switches to default layer and exits
-- [ ] Service restarts cleanly
+- [x] SIGTERM/SIGINT switches to default layer and exits
+- [x] Service restarts cleanly

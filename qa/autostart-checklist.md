@@ -20,7 +20,7 @@ Environment: (distro, DE/compositor, session type)
 9. Confirm daemon does not auto-start
 
 ## Expected Results
-- Autostart file is created with absolute Exec path and passed daemon options
-- Daemon launches on login when autostart file is present
-- Autostart entry is removed cleanly
-- Daemon no longer starts automatically after removal
+- [ ] Autostart file is created with absolute Exec path and passed daemon options
+- [ ] Daemon launches on login when autostart file is present
+- [ ] Autostart entry is removed cleanly
+- [ ] Daemon no longer starts automatically after removal
