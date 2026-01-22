@@ -1126,7 +1126,7 @@ const SNI_GLYPH_HEIGHT: usize = SNI_RASTER_HEIGHT.val();
 const SNI_GLYPH_GAP: usize = 4;
 const SNI_ICON_HEIGHT: usize = SNI_GLYPH_HEIGHT;
 const SNI_COLOR_LAYER: [u8; 4] = [255, 255, 255, 255];
-const SNI_COLOR_VK: [u8; 4] = [0, 255, 255, 255];
+const SNI_COLOR_VK: [u8; 4] = [255, 0, 255, 255];
 const SNI_MAX_VK_COUNT_DIGIT: usize = 9;
 const SNI_MIN_MULTI_VK_COUNT: usize = 2;
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
@@ -1583,14 +1583,14 @@ impl SniIndicator {
                     continue;
                 }
                 let offset = (dest_y * width + dest_x) * 4;
-                let alpha = (u16::from(color[3]) * u16::from(*intensity) / 255) as u8;
-                let red = (u16::from(color[0]) * u16::from(*intensity) / 255) as u8;
-                let green = (u16::from(color[1]) * u16::from(*intensity) / 255) as u8;
-                let blue = (u16::from(color[2]) * u16::from(*intensity) / 255) as u8;
-                buffer[offset] = red;
-                buffer[offset + 1] = green;
-                buffer[offset + 2] = blue;
-                buffer[offset + 3] = alpha;
+                let alpha = (u16::from(color[0]) * u16::from(*intensity) / 255) as u8;
+                let red = (u16::from(color[1]) * u16::from(*intensity) / 255) as u8;
+                let green = (u16::from(color[2]) * u16::from(*intensity) / 255) as u8;
+                let blue = (u16::from(color[3]) * u16::from(*intensity) / 255) as u8;
+                buffer[offset] = alpha;
+                buffer[offset + 1] = red;
+                buffer[offset + 2] = green;
+                buffer[offset + 3] = blue;
             }
         }
     }

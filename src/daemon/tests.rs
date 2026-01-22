@@ -394,7 +394,7 @@ fn test_sni_format_virtual_keys() {
 
 fn sni_buffer_has_layer_pixels(buffer: &[u8]) -> bool {
     buffer.chunks_exact(4).any(|chunk| {
-        let [red, green, blue, alpha] = chunk else {
+        let [alpha, red, green, blue] = chunk else {
             return false;
         };
         *alpha > 0 && *red > 0 && *red == *green && *green == *blue
@@ -403,7 +403,7 @@ fn sni_buffer_has_layer_pixels(buffer: &[u8]) -> bool {
 
 fn sni_buffer_has_vk_pixels(buffer: &[u8]) -> bool {
     buffer.chunks_exact(4).any(|chunk| {
-        let [red, green, blue, alpha] = chunk else {
+        let [alpha, red, green, blue] = chunk else {
             return false;
         };
         *alpha > 0 && *red == 0 && *green > 0 && *blue > 0
