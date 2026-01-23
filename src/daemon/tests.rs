@@ -2078,3 +2078,103 @@ fn test_decode_logind_object_path_reply_variant() {
 
     assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_1");
 }
+
+#[tokio::test]
+async fn test_update_status_for_focus_filters_invalid_virtual_keys() {
+    // Rule with a virtual key that's NOT in the known list
+    let rules = vec![Rule {
+        class: Some("firefox".to_string()),
+        title: None,
+        on_native_terminal: None,
+        layer: Some("browser".to_string()),
+        virtual_key: Some("invalid_vk".to_string()),
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        10000,
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+
+    {
+        let mut inner = kanata
+            .inner
+            .try_lock()
+            .expect("Expected KanataClient lock");
+        // Set known VKs to a list that does NOT include invalid_vk
+        inner.known_virtual_keys = Some(vec!["valid_vk".to_string()]);
+    }
+
+    let win = win("firefox", "");
+    let _actions = update_status_for_focus(
+        &handler,
+        &status_broadcaster,
+        &win,
+        &kanata,
+        "default",
+    )
+    .await;
+
+    let snapshot = status_broadcaster.snapshot();
+    // The invalid VK should be filtered out - status should show NO virtual keys
+    assert!(
+        snapshot.virtual_keys.is_empty(),
+        "Invalid VK should not appear in status snapshot, got: {:?}",
+        snapshot.virtual_keys
+    );
+}
+
+#[tokio::test]
+async fn test_update_status_for_focus_shows_valid_virtual_keys() {
+    // Rule with a virtual key that IS in the known list
+    let rules = vec![Rule {
+        class: Some("firefox".to_string()),
+        title: None,
+        on_native_terminal: None,
+        layer: Some("browser".to_string()),
+        virtual_key: Some("vk_browser".to_string()),
+        raw_vk_action: None,
+        fallthrough: false,
+    }];
+    let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+    let status_broadcaster = StatusBroadcaster::new();
+    let kanata = KanataClient::new(
+        "127.0.0.1",
+        10000,
+        Some("default".to_string()),
+        true,
+        status_broadcaster.clone(),
+    );
+
+    {
+        let mut inner = kanata
+            .inner
+            .try_lock()
+            .expect("Expected KanataClient lock");
+        // Set known VKs to include vk_browser
+        inner.known_virtual_keys = Some(vec!["vk_browser".to_string()]);
+    }
+
+    let win = win("firefox", "");
+    let _actions = update_status_for_focus(
+        &handler,
+        &status_broadcaster,
+        &win,
+        &kanata,
+        "default",
+    )
+    .await;
+
+    let snapshot = status_broadcaster.snapshot();
+    // The valid VK should appear in the status
+    assert_eq!(
+        snapshot.virtual_keys,
+        vec!["vk_browser"],
+        "Valid VK should appear in status snapshot"
+    );
+}

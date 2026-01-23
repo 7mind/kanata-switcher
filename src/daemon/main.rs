@@ -1807,7 +1807,10 @@ async fn update_status_for_focus(
         (actions, virtual_keys, focus_layer)
     };
 
-    status_broadcaster.update_virtual_keys(virtual_keys);
+    // Filter out invalid VKs before updating indicator
+    let known_vks = kanata.known_virtual_keys().await;
+    let valid_virtual_keys = KanataClient::filter_valid_virtual_keys(&known_vks, virtual_keys);
+    status_broadcaster.update_virtual_keys(valid_virtual_keys);
     if let Some(layer) = focus_layer {
         if let Some(resolved_layer) = kanata.resolve_layer_name(&layer, false).await {
             status_broadcaster.update_focus_layer(resolved_layer);
@@ -2712,28 +2715,6 @@ impl KanataClient {
         Self::resolve_layer_name_from_inner(&inner, layer_name, warn_unknown)
     }
 
-    /// Returns true if the virtual key is valid (exists or validation is disabled).
-    /// Returns false if the virtual key is unknown and should be skipped.
-    fn validate_virtual_key_from_inner(inner: &KanataClientInner, vk_name: &str) -> bool {
-        match &inner.known_virtual_keys {
-            // None = older kanata that doesn't support RequestFakeKeyNames, allow all
-            None => true,
-            // Some(list) = validate against the list (even if empty)
-            Some(known_vks) => {
-                if known_vks.iter().any(|vk| vk == vk_name) {
-                    return true;
-                }
-                if !inner.quiet {
-                    eprintln!(
-                        "[Kanata] Warning: Unknown virtual key \"{}\", skipping action",
-                        vk_name
-                    );
-                }
-                false
-            }
-        }
-    }
-
     pub async fn connect_with_retry(&self) {
         let delays = [0, 1000, 2000, 5000];
         let mut attempt = 0;
@@ -3025,7 +3006,15 @@ impl KanataClient {
         }
 
         // Validate virtual key name if we have the list from kanata
-        if !Self::validate_virtual_key_from_inner(&inner, name) {
+        if Self::filter_valid_virtual_keys(&inner.known_virtual_keys, vec![name.to_string()])
+            .is_empty()
+        {
+            if !inner.quiet {
+                eprintln!(
+                    "[Kanata] Warning: Unknown virtual key \"{}\", skipping action",
+                    name
+                );
+            }
             return false;
         }
 
@@ -3079,6 +3068,23 @@ impl KanataClient {
             inner.paused = false;
         }
         self.connect_with_retry().await;
+    }
+
+    /// Filter a list of virtual key names, returning only those that are valid.
+    /// If validation is disabled (None), all VKs pass through.
+    fn filter_valid_virtual_keys(
+        known_virtual_keys: &Option<Vec<String>>,
+        vks: Vec<String>,
+    ) -> Vec<String> {
+        match known_virtual_keys {
+            None => vks,
+            Some(known_vks) => vks.into_iter().filter(|vk| known_vks.contains(vk)).collect(),
+        }
+    }
+
+    pub async fn known_virtual_keys(&self) -> Option<Vec<String>> {
+        let inner = self.inner.lock().await;
+        inner.known_virtual_keys.clone()
     }
 
     pub fn default_layer_sync(&self) -> String {
