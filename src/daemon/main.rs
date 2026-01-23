@@ -564,6 +564,20 @@ fn load_config(config_path: Option<&Path>) -> Config {
                                     raw_vk_action: rule.raw_vk_action.clone().unwrap_or_default(),
                                 });
                             } else {
+                                // Rule with no matchers and no fallthrough would match everything
+                                // and stop further matching, which is almost certainly a bug
+                                if rule.class.is_none()
+                                    && rule.title.is_none()
+                                    && !rule.fallthrough
+                                {
+                                    eprintln!(
+                                        "[Config] Error: Rule with no 'class' or 'title' matcher requires 'fallthrough: true'"
+                                    );
+                                    eprintln!(
+                                        "[Config] Hint: A catch-all rule without fallthrough would match all windows and stop further matching"
+                                    );
+                                    std::process::exit(1);
+                                }
                                 rules.push(rule);
                             }
                         }

@@ -2223,3 +2223,61 @@ fn test_config_accepts_default_entry() {
     let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
     assert!(result.is_ok(), "Config should accept default entry");
 }
+
+#[test]
+fn test_config_parses_matcherless_rule_with_fallthrough() {
+    // A rule with no class/title but with fallthrough: true is valid
+    // (applies to all windows and continues matching)
+    let json = r#"[{"layer": "base", "fallthrough": true}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(
+        result.is_ok(),
+        "Config should parse matcher-less rule with fallthrough"
+    );
+    if let Ok(entries) = result {
+        if let ConfigEntry::Rule(rule) = &entries[0] {
+            assert!(rule.class.is_none());
+            assert!(rule.title.is_none());
+            assert!(rule.fallthrough);
+        } else {
+            panic!("Expected Rule entry");
+        }
+    }
+}
+
+#[test]
+fn test_config_parses_matcherless_rule_without_fallthrough() {
+    // A rule with no class/title and no fallthrough parses but will be rejected
+    // by load_config validation (not tested here since it calls exit)
+    let json = r#"[{"layer": "base"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(
+        result.is_ok(),
+        "Config should parse (validation happens in load_config)"
+    );
+    if let Ok(entries) = result {
+        if let ConfigEntry::Rule(rule) = &entries[0] {
+            assert!(rule.class.is_none());
+            assert!(rule.title.is_none());
+            assert!(!rule.fallthrough); // default is false
+        } else {
+            panic!("Expected Rule entry");
+        }
+    }
+}
+
+#[test]
+fn test_config_parses_rule_with_class_no_fallthrough() {
+    // A rule with a class matcher doesn't need fallthrough
+    let json = r#"[{"class": "firefox", "layer": "browser"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(result.is_ok(), "Config should parse rule with class matcher");
+    if let Ok(entries) = result {
+        if let ConfigEntry::Rule(rule) = &entries[0] {
+            assert!(rule.class.is_some());
+            assert!(!rule.fallthrough);
+        } else {
+            panic!("Expected Rule entry");
+        }
+    }
+}

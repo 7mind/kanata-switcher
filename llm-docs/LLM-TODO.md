@@ -44,3 +44,4 @@ The project daemon is located at `src/daemon/` (Rust).
 - 2026-01-20: SNI indicator glyphs use Noto Sans Mono bitmap size 32; VK overflow renders as "9+".
 - 2026-01-23: Legacy kanata support - versions without `RequestFakeKeyNames` API are detected via error response, reconnect skips the request. VK validation is bypassed for legacy kanata (all VKs pass through).
 - 2026-01-23: Config Rule struct uses `#[serde(deny_unknown_fields)]` to reject typos like `native_terminal` (should be `on_native_terminal`).
+- 2026-01-23: Rules without class/title matchers require `fallthrough: true` (otherwise would match everything and stop further matching).
