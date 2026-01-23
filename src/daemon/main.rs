@@ -475,11 +475,61 @@ struct NativeTerminalRule {
     raw_vk_action: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 enum ConfigEntry {
     Default { default: String },
     Rule(Rule),
+}
+
+impl<'de> serde::Deserialize<'de> for ConfigEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        // Check if it's a "default" entry
+        if let Some(obj) = value.as_object() {
+            if obj.contains_key("default") {
+                if obj.len() == 1 {
+                    if let Some(default) = obj.get("default").and_then(|v| v.as_str()) {
+                        return Ok(ConfigEntry::Default {
+                            default: default.to_string(),
+                        });
+                    }
+                }
+                return Err(D::Error::custom(
+                    "'default' entry should only contain the 'default' field",
+                ));
+            }
+        }
+
+        // Try to parse as Rule with custom error handling for unknown fields
+        let known_fields = [
+            "class",
+            "title",
+            "on_native_terminal",
+            "layer",
+            "virtual_key",
+            "raw_vk_action",
+            "fallthrough",
+        ];
+
+        if let Some(obj) = value.as_object() {
+            for key in obj.keys() {
+                if !known_fields.contains(&key.as_str()) {
+                    return Err(D::Error::custom(format!(
+                        "unknown field '{}'. Valid fields are: class, title, on_native_terminal, layer, virtual_key, raw_vk_action, fallthrough",
+                        key
+                    )));
+                }
+            }
+        }
+
+        serde_json::from_value(value).map(ConfigEntry::Rule).map_err(D::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone)]

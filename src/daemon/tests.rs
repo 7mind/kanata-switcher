@@ -2190,6 +2190,12 @@ fn test_config_rejects_unknown_fields() {
         result.is_err(),
         "Config should reject unknown field 'native_terminal'"
     );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field 'native_terminal'"),
+        "Error should mention the unknown field name, got: {}",
+        err
+    );
 }
 
 #[test]
@@ -2198,6 +2204,12 @@ fn test_config_rejects_typo_in_field_name() {
     let json = r#"[{"clas": "firefox", "layer": "browser"}]"#;
     let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
     assert!(result.is_err(), "Config should reject typo 'clas'");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field 'clas'"),
+        "Error should mention the typo field name, got: {}",
+        err
+    );
 }
 
 #[test]
