@@ -2601,6 +2601,26 @@ struct LayerNamesPayload {
     names: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct RequestFakeKeyNamesMsg {
+    #[serde(rename = "RequestFakeKeyNames")]
+    request_fake_key_names: RequestFakeKeyNamesPayload,
+}
+
+#[derive(Serialize)]
+struct RequestFakeKeyNamesPayload {}
+
+#[derive(Deserialize)]
+struct FakeKeyNamesMsg {
+    #[serde(rename = "FakeKeyNames")]
+    fake_key_names: Option<FakeKeyNamesPayload>,
+}
+
+#[derive(Deserialize)]
+struct FakeKeyNamesPayload {
+    names: Vec<String>,
+}
+
 struct KanataClientInner {
     host: String,
     port: u16,
@@ -2611,6 +2631,9 @@ struct KanataClientInner {
     config_default_layer: Option<String>,
     pending_layer: Option<String>,
     known_layers: Vec<String>,
+    /// Known virtual keys from kanata. None = older kanata (validation disabled),
+    /// Some(vec) = validate against this list (even if empty).
+    known_virtual_keys: Option<Vec<String>>,
     connected: bool,
     paused: bool,
     quiet: bool,
@@ -2653,6 +2676,7 @@ impl KanataClient {
                 config_default_layer,
                 pending_layer: None,
                 known_layers: Vec::new(),
+                known_virtual_keys: None,
                 connected: false,
                 paused: false,
                 quiet,
@@ -2686,6 +2710,28 @@ impl KanataClient {
     async fn resolve_layer_name(&self, layer_name: &str, warn_unknown: bool) -> Option<String> {
         let inner = self.inner.lock().await;
         Self::resolve_layer_name_from_inner(&inner, layer_name, warn_unknown)
+    }
+
+    /// Returns true if the virtual key is valid (exists or validation is disabled).
+    /// Returns false if the virtual key is unknown and should be skipped.
+    fn validate_virtual_key_from_inner(inner: &KanataClientInner, vk_name: &str) -> bool {
+        match &inner.known_virtual_keys {
+            // None = older kanata that doesn't support RequestFakeKeyNames, allow all
+            None => true,
+            // Some(list) = validate against the list (even if empty)
+            Some(known_vks) => {
+                if known_vks.iter().any(|vk| vk == vk_name) {
+                    return true;
+                }
+                if !inner.quiet {
+                    eprintln!(
+                        "[Kanata] Warning: Unknown virtual key \"{}\", skipping action",
+                        vk_name
+                    );
+                }
+                false
+            }
+        }
     }
 
     pub async fn connect_with_retry(&self) {
@@ -2760,12 +2806,42 @@ impl KanataClient {
             }
         }
 
+        // Request virtual key names (may fail on older kanata versions)
+        let request = RequestFakeKeyNamesMsg {
+            request_fake_key_names: RequestFakeKeyNamesPayload {},
+        };
+        let request_json = serde_json::to_string(&request).unwrap() + "\n";
+        writer.write_all(request_json.as_bytes()).await?;
+
+        // Read FakeKeyNames response (or error from older kanata)
+        line.clear();
+        reader.read_line(&mut line).await?;
+
+        // Try to parse as FakeKeyNames response
+        // - Success with Some(names) → Some(names) - validate against this list
+        // - Success with None → None - shouldn't happen but treat as unsupported
+        // - Parse failure → None - older kanata, disable validation
+        let known_virtual_keys = if let Ok(msg) = serde_json::from_str::<FakeKeyNamesMsg>(&line) {
+            if let Some(fk) = msg.fake_key_names {
+                if !fk.names.is_empty() {
+                    println!("[Kanata] Available virtual keys: {:?}", fk.names);
+                }
+                Some(fk.names)
+            } else {
+                None
+            }
+        } else {
+            // Parsing failed - older kanata doesn't support this command
+            None
+        };
+
         {
             let mut inner = self.inner.lock().await;
             inner.connected = true;
             inner.writer = Some(writer);
             inner.current_layer = current_layer;
             inner.known_layers = known_layers;
+            inner.known_virtual_keys = known_virtual_keys;
             if let Some(ref layer) = auto_default_layer {
                 if inner.config_default_layer.is_none() {
                     println!("[Kanata] Using auto-detected default layer: \"{}\"", layer);
@@ -2948,6 +3024,11 @@ impl KanataClient {
             return false;
         }
 
+        // Validate virtual key name if we have the list from kanata
+        if !Self::validate_virtual_key_from_inner(&inner, name) {
+            return false;
+        }
+
         if let Some(ref mut writer) = inner.writer {
             let msg = ActOnFakeKeyMsg {
                 act_on_fake_key: ActOnFakeKeyPayload {
@@ -2989,6 +3070,7 @@ impl KanataClient {
         inner.auto_default_layer = None;
         inner.pending_layer = None;
         inner.known_layers.clear();
+        inner.known_virtual_keys = None;
     }
 
     pub async fn unpause_connect(&self) {
