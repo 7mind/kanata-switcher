@@ -2178,3 +2178,48 @@ async fn test_update_status_for_focus_shows_valid_virtual_keys() {
         "Valid VK should appear in status snapshot"
     );
 }
+
+// === Config Parsing Tests ===
+
+#[test]
+fn test_config_rejects_unknown_fields() {
+    // "native_terminal" is not a valid field (should be "on_native_terminal")
+    let json = r#"[{"native_terminal": "tty"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(
+        result.is_err(),
+        "Config should reject unknown field 'native_terminal'"
+    );
+}
+
+#[test]
+fn test_config_rejects_typo_in_field_name() {
+    // Common typos should be rejected
+    let json = r#"[{"clas": "firefox", "layer": "browser"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(result.is_err(), "Config should reject typo 'clas'");
+}
+
+#[test]
+fn test_config_accepts_valid_rule() {
+    let json = r#"[{"class": "firefox", "layer": "browser"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(result.is_ok(), "Config should accept valid rule");
+}
+
+#[test]
+fn test_config_accepts_on_native_terminal() {
+    let json = r#"[{"on_native_terminal": "tty"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(
+        result.is_ok(),
+        "Config should accept 'on_native_terminal' field"
+    );
+}
+
+#[test]
+fn test_config_accepts_default_entry() {
+    let json = r#"[{"default": "base"}]"#;
+    let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
+    assert!(result.is_ok(), "Config should accept default entry");
+}

@@ -43,4 +43,4 @@ The project daemon is located at `src/daemon/` (Rust).
 - 2026-01-20: SNI indicator icon colors aligned with GNOME (layer white, VK cyan).
 - 2026-01-20: SNI indicator glyphs use Noto Sans Mono bitmap size 32; VK overflow renders as "9+".
 - 2026-01-23: Legacy kanata support - versions without `RequestFakeKeyNames` API are detected via error response, reconnect skips the request. VK validation is bypassed for legacy kanata (all VKs pass through).
-- 2026-01-23: Config validation errors on rules with no matchers AND no actions (would match everything but do nothing). Catches typo `native_terminal` instead of `on_native_terminal`.
+- 2026-01-23: Config Rule struct uses `#[serde(deny_unknown_fields)]` to reject typos like `native_terminal` (should be `on_native_terminal`).
