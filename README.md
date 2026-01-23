@@ -55,10 +55,6 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 
 2. Config file at `~/.config/kanata/kanata-switcher.json` (or in applicable `$XDG_CONFIG_HOME` location)
 
-If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but native terminal switching is disabled; a warning is logged on startup.
-
-For non-GNOME desktops, the SNI tray menu's "Show app layer only" setting is persisted via the GNOME extension's GSettings schema when available. Use `--indicator-focus-only true|false` to override it at startup.
-
 ### Config Format
 
 Example config:
@@ -115,6 +111,7 @@ Example config:
 - Can include `virtual_key` and/or `raw_vk_action`
 - Can appear at most once (multiple = error), position doesn't matter
 - When absent, daemon switches to layer specified in Default layer rule or the auto-detected initial layer
+- If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but native terminal switching is disabled; a warning will be logged on startup.
 
 **Virtual keys:**
 
@@ -186,6 +183,9 @@ Example config:
 
   When focusing Firefox on YouTube, both `vk_browser` and `vk_youtube` are held → kanata stacks `browser` and `youtube` layers.
 
+### System Tray Indicator
+
+For non-GNOME desktops, the SNI tray menu's "Show app layer only" setting is persisted via the GNOME extension's GSettings schema when available. Use `--indicator-focus-only true|false` to override it at startup.
 
 ### Running Without Installing
 

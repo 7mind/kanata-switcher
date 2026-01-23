@@ -2637,6 +2637,8 @@ struct KanataClientInner {
     /// Known virtual keys from kanata. None = older kanata (validation disabled),
     /// Some(vec) = validate against this list (even if empty).
     known_virtual_keys: Option<Vec<String>>,
+    /// True if kanata doesn't support RequestFakeKeyNames (drops connection on unknown command).
+    legacy_kanata: bool,
     connected: bool,
     paused: bool,
     quiet: bool,
@@ -2680,6 +2682,7 @@ impl KanataClient {
                 pending_layer: None,
                 known_layers: Vec::new(),
                 known_virtual_keys: None,
+                legacy_kanata: false,
                 connected: false,
                 paused: false,
                 quiet,
@@ -2759,11 +2762,9 @@ impl KanataClient {
         reader.read_line(&mut line).await?;
 
         let mut current_layer = None;
-        let mut auto_default_layer = None;
         if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line) {
             if let Some(lc) = msg.layer_change {
                 println!("[Kanata] Current layer: \"{}\"", lc.new);
-                auto_default_layer = Some(lc.new.clone());
                 current_layer = Some(lc.new);
             }
         }
@@ -2780,40 +2781,64 @@ impl KanataClient {
         reader.read_line(&mut line).await?;
 
         let mut known_layers = Vec::new();
+        // Auto-detect default layer from the first layer in the list (layers are in definition order)
+        let mut auto_default_layer = None;
         if let Ok(msg) = serde_json::from_str::<LayerNamesMsg>(&line) {
             if let Some(ln) = msg.layer_names {
                 println!("[Kanata] Available layers: {:?}", ln.names);
+                auto_default_layer = ln.names.first().cloned();
                 known_layers = ln.names;
             }
         }
 
-        // Request virtual key names (may fail on older kanata versions)
-        let request = RequestFakeKeyNamesMsg {
-            request_fake_key_names: RequestFakeKeyNamesPayload {},
+        // Request virtual key names (skip if we know this is older kanata)
+        let legacy_kanata = {
+            let inner = self.inner.lock().await;
+            inner.legacy_kanata
         };
-        let request_json = serde_json::to_string(&request).unwrap() + "\n";
-        writer.write_all(request_json.as_bytes()).await?;
 
-        // Read FakeKeyNames response (or error from older kanata)
-        line.clear();
-        reader.read_line(&mut line).await?;
-
-        // Try to parse as FakeKeyNames response
-        // - Success with Some(names) → Some(names) - validate against this list
-        // - Success with None → None - shouldn't happen but treat as unsupported
-        // - Parse failure → None - older kanata, disable validation
-        let known_virtual_keys = if let Ok(msg) = serde_json::from_str::<FakeKeyNamesMsg>(&line) {
-            if let Some(fk) = msg.fake_key_names {
-                if !fk.names.is_empty() {
-                    println!("[Kanata] Available virtual keys: {:?}", fk.names);
-                }
-                Some(fk.names)
-            } else {
-                None
-            }
-        } else {
-            // Parsing failed - older kanata doesn't support this command
+        let known_virtual_keys = if legacy_kanata {
             None
+        } else {
+            let request = RequestFakeKeyNamesMsg {
+                request_fake_key_names: RequestFakeKeyNamesPayload {},
+            };
+            let request_json = serde_json::to_string(&request).unwrap() + "\n";
+            writer.write_all(request_json.as_bytes()).await?;
+
+            // Read FakeKeyNames response (or error from older kanata)
+            line.clear();
+            let read_result = reader.read_line(&mut line).await;
+
+            // If connection was dropped or reset, this is older kanata
+            match read_result {
+                Err(_) | Ok(0) => {
+                    let mut inner = self.inner.lock().await;
+                    inner.legacy_kanata = true;
+                    return Err("Older kanata detected (no RequestFakeKeyNames support)".into());
+                }
+                Ok(_) => {}
+            }
+
+            // Try to parse as FakeKeyNames response
+            if let Ok(msg) = serde_json::from_str::<FakeKeyNamesMsg>(&line) {
+                if let Some(fk) = msg.fake_key_names {
+                    if !fk.names.is_empty() {
+                        println!("[Kanata] Available virtual keys: {:?}", fk.names);
+                    }
+                    Some(fk.names)
+                } else {
+                    // No FakeKeyNames in response - older kanata sent error or unexpected response
+                    let mut inner = self.inner.lock().await;
+                    inner.legacy_kanata = true;
+                    return Err("Older kanata detected (no RequestFakeKeyNames support)".into());
+                }
+            } else {
+                // Parsing failed - older kanata sent error response
+                let mut inner = self.inner.lock().await;
+                inner.legacy_kanata = true;
+                return Err("Older kanata detected (no RequestFakeKeyNames support)".into());
+            }
         };
 
         {

@@ -343,9 +343,10 @@ impl MockKanataServer {
                                             writeln!(stream, "{}", response).ok();
                                         }
                                         None => {
-                                            // Simulate older kanata: send error for unknown command
+                                            // Simulate older kanata: send error then drop connection
                                             let response = r#"{"status":"Error","msg":"Failed to deserialize command: unknown variant `RequestFakeKeyNames`"}"#;
                                             writeln!(stream, "{}", response).ok();
+                                            break;
                                         }
                                     }
                                 }
@@ -3903,6 +3904,67 @@ async fn test_virtual_key_validation_legacy_kanata() {
                 name: "any_vk_name".to_string(),
                 action: "Press".to_string()
             })
+        );
+    })
+    .await;
+}
+
+/// Test that legacy kanata detection works: first connect triggers RequestFakeKeyNames,
+/// error response causes reconnect, and on reconnect RequestFakeKeyNames is NOT sent again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_legacy_kanata_skips_request_fake_key_names_on_reconnect() {
+    with_test_timeout(async {
+        let mock_server = MockKanataServer::start_legacy();
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            None,
+            true,
+            status_broadcaster,
+        );
+
+        kanata.connect_with_retry().await;
+
+        // Wait for reconnect (first connect fails with legacy detection, then reconnects after 1s)
+        // Collect messages over 2 seconds to catch both first connect and reconnect
+        let start = std::time::Instant::now();
+        let mut all_messages = Vec::new();
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Some(msg) = mock_server.recv_timeout(Duration::from_millis(100)) {
+                all_messages.push(msg);
+            }
+        }
+
+        // Verify RequestFakeKeyNames was sent on first attempt
+        assert!(
+            all_messages.contains(&KanataMessage::RequestFakeKeyNames),
+            "First connection should have sent RequestFakeKeyNames, got: {:?}",
+            all_messages
+        );
+
+        // Count how many times RequestLayerNames appears (once per connection)
+        let layer_name_requests = all_messages
+            .iter()
+            .filter(|m| **m == KanataMessage::RequestLayerNames)
+            .count();
+
+        // Count how many times RequestFakeKeyNames appears (should be 1, only on first connect)
+        let fake_key_requests = all_messages
+            .iter()
+            .filter(|m| **m == KanataMessage::RequestFakeKeyNames)
+            .count();
+
+        assert!(
+            layer_name_requests >= 2,
+            "Should have at least 2 RequestLayerNames (first connect + reconnect), got {}. Messages: {:?}",
+            layer_name_requests,
+            all_messages
+        );
+        assert_eq!(
+            fake_key_requests, 1,
+            "Should have exactly 1 RequestFakeKeyNames (only first connect), got {}",
+            fake_key_requests
         );
     })
     .await;
