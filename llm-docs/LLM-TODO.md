@@ -38,7 +38,9 @@ The project daemon is located at `src/daemon/` (Rust).
 
 # Notes
 - 2026-01-18: logind session monitoring failure is non-fatal; daemon continues without native terminal switching.
-- 2026-01-18: logind session resolution now falls back to the user’s `Display` session when `GetSessionByPID` reports no session (systemd user service with lingering).
+- 2026-01-18: logind session resolution now falls back to the user's `Display` session when `GetSessionByPID` reports no session (systemd user service with lingering).
 - 2026-01-19: logind object path parsing accepts signatures `o`, `s`, `v`, or structures containing an object path (robust reply decoding).
 - 2026-01-20: SNI indicator icon colors aligned with GNOME (layer white, VK cyan).
 - 2026-01-20: SNI indicator glyphs use Noto Sans Mono bitmap size 32; VK overflow renders as "9+".
+- 2026-01-23: Legacy kanata support - versions without `RequestFakeKeyNames` API are detected via error response, reconnect skips the request. VK validation is bypassed for legacy kanata (all VKs pass through).
+- 2026-01-23: Config validation errors on rules with no matchers AND no actions (would match everything but do nothing). Catches typo `native_terminal` instead of `on_native_terminal`.

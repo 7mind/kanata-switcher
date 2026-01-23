@@ -4155,6 +4155,71 @@ async fn test_invalid_vk_does_not_block_layer_change() {
     .await;
 }
 
+/// Test that layer changes still happen on legacy kanata (no VK validation) when VK in same rule
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_invalid_vk_does_not_block_layer_change_legacy_kanata() {
+    with_test_timeout(async {
+        let mock_server = MockKanataServer::start_legacy();
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+
+        // Wait for reconnect after legacy detection
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        // Rule with layer change AND VK (which won't be validated on legacy kanata)
+        let rules = vec![Rule {
+            class: Some("test-app".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("browser".to_string()),
+            virtual_key: Some("any_vk".to_string()),
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+
+        // Use the full flow through update_status_for_focus (like production)
+        let win = WindowInfo {
+            class: "test-app".to_string(),
+            title: "Test".to_string(),
+            is_native_terminal: false,
+        };
+        let default_layer = kanata.default_layer().await.unwrap_or_default();
+        let actions = update_status_for_focus(
+            &handler,
+            &status_broadcaster,
+            &win,
+            &kanata,
+            &default_layer,
+        )
+        .await;
+
+        if let Some(actions) = actions {
+            execute_focus_actions(&kanata, actions).await;
+        }
+
+        // Layer change should still happen
+        let msg = mock_server.recv_timeout(Duration::from_secs(2));
+        assert_eq!(
+            msg,
+            Some(KanataMessage::ChangeLayer {
+                new: "browser".to_string()
+            }),
+            "Layer change should happen on legacy kanata"
+        );
+    })
+    .await;
+}
+
 /// Test that valid VKs work even when other VKs in different rules are invalid
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_valid_vk_works_with_invalid_vk_in_other_rule() {

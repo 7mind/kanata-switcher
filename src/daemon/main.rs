@@ -563,6 +563,26 @@ fn load_config(config_path: Option<&Path>) -> Config {
                                     raw_vk_action: rule.raw_vk_action.clone().unwrap_or_default(),
                                 });
                             } else {
+                                // Warn about rules that have no actions
+                                let has_actions = rule.layer.is_some()
+                                    || rule.virtual_key.is_some()
+                                    || rule.raw_vk_action.as_ref().is_some_and(|v| !v.is_empty());
+
+                                if !has_actions {
+                                    eprintln!(
+                                        "[Config] Warning: Rule has no actions (no 'layer', 'virtual_key', or 'raw_vk_action')"
+                                    );
+                                    // If it also has no matchers, it matches everything and does nothing
+                                    if rule.class.is_none() && rule.title.is_none() {
+                                        eprintln!(
+                                            "[Config] Error: Rule with no matchers and no actions matches everything but does nothing"
+                                        );
+                                        eprintln!(
+                                            "[Config] Hint: Did you mean 'on_native_terminal' instead of an unrecognized field?"
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
                                 rules.push(rule);
                             }
                         }
