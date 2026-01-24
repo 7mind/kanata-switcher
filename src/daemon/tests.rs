@@ -3,7 +3,7 @@ use clap::Parser;
 use zbus::Message;
 use proptest::prelude::*;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -463,20 +463,20 @@ impl SniControlOps for MockSniControl {
 }
 
 #[derive(Default)]
-struct MockGsettingsState {
+struct MockDconfState {
     get_calls: usize,
     set_calls: Vec<bool>,
 }
 
-struct MockGsettingsBackend {
-    state: Arc<Mutex<MockGsettingsState>>,
+struct MockDconfBackend {
+    state: Arc<Mutex<MockDconfState>>,
     get_results: Arc<Mutex<Vec<Result<bool, String>>>>,
     set_results: Arc<Mutex<Vec<Result<(), String>>>>,
 }
 
-impl MockGsettingsBackend {
+impl MockDconfBackend {
     fn new(
-        state: Arc<Mutex<MockGsettingsState>>,
+        state: Arc<Mutex<MockDconfState>>,
         get_results: Vec<Result<bool, String>>,
         set_results: Vec<Result<(), String>>,
     ) -> Self {
@@ -504,45 +504,34 @@ impl MockGsettingsBackend {
     }
 }
 
-impl GsettingsBackend for MockGsettingsBackend {
-    fn get_bool(
-        &self,
-        _schema_dir: Option<&Path>,
-        _schema: &str,
-        _key: &str,
-    ) -> Result<bool, String> {
+impl DconfBackend for MockDconfBackend {
+    fn get_bool(&self, _key: &str) -> Result<bool, String> {
         let mut state = self.state.lock().unwrap();
         state.get_calls += 1;
         self.next_get_result()
     }
 
-    fn set_bool(
-        &self,
-        _schema_dir: Option<&Path>,
-        _schema: &str,
-        _key: &str,
-        value: bool,
-    ) -> Result<(), String> {
+    fn set_bool(&self, _key: &str, value: bool) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         state.set_calls.push(value);
         self.next_set_result()
     }
 }
 
-fn mock_gsettings_backend_sequence(
+fn mock_dconf_backend_sequence(
     get_results: Vec<Result<bool, String>>,
     set_results: Vec<Result<(), String>>,
-) -> (Box<dyn GsettingsBackend>, Arc<Mutex<MockGsettingsState>>) {
-    let state = Arc::new(Mutex::new(MockGsettingsState::default()));
-    let backend = MockGsettingsBackend::new(state.clone(), get_results, set_results);
+) -> (Box<dyn DconfBackend>, Arc<Mutex<MockDconfState>>) {
+    let state = Arc::new(Mutex::new(MockDconfState::default()));
+    let backend = MockDconfBackend::new(state.clone(), get_results, set_results);
     (Box::new(backend), state)
 }
 
-fn mock_gsettings_backend(
+fn mock_dconf_backend(
     get_result: Result<bool, String>,
     set_result: Result<(), String>,
-) -> (Box<dyn GsettingsBackend>, Arc<Mutex<MockGsettingsState>>) {
-    mock_gsettings_backend_sequence(vec![get_result], vec![set_result])
+) -> (Box<dyn DconfBackend>, Arc<Mutex<MockDconfState>>) {
+    mock_dconf_backend_sequence(vec![get_result], vec![set_result])
 }
 
 #[test]
@@ -608,9 +597,9 @@ fn test_sni_indicator_state_initial_focus_only_false() {
 }
 
 #[test]
-fn test_sni_settings_store_reads_from_gsettings() {
-    let (backend, state) = mock_gsettings_backend(Ok(false), Ok(()));
-    let mut store = SniSettingsStore::with_backend(Vec::new(), backend);
+fn test_sni_settings_store_reads_from_dconf() {
+    let (backend, state) = mock_dconf_backend(Ok(false), Ok(()));
+    let mut store = SniSettingsStore::with_backend(backend);
     let value = store.read_focus_only();
     assert_eq!(value, Some(false));
     let state = state.lock().unwrap();
@@ -619,28 +608,21 @@ fn test_sni_settings_store_reads_from_gsettings() {
 }
 
 #[test]
-fn test_sni_settings_store_fallback_schema_dir() {
-    let (backend, state) = mock_gsettings_backend_sequence(
-        vec![
-            Err("No such schema".to_string()),
-            Ok(true),
-        ],
-        vec![Ok(())],
-    );
-    let mut store = SniSettingsStore::with_backend(vec![PathBuf::from("/schema")], backend);
-    let value = store.read_focus_only();
-    assert_eq!(value, Some(true));
+fn test_sni_settings_store_writes_to_dconf() {
+    let (backend, state) = mock_dconf_backend(Ok(true), Ok(()));
+    let mut store = SniSettingsStore::with_backend(backend);
+    store.write_focus_only(false);
     let state = state.lock().unwrap();
-    assert_eq!(state.get_calls, 2);
+    assert_eq!(state.set_calls, vec![false]);
 }
 
 #[test]
 fn test_sni_settings_store_read_error_disables_write() {
-    let (backend, state) = mock_gsettings_backend(
+    let (backend, state) = mock_dconf_backend(
         Err("No such file or directory".to_string()),
         Ok(()),
     );
-    let mut store = SniSettingsStore::with_backend(Vec::new(), backend);
+    let mut store = SniSettingsStore::with_backend(backend);
     let value = store.read_focus_only();
     assert_eq!(value, None);
     store.write_focus_only(true);
@@ -650,12 +632,12 @@ fn test_sni_settings_store_read_error_disables_write() {
 }
 
 #[test]
-fn test_sni_settings_store_schema_error_allows_write_attempt() {
-    let (backend, state) = mock_gsettings_backend(
-        Err("No such schema".to_string()),
-        Err("No such schema".to_string()),
+fn test_sni_settings_store_key_not_set_allows_write() {
+    let (backend, state) = mock_dconf_backend(
+        Err("key not set".to_string()),
+        Ok(()),
     );
-    let mut store = SniSettingsStore::with_backend(Vec::new(), backend);
+    let mut store = SniSettingsStore::with_backend(backend);
     let value = store.read_focus_only();
     assert_eq!(value, None);
     store.write_focus_only(true);
@@ -665,9 +647,9 @@ fn test_sni_settings_store_schema_error_allows_write_attempt() {
 }
 
 #[test]
-fn test_resolve_sni_focus_only_override_skips_gsettings() {
-    let (backend, state) = mock_gsettings_backend(Ok(false), Ok(()));
-    let mut store = SniSettingsStore::with_backend(Vec::new(), backend);
+fn test_resolve_sni_focus_only_override_skips_dconf() {
+    let (backend, state) = mock_dconf_backend(Ok(false), Ok(()));
+    let mut store = SniSettingsStore::with_backend(backend);
     let value = resolve_sni_focus_only(Some(TrayFocusOnly::True), &mut store);
     assert!(value);
     let state = state.lock().unwrap();
@@ -676,9 +658,9 @@ fn test_resolve_sni_focus_only_override_skips_gsettings() {
 }
 
 #[test]
-fn test_sni_toggle_persists_to_gsettings() {
-    let (backend, state) = mock_gsettings_backend(Ok(true), Ok(()));
-    let store = SniSettingsStore::with_backend(Vec::new(), backend);
+fn test_sni_toggle_persists_to_dconf() {
+    let (backend, state) = mock_dconf_backend(Ok(true), Ok(()));
+    let store = SniSettingsStore::with_backend(backend);
     let initial = StatusSnapshot {
         layer: "base".to_string(),
         virtual_keys: Vec::new(),

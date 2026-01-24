@@ -30,28 +30,6 @@ This project features comprehensive automated test suite and supports an unusual
 
 ---
 
-## Screenshots
-
-`kanata-switcher` ships with a tray indicator showing your current Kanata layer - the first letter of its name - and pressed virtual keys.
-
-GNOME, `"default"` layer active:
-
-![d-layer](./screenshots/d-layer.png)
-
-GNOME, `"terminal"` layer active and `"alt"` virtual key held:
-
-![t-layer+vk](./screenshots/t-layer+vk.png)
-
-GNOME, `"leftcmd"` layer active and 2 virtual keys are held:
-
-![l-layer+2vks](./screenshots/l-layer+2vks.png)
-
-KDE, `"terminal"` layer active and `"alt"` virtual key held:
-
-![t-layer+vk-sni-kde](./screenshots/t-layer+vk-sni-kde.png)
-
-On GNOME, the indicator is provided by the (auto-)installed GNOME extension, on all other desktops it's implemented via FreeDesktop StatusNotifierItem (SNI).
-
 ## LLM section
 
 ### Supported Environments
@@ -211,7 +189,27 @@ Example config:
 
 ### System Tray Indicator
 
-For non-GNOME desktops, the SNI tray menu's "Show app layer only" setting is persisted via the GNOME extension's GSettings schema when available. Use `--indicator-focus-only true|false` to override it at startup.
+`kanata-switcher` ships with a tray indicator showing your current Kanata layer - the first letter of its name - and pressed virtual keys.
+
+GNOME, `"default"` layer active:
+
+<img src="./screenshots/d-layer.png" alt="d-layer" width="50%">
+
+GNOME, `"terminal"` layer active and `"alt"` virtual key held:
+
+<img src="./screenshots/t-layer+vk.png" alt="t-layer+vk" width="50%">
+
+GNOME, `"leftcmd"` layer active and 2 virtual keys are held:
+
+<img src="./screenshots/l-layer+2vks.png" alt="l-layer+2vks" width="50%">
+
+KDE, `"terminal"` layer active and `"alt"` virtual key held:
+
+<img src="./screenshots/t-layer+vk-sni-kde.png" alt="t-layer+vk-sni-kde" width="50%">
+
+On GNOME, the indicator is provided by the (auto-)installed GNOME extension, on all other DEs it's implemented via FreeDesktop StatusNotifierItem (SNI).
+
+The tray menu's "Show app layer only" setting is persisted via dconf, both on GNOME and non-GNOME desktops. Use `--indicator-focus-only <true|false>` to override it at startup.
 
 ### Running Without Installing
 

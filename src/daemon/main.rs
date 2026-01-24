@@ -85,14 +85,7 @@ use cosmic_workspace::{
 };
 
 const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
-const GSETTINGS_SCHEMA_ID: &str = "org.gnome.shell.extensions.kanata-switcher";
-const GSETTINGS_FOCUS_ONLY_KEY: &str = "show-focus-layer-only";
-const GSETTINGS_COMPILED_FILENAME: &str = "gschemas.compiled";
-const XDG_DATA_DIRS_FALLBACK: &str = "/usr/local/share:/usr/share";
-const NIXOS_SYSTEM_PROFILE: &str = "/run/current-system/sw/share";
-const NIXOS_DEFAULT_PROFILE: &str = "/nix/var/nix/profiles/default/share";
-const NIXOS_PER_USER_PROFILE_PREFIX: &str = "/etc/profiles/per-user";
-const NIXOS_PER_USER_PROFILE_ALT_PREFIX: &str = "/nix/var/nix/profiles/per-user";
+const DCONF_FOCUS_ONLY_KEY: &str = "/org/gnome/shell/extensions/kanata-switcher/show-focus-layer-only";
 const DBUS_NAME: &str = "com.github.kanata.Switcher";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
@@ -1196,72 +1189,39 @@ const SNI_MAX_VK_COUNT_DIGIT: usize = 9;
 const SNI_MIN_MULTI_VK_COUNT: usize = 2;
 const SNI_INDICATOR_ID: &str = "kanata-switcher";
 
-trait GsettingsBackend: Send + Sync {
-    fn get_bool(&self, schema_dir: Option<&Path>, schema: &str, key: &str) -> Result<bool, String>;
-    fn set_bool(
-        &self,
-        schema_dir: Option<&Path>,
-        schema: &str,
-        key: &str,
-        value: bool,
-    ) -> Result<(), String>;
+trait DconfBackend: Send + Sync {
+    fn get_bool(&self, key: &str) -> Result<bool, String>;
+    fn set_bool(&self, key: &str, value: bool) -> Result<(), String>;
 }
 
-struct ShellGsettingsBackend;
+struct ShellDconfBackend;
 
-impl GsettingsBackend for ShellGsettingsBackend {
-    fn get_bool(&self, schema_dir: Option<&Path>, schema: &str, key: &str) -> Result<bool, String> {
-        gsettings_get_bool(schema_dir, schema, key)
+impl DconfBackend for ShellDconfBackend {
+    fn get_bool(&self, key: &str) -> Result<bool, String> {
+        dconf_get_bool(key)
     }
 
-    fn set_bool(
-        &self,
-        schema_dir: Option<&Path>,
-        schema: &str,
-        key: &str,
-        value: bool,
-    ) -> Result<(), String> {
-        gsettings_set_bool(schema_dir, schema, key, value)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum GsettingsSchemaTarget {
-    Default,
-    Dir(PathBuf),
-}
-
-impl GsettingsSchemaTarget {
-    fn as_option(&self) -> Option<&Path> {
-        match self {
-            GsettingsSchemaTarget::Default => None,
-            GsettingsSchemaTarget::Dir(dir) => Some(dir.as_path()),
-        }
+    fn set_bool(&self, key: &str, value: bool) -> Result<(), String> {
+        dconf_set_bool(key, value)
     }
 }
 
 struct SniSettingsStore {
-    schema_dirs: Vec<PathBuf>,
-    active_schema: Option<GsettingsSchemaTarget>,
     available: bool,
-    backend: Box<dyn GsettingsBackend>,
+    backend: Box<dyn DconfBackend>,
 }
 
 impl SniSettingsStore {
     fn new() -> Self {
         Self {
-            schema_dirs: find_gsettings_schema_dirs(),
-            active_schema: None,
             available: true,
-            backend: Box::new(ShellGsettingsBackend),
+            backend: Box::new(ShellDconfBackend),
         }
     }
 
     #[cfg(test)]
-    fn with_backend(schema_dirs: Vec<PathBuf>, backend: Box<dyn GsettingsBackend>) -> Self {
+    fn with_backend(backend: Box<dyn DconfBackend>) -> Self {
         Self {
-            schema_dirs,
-            active_schema: None,
             available: true,
             backend,
         }
@@ -1270,87 +1230,36 @@ impl SniSettingsStore {
     #[cfg(test)]
     fn disabled() -> Self {
         Self {
-            schema_dirs: Vec::new(),
-            active_schema: None,
             available: false,
-            backend: Box::new(ShellGsettingsBackend),
+            backend: Box::new(ShellDconfBackend),
         }
-    }
-
-    fn schema_targets(&self) -> Vec<GsettingsSchemaTarget> {
-        let mut targets = Vec::new();
-        if let Some(active) = self.active_schema.clone() {
-            targets.push(active);
-        }
-        targets.push(GsettingsSchemaTarget::Default);
-        for dir in &self.schema_dirs {
-            let target = GsettingsSchemaTarget::Dir(dir.clone());
-            if !targets.contains(&target) {
-                targets.push(target);
-            }
-        }
-        targets
     }
 
     fn read_focus_only(&mut self) -> Option<bool> {
         if !self.available {
             return None;
         }
-        let mut last_error: Option<String> = None;
-        for target in self.schema_targets() {
-            match self.backend.get_bool(
-                target.as_option(),
-                GSETTINGS_SCHEMA_ID,
-                GSETTINGS_FOCUS_ONLY_KEY,
-            ) {
-                Ok(value) => {
-                    self.active_schema = Some(target);
-                    return Some(value);
+        match self.backend.get_bool(DCONF_FOCUS_ONLY_KEY) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                if is_dconf_unavailable(&error) {
+                    self.available = false;
                 }
-                Err(error) => {
-                    if is_gsettings_unavailable(&error) {
-                        self.available = false;
-                        last_error = Some(error);
-                        break;
-                    }
-                    last_error = Some(error);
-                }
+                eprintln!("[SNI] dconf read failed: {}", error);
+                None
             }
         }
-        if let Some(error) = last_error {
-            eprintln!("[SNI] GSettings read failed: {}", error);
-        }
-        None
     }
 
     fn write_focus_only(&mut self, value: bool) {
         if !self.available {
             return;
         }
-        let mut last_error: Option<String> = None;
-        for target in self.schema_targets() {
-            match self.backend.set_bool(
-                target.as_option(),
-                GSETTINGS_SCHEMA_ID,
-                GSETTINGS_FOCUS_ONLY_KEY,
-                value,
-            ) {
-                Ok(()) => {
-                    self.active_schema = Some(target);
-                    return;
-                }
-                Err(error) => {
-                    if is_gsettings_unavailable(&error) {
-                        self.available = false;
-                        last_error = Some(error);
-                        break;
-                    }
-                    last_error = Some(error);
-                }
+        if let Err(error) = self.backend.set_bool(DCONF_FOCUS_ONLY_KEY, value) {
+            if is_dconf_unavailable(&error) {
+                self.available = false;
             }
-        }
-        if let Some(error) = last_error {
-            eprintln!("[SNI] GSettings write failed: {}", error);
+            eprintln!("[SNI] dconf write failed: {}", error);
         }
     }
 }
@@ -3958,144 +3867,46 @@ impl Drop for SniGuard {
     }
 }
 
-fn push_unique_dir(dirs: &mut Vec<PathBuf>, path: PathBuf) {
-    if dirs.iter().any(|existing| existing == &path) {
-        return;
-    }
-    dirs.push(path);
-}
-
-fn nixos_data_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    push_unique_dir(&mut dirs, PathBuf::from(NIXOS_SYSTEM_PROFILE));
-    push_unique_dir(&mut dirs, PathBuf::from(NIXOS_DEFAULT_PROFILE));
-
-    if let Ok(user) = env::var("USER") {
-        if !user.is_empty() {
-            push_unique_dir(
-                &mut dirs,
-                PathBuf::from(NIXOS_PER_USER_PROFILE_PREFIX)
-                    .join(&user)
-                    .join("share"),
-            );
-            push_unique_dir(
-                &mut dirs,
-                PathBuf::from(NIXOS_PER_USER_PROFILE_ALT_PREFIX)
-                    .join(&user)
-                    .join("profile")
-                    .join("share"),
-            );
-        }
-    }
-
-    dirs
-}
-
-fn xdg_data_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
-        if !xdg_data_home.is_empty() {
-            push_unique_dir(&mut dirs, PathBuf::from(xdg_data_home));
-        }
-    } else if let Ok(home) = env::var("HOME") {
-        if !home.is_empty() {
-            push_unique_dir(&mut dirs, PathBuf::from(home).join(".local/share"));
-        }
-    }
-
-    let data_dirs =
-        env::var("XDG_DATA_DIRS").unwrap_or_else(|_| XDG_DATA_DIRS_FALLBACK.to_string());
-    for entry in data_dirs.split(':') {
-        if entry.is_empty() {
-            continue;
-        }
-        push_unique_dir(&mut dirs, PathBuf::from(entry));
-    }
-
-    for nix_dir in nixos_data_dirs() {
-        push_unique_dir(&mut dirs, nix_dir);
-    }
-
-    dirs
-}
-
-fn push_schema_dir_if_exists(dirs: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.join(GSETTINGS_COMPILED_FILENAME).exists() {
-        push_unique_dir(dirs, path);
-    }
-}
-
-fn find_gsettings_schema_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    for data_dir in xdg_data_dirs() {
-        push_schema_dir_if_exists(&mut dirs, data_dir.join("glib-2.0").join("schemas"));
-        push_schema_dir_if_exists(
-            &mut dirs,
-            data_dir
-                .join("gnome-shell")
-                .join("extensions")
-                .join(GNOME_EXTENSION_UUID)
-                .join("schemas"),
-        );
-    }
-
-    push_schema_dir_if_exists(&mut dirs, get_gnome_extension_fs_path().join("schemas"));
-
-    dirs
-}
-
-fn gsettings_command(schema_dir: Option<&Path>) -> Command {
-    let mut command = Command::new("gsettings");
-    if let Some(dir) = schema_dir {
-        command.arg("--schemadir").arg(dir);
-    }
-    command
-}
-
-fn gsettings_get_bool(schema_dir: Option<&Path>, schema: &str, key: &str) -> Result<bool, String> {
-    let output = gsettings_command(schema_dir)
-        .args(["get", schema, key])
+fn dconf_get_bool(key: &str) -> Result<bool, String> {
+    let output = Command::new("dconf")
+        .args(["read", key])
         .output()
-        .map_err(|error| format!("gsettings get failed: {}", error))?;
+        .map_err(|error| format!("dconf read failed: {}", error))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gsettings get failed: {}", stderr.trim()));
+        return Err(format!("dconf read failed: {}", stderr.trim()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     match stdout.trim() {
         "true" => Ok(true),
         "false" => Ok(false),
-        value => Err(format!("unexpected gsettings output: {}", value)),
+        "" => Err("key not set".to_string()),
+        value => Err(format!("unexpected dconf output: {}", value)),
     }
 }
 
-fn gsettings_set_bool(
-    schema_dir: Option<&Path>,
-    schema: &str,
-    key: &str,
-    value: bool,
-) -> Result<(), String> {
+fn dconf_set_bool(key: &str, value: bool) -> Result<(), String> {
     let value_str = if value { "true" } else { "false" };
-    let output = gsettings_command(schema_dir)
-        .args(["set", schema, key, value_str])
+    let output = Command::new("dconf")
+        .args(["write", key, value_str])
         .output()
-        .map_err(|error| format!("gsettings set failed: {}", error))?;
+        .map_err(|error| format!("dconf write failed: {}", error))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gsettings set failed: {}", stderr.trim()));
+        return Err(format!("dconf write failed: {}", stderr.trim()));
     }
 
     Ok(())
 }
 
-fn is_gsettings_unavailable(error: &str) -> bool {
+fn is_dconf_unavailable(error: &str) -> bool {
     let lower = error.to_lowercase();
-    lower.contains("no such file or directory") || lower.contains("not found")
+    lower.contains("no such file or directory")
+        || lower.contains("not found")
+        || lower.contains("failed to execute")
 }
 
 // === GNOME Extension Management ===
