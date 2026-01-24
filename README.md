@@ -65,6 +65,7 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 | COSMIC                               | Daemon receives `cosmic-toplevel-info` Wayland protocol events    |
 | wlroots (Sway, Hyprland, Niri, etc.) | Daemon receives `wlr-foreign-toplevel-management` protocol events |
 | X11                                  | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
+| Linux console (VT switch)            | Daemon monitors session state via systemd-logind DBus interface   |
 
 ### Prerequisites
 
@@ -85,7 +86,7 @@ Example config:
     "default": "default"
   },
   {
-    "on_native_terminal": "tty"
+    "on_native_terminal": "terminal"
   },
   {
     "class": "^firefox$",
@@ -93,12 +94,17 @@ Example config:
   },
   {
     "class": "jetbrains|codium|code|dev.zed.Zed",
-    "layer": "vscode"
+    "layer": "editor"
+  },
+  {
+    "class": "kitty|alacritty|com.mitchellh.ghostty|wezterm",
+    "layer": "terminal",
+    "fallthrough": true
   },
   {
     "class": "kitty|alacritty|com.mitchellh.ghostty|wezterm",
     "title": "vim",
-    "layer": "vim"
+    "virtual_key": "vim_vk"
   }
 ]
 ```
@@ -124,14 +130,14 @@ Example config:
 - When absent, daemon auto-detects from Kanata's initial layer on connect
 - Can appear at most once (multiple = error), position doesn't matter
 
-**Native terminal rule:**
+**On Native Terminal rule:**
 
-- `{ "on_native_terminal": "layer_name" }` - Layer to use when switching to Linux Kernel native terminal (Ctrl+Alt+F*)
+- `{ "on_native_terminal": "layer_name" }` - Layer to use when switching to Linux console (Ctrl+Alt+F*)
 - Must not include `class`, `title`, or `layer`
 - Can include `virtual_key` and/or `raw_vk_action`
 - Can appear at most once (multiple = error), position doesn't matter
 - When absent, daemon switches to layer specified in Default layer rule or the auto-detected initial layer
-- If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but native terminal switching is disabled; a warning will be logged on startup.
+- If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but Linux console-based switching is disabled; a warning will be logged on startup.
 
 **Virtual keys:**
 
