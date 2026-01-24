@@ -1,8 +1,6 @@
 # kanata-switcher
 
-`kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers and pressing virtual keys based on the currently
-focused application window for all Linux desktop environments - for Wayland: GNOME Shell, KDE Plasma, COSMIC, wlroots-based
-compositors (Sway, Hyprland, Niri, etc.), and for X11.
+`kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers and pressing virtual keys based on the current application for all Linux desktop environments - for Wayland: GNOME Shell, KDE Plasma, COSMIC, wlroots-based compositors (Sway, Hyprland, Niri, etc.), and for X11.
 
 As of the time when the project was started, the only active project for application-based layer switching for kanata
 for Linux was [hyprkan](https://github.com/haithium/hyperkan) - which supported only wlroots-based compositors. There
@@ -14,7 +12,7 @@ the following environments:
 - [x] GNOME Shell
 - [x] KDE Plasma
 - [x] COSMIC
-- [x] wlroots-based compositors
+- [x] wlroots-based compositors:
     - [x] Sway
     - [x] Hyprland
     - [x] Niri
@@ -32,7 +30,29 @@ This project features comprehensive automated test suite and supports an unusual
 
 ---
 
-## Machine summary
+## Screenshots
+
+`kanata-switcher` ships with a tray indicator showing your current Kanata layer - the first letter of its name - and pressed virtual keys.
+
+GNOME, `"default"` layer active:
+
+![d-layer](./screenshots/d-layer.png)
+
+GNOME, `"terminal"` layer active and `"alt"` virtual key held:
+
+![t-layer+vk](./screenshots/t-layer+vk.png)
+
+GNOME, `"leftcmd"` layer active and 2 virtual keys are held:
+
+![l-layer+2vks](./screenshots/l-layer+2vks.png)
+
+KDE, `"terminal"` layer active and `"alt"` virtual key held:
+
+![t-layer+vk-sni-kde](./screenshots/t-layer+vk-sni-kde.png)
+
+On GNOME, the indicator is provided by the (auto-)installed GNOME extension, on all other desktops it's implemented via FreeDesktop StatusNotifierItem (SNI).
+
+## LLM section
 
 ### Supported Environments
 
@@ -412,8 +432,8 @@ passed on the command line. To update the entry, rerun the install command with 
 
 Systemd units use `--quiet-focus` by default to reduce log noise.
 
-### Related Projects
+## Related Projects
 
-- [hyprkan](https://github.com/mdSlash/hyprkan) - Similar tool for Hyprland/Sway/Niri/X11
+- [hyprkan](https://github.com/mdSlash/hyprkan) - Similar tool for wlroots (Hyprland/Sway/Niri) + X11
 - [xremap](https://github.com/xremap/xremap) - Key remapper with per-app config
 - [keymapper](https://github.com/houmain/keymapper) - Another key remapper with similar support

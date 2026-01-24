@@ -20,7 +20,7 @@ These apply __ONLY__ to editing llm-docs:
 
 ### README
 
-- When editing README.md, do not overwrite sections written by author. Write in your own section: `Machine summary`
+- When editing README.md, do not overwrite sections written by author. Write in your own section: `LLM section`
 - If there were changes to configuration format, update README and the example config.
 
 ### QA
