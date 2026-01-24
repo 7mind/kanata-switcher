@@ -17,6 +17,7 @@ the following environments:
     - [x] Hyprland
     - [x] Niri
 - [x] X11
+- [x] Linux console
 
 There's also a manual QA checklist in [./qa](./qa) folder.
 
@@ -207,7 +208,7 @@ KDE, `"terminal"` layer active and `"alt"` virtual key held:
 
 <img src="./screenshots/t-layer+vk-sni-kde.png" alt="t-layer+vk-sni-kde" width="50%">
 
-On GNOME, the indicator is provided by the (auto-)installed GNOME extension, on all other DEs it's implemented via FreeDesktop StatusNotifierItem (SNI).
+On GNOME, the indicator is provided by the (auto-)installed GNOME extension, on all other DEs it's implemented via Freedesktop.org StatusNotifierItem (SNI).
 
 The tray menu's "Show app layer only" setting is persisted via dconf, both on GNOME and non-GNOME desktops. Use `--indicator-focus-only <true|false>` to override it at startup.
 
