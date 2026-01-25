@@ -216,11 +216,15 @@ The tray menu's "Show app layer only" setting is persisted via dconf, both on GN
 
 #### Nix
 
+Run the following command (anywhere), replacing `10000` with the expected Kanata port:
+
 ```bash
 nix run github:7mind/kanata-switcher -- -p 10000
 ```
 
 #### Cargo
+
+Clone the repository and run the following command in the project folder, replacing `10000` with the expected Kanata port:
 
 ```bash
 cargo run --release -- -p 10000
@@ -232,8 +236,8 @@ installation, restart GNOME Shell:
 - **X11**: Press Alt+F2, type `r`, press Enter
 - **Wayland**: Log out and log back in
 
-The extension is loaded from the filesystem (`<install-dir>/gnome/`) if available, otherwise falls back to the embedded
-copy (enabled by default via `embed-gnome-extension` cargo feature).
+The extension is installed from the filesystem (`<install-dir>/gnome/`) if available (e.g. if installed via Nix or a distro-specific package),
+otherwise falls back to the embedded copy (enabled by default via `embed-gnome-extension` cargo feature).
 
 ### Installing
 
