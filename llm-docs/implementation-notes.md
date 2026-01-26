@@ -5,7 +5,7 @@
 1. **Single Rust daemon for all environments** - Config logic shared, no duplication
 2. **GNOME extension is minimal** - Only exposes DBus, daemon does the work
 3. **KDE script injected at runtime** - No manual installation needed
-4. **Auto-detect default layer** - On connect, Kanata sends initial `LayerChange`; daemon stores this as fallback when no rule matches
+4. **Auto-detect default layer** - On connect, daemon requests layer list; first layer (definition order) is used as fallback when no rule matches
 5. **GNOME extension auto-install by default** - Controlled by `--[no-]install-gnome-extension` flags
 6. **CLI control commands** - `--restart`, `--pause`, `--unpause` send DBus requests to an existing daemon and exit
 7. **SNI indicator for non-GNOME** - StatusNotifier item with Pause/Restart and “Show app layer only” menu toggle (disable with `--no-indicator`)

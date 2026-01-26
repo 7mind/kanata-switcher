@@ -106,7 +106,7 @@ Example config:
 
 - `{ "default": "layer_name" }` - Explicit default layer (optional)
 - When present, disables auto-detection from Kanata
-- When absent, daemon auto-detects from Kanata's initial layer on connect
+- When absent, daemon auto-detects from the first layer in Kanata's layer list
 - Can appear at most once (multiple = error), position doesn't matter
 
 **On Native Terminal rule:**
@@ -115,7 +115,7 @@ Example config:
 - Must not include `class`, `title`, or `layer`
 - Can include `virtual_key` and/or `raw_vk_action`
 - Can appear at most once (multiple = error), position doesn't matter
-- When absent, daemon switches to layer specified in Default layer rule or the auto-detected initial layer
+- When absent, daemon switches to the default layer (explicit or auto-detected)
 - If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but Linux console-based switching is disabled; a warning will be logged on startup.
 
 **Virtual keys:**

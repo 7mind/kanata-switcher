@@ -78,7 +78,7 @@ TCP JSON, newline-delimited. Default port 10000.
 ← Client sends VK action:   {"ActOnFakeKey": {"name": "vk_browser", "action": "Press"}}
 ```
 
-Daemon captures first `LayerChange` as default layer (used when no rule matches).
+Daemon auto-detects default layer from first entry in kanata's layer list (definition order).
 
 VK actions: `Press`, `Release`, `Tap`, `Toggle`.
 
@@ -125,7 +125,7 @@ Daemon switches to default layer on exit (any cause):
 
 **Default entry (optional):**
 - `{"default": "layer_name"}`: specifies explicit default layer
-- Disables auto-detection from Kanata
+- When absent, auto-detected from first layer in kanata's layer list (definition order)
 - Can appear 0 or 1 times (multiple = error)
 - Position in array doesn't matter
 
