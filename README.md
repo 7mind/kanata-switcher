@@ -3,7 +3,7 @@
 `kanata-switcher` provides support for switching [Kanata](https://github.com/jtroo/kanata) layers and pressing virtual keys based on the current application for all Linux desktop environments - for Wayland: GNOME Shell, KDE Plasma, COSMIC, wlroots-based compositors (Sway, Hyprland, Niri, etc.), and for X11.
 
 As of the time when the project was started, the only active project for application-based layer switching for kanata
-for Linux was [hyprkan](https://github.com/haithium/hyperkan) - which supported only wlroots-based compositors. There
+for Linux was [hyprkan](https://github.com/haithium/hyprkan) - which supported only wlroots-based compositors. There
 was no project attempting support for GNOME Shell or KDE Plasma.
 
 This project is fully LLM-generated, it has a comprehensive automated test suite and has also been manually tested in
@@ -443,6 +443,6 @@ Systemd units use `--quiet-focus` by default to reduce log noise.
 
 ## Related Projects
 
-- [hyprkan](https://github.com/mdSlash/hyprkan) - Similar tool for wlroots (Hyprland/Sway/Niri) + X11
+- [hyprkan](https://github.com/haithium/hyprkan) - Similar tool for wlroots (Hyprland/Sway/Niri) + X11
 - [xremap](https://github.com/xremap/xremap) - Key remapper with per-app config
 - [keymapper](https://github.com/houmain/keymapper) - Another key remapper with similar support
