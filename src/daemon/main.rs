@@ -3867,6 +3867,18 @@ impl Drop for SniGuard {
     }
 }
 
+struct DbusControlGuard {
+    _connection: Connection,
+}
+
+impl DbusControlGuard {
+    fn new(connection: Connection) -> Self {
+        Self {
+            _connection: connection,
+        }
+    }
+}
+
 fn dconf_get_bool(key: &str) -> Result<bool, String> {
     let output = Command::new("dconf")
         .args(["read", key])
@@ -5007,6 +5019,30 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         )
         .await;
     }
+
+    let dbus_control_guard = if matches!(env, Environment::Wayland | Environment::X11) {
+        let handler = focus_handler
+            .clone()
+            .expect("Focus handler missing for DBus control service");
+        let connection = Connection::session().await?;
+        let focus_query_connection = Connection::session().await?;
+        register_dbus_service(
+            &connection,
+            focus_query_connection,
+            env,
+            false,
+            kanata.clone(),
+            handler,
+            status_broadcaster.clone(),
+            restart_handle.clone(),
+            pause_broadcaster.clone(),
+        )
+        .await?;
+        Some(DbusControlGuard::new(connection))
+    } else {
+        None
+    };
+    let _dbus_control_guard = dbus_control_guard;
 
     // Create shutdown guard - will switch to default layer when dropped
     let _shutdown_guard = ShutdownGuard::new(kanata.clone());

@@ -1,11 +1,11 @@
 # Installation Checklist
 
-Last tested: 2026-01-22
-Environment: NixOS, KDE, Wayland
+Last tested: 2026-01-27
+Environment: NixOS, Hyprland, Wayland
 
 ## Cargo install
-- [ ] `cargo install --path .` succeeds
-- [ ] Binary is on PATH (or invoked directly)
+- [x] `cargo install --path .` succeeds
+- [x] Binary is on PATH (or invoked directly)
 - [x] `kanata-switcher --help` shows CLI options
 
 ## Nix install
@@ -23,5 +23,5 @@ Environment: NixOS, KDE, Wayland
 
 ## Config discovery
 - [x] Default config path `~/.config/kanata/kanata-switcher.json` is used
-- [ ] Missing config errors show example config
-- [ ] Explicit `--config` path is honored
+- [x] Missing config errors show example config
+- [x] Explicit `--config` path is honored

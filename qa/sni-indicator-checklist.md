@@ -1,19 +1,20 @@
 # SNI Indicator Checklist (Non-GNOME)
 
-Last tested: 2026-01-22
-Environment: KDE, KDE Panel, Wayland
+Last tested: 2026-01-29
+Environment: Hyprland, No Panel, Wayland
 
 ## Indicator lifecycle
 - [x] SNI indicator appears by default on non-GNOME
 - [x] `--no-indicator` suppresses it
 - [x] Logs show SNI startup and watcher online/offline
-- [ ] Logs show SNI watcher offline
+- [x] Logs show SNI watcher offline
 
 ## Visual behavior
 - [x] Layer glyph updates on focus changes
 - [x] VK glyph updates (single key / count / overflow)
 - [x] Layer glyph is white and VK glyph is cyan (matches GNOME indicator)
-- [ ] Glyphs use Noto Sans Mono bitmap (size 32) and VK overflow shows "9+"
+- [x] Glyphs use Noto Sans Mono bitmap (size 32)
+- [ ] VK overflow shows "9+"
 - [x] Tooltip shows layer and virtual keys
 
 ## Menu actions
@@ -28,4 +29,4 @@ Environment: KDE, KDE Panel, Wayland
 - [x] `--indicator-focus-only true|false` overrides startup value without locking the toggle
 
 ## Failure behavior
-- [ ] If SNI cannot be started, daemon keeps running and logs error
+- [x] If SNI cannot be started, daemon keeps running and logs error
