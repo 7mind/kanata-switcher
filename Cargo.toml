@@ -1,6 +1,6 @@
 [package]
 name = "kanata-switcher"
-version = "1.0.1"
+version = "1.1.1"
 edition = "2024"
 license = "MIT"
 description = "Daemon for kanata layer switching based on focused window"
@@ -14,26 +14,26 @@ default = ["embed-gnome-extension"]
 embed-gnome-extension = []
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-regex = "1"
-zbus = "5"
-clap = { version = "4", features = ["derive"] }
-dirs = "5"
-tempfile = "3"
-libc = "0.2"
-futures-util = "0.3"
-wayland-client = "0.31"
-wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-wayland-backend = "0.3"
-wayland-scanner = "0.31"
-x11rb = "0.13"
-ksni = "0.2.2"
-noto-sans-mono-bitmap = { version = "0.3.2", default-features = false, features = ["regular", "size_32", "unicode-basic-latin"] }
+tokio = { version = "=1.49.0", features = ["full"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+regex = "=1.12.2"
+zbus = "=5.13.2"
+clap = { version = "=4.5.54", features = ["derive"] }
+dirs = "=5.0.1"
+tempfile = "=3.24.0"
+libc = "=0.2.180"
+futures-util = "=0.3.31"
+wayland-client = "=0.31.12"
+wayland-protocols-wlr = { version = "=0.3.10", features = ["client"] }
+wayland-backend = "=0.3.12"
+wayland-scanner = "=0.31.8"
+x11rb = "=0.13.2"
+ksni = "=0.2.2"
+noto-sans-mono-bitmap = { version = "=0.3.2", default-features = false, features = ["regular", "size_32", "unicode-basic-latin"] }
 
 [dev-dependencies]
-proptest = "1"
-tokio-test = "0.4"
-wayland-server = "0.31"
-wayland-protocols-wlr = { version = "0.3", features = ["server"] }
+proptest = "=1.9.0"
+tokio-test = "=0.4.5"
+wayland-server = "=0.31.11"
+wayland-protocols-wlr = { version = "=0.3.10", features = ["server"] }
