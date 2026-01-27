@@ -1,7 +1,7 @@
 # Desktop Backends Checklist
 
 Last tested: 2026-01-27
-Environment: NixOS, Hyprland, Wayland
+Environment: NixOS, COSMIC, Wayland
 
 ## KDE Plasma
 - [x] KWin script loads automatically
@@ -19,8 +19,8 @@ Environment: NixOS, Hyprland, Wayland
 ## COSMIC
 - [x] cosmic-toplevel-info events received
 - [x] Focus changes trigger expected actions
-- [ ] Daemon start applies current focused window without extra focus change
-- [ ] Pause/unpause re-queries current focus (no cached focus)
+- [x] Daemon start applies current focused window without extra focus change
+- [x] Pause/unpause re-queries current focus (no cached focus)
 
 ## X11
 - [ ] _NET_ACTIVE_WINDOW tracking works
