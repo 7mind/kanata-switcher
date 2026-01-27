@@ -29,4 +29,4 @@ Environment: NixOS, COSMIC, Wayland
 - [ ] Pause/unpause re-queries current focus (no cached focus)
 
 ## Unknown/unsupported
-- [ ] Daemon exits with clear error if no display env detected
+- [x] Daemon exits with clear error if no display env detected
