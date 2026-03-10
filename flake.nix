@@ -340,21 +340,23 @@
               assertion = cfg.configFile == null || cfg.settings == null;
               message = "services.kanata-switcher: 'configFile' and 'settings' are mutually exclusive";
             }];
-          } // mkConfig cfg lib execArgs);
+          } // mkConfig cfg lib pkgs execArgs);
         };
 
     in {
       lib.moduleOptions = moduleOptions;
 
-      nixosModules.default = mkModule (cfg: lib: execArgs: {
+      nixosModules.default = mkModule (cfg: lib: pkgs: execArgs:
+        let
+          graphicalSessionRestartCommand =
+            "${pkgs.systemd}/bin/systemctl --user try-restart kanata-switcher.service";
+        in {
         environment.systemPackages = [ cfg.package ]
           ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
 
         systemd.user.services.kanata-switcher = {
           description = "Kanata layer switcher daemon";
-          after = [ "graphical-session.target" ];
-          partOf = [ "graphical-session.target" ];
-          wantedBy = [ "graphical-session.target" ];
+          wantedBy = [ "default.target" ];
           serviceConfig = {
             Type = "simple";
             ExecStart = lib.concatStringsSep " " execArgs;
@@ -370,6 +372,15 @@
           ];
         };
 
+        systemd.user.services.kanata-switcher-graphical-session-restart = {
+          description = "Restart kanata-switcher after graphical session start";
+          wantedBy = [ "graphical-session.target" ];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = graphicalSessionRestartCommand;
+          };
+        };
+
         programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
           enable = true;
           profiles.user.databases = [{
@@ -378,15 +389,17 @@
         };
       });
 
-      homeModules.default = mkModule (cfg: lib: execArgs: {
+      homeModules.default = mkModule (cfg: lib: pkgs: execArgs:
+        let
+          graphicalSessionRestartCommand =
+            "${pkgs.systemd}/bin/systemctl --user try-restart kanata-switcher.service";
+        in {
         home.packages = [ cfg.package ]
           ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
 
         systemd.user.services.kanata-switcher = {
           Unit = {
             Description = "Kanata layer switcher daemon";
-            After = [ "graphical-session.target" ];
-            PartOf = [ "graphical-session.target" ];
             X-Restart-Triggers = [
               (toString (builtins.toJSON { settings = cfg.settings; configFile = cfg.configFile; }))
             ];
@@ -397,6 +410,15 @@
             Restart = "on-failure";
             RestartSec = 5;
             Environment = [ "XDG_DATA_DIRS=%h/.nix-profile/share:/run/current-system/sw/share" ];
+          };
+          Install.WantedBy = [ "default.target" ];
+        };
+
+        systemd.user.services.kanata-switcher-graphical-session-restart = {
+          Unit.Description = "Restart kanata-switcher after graphical session start";
+          Service = {
+            Type = "oneshot";
+            ExecStart = graphicalSessionRestartCommand;
           };
           Install.WantedBy = [ "graphical-session.target" ];
         };

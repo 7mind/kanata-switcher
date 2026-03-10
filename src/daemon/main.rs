@@ -2,7 +2,9 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use futures_util::StreamExt;
 use ksni::menu::{CheckmarkItem, StandardItem};
 use ksni::{Icon as SniIcon, MenuItem, Status as SniStatus, ToolTip, Tray, TrayService};
-use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar};
+use noto_sans_mono_bitmap::{
+    FontWeight, RasterHeight, RasterizedChar, get_raster, get_raster_width,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,9 +14,9 @@ use std::os::fd::AsFd;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -85,7 +87,8 @@ use cosmic_workspace::{
 };
 
 const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
-const DCONF_FOCUS_ONLY_KEY: &str = "/org/gnome/shell/extensions/kanata-switcher/show-focus-layer-only";
+const DCONF_FOCUS_ONLY_KEY: &str =
+    "/org/gnome/shell/extensions/kanata-switcher/show-focus-layer-only";
 const DBUS_NAME: &str = "com.github.kanata.Switcher";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
@@ -521,7 +524,9 @@ impl<'de> serde::Deserialize<'de> for ConfigEntry {
             }
         }
 
-        serde_json::from_value(value).map(ConfigEntry::Rule).map_err(D::Error::custom)
+        serde_json::from_value(value)
+            .map(ConfigEntry::Rule)
+            .map_err(D::Error::custom)
     }
 }
 
@@ -609,9 +614,7 @@ fn load_config(config_path: Option<&Path>) -> Config {
                             } else {
                                 // Rule with no matchers and no fallthrough would match everything
                                 // and stop further matching, which is almost certainly a bug
-                                if rule.class.is_none()
-                                    && rule.title.is_none()
-                                    && !rule.fallthrough
+                                if rule.class.is_none() && rule.title.is_none() && !rule.fallthrough
                                 {
                                     eprintln!(
                                         "[Config] Error: Rule with no 'class' or 'title' matcher requires 'fallthrough: true'"
@@ -1272,13 +1275,7 @@ struct MenuRefresh {
 impl MenuRefresh {
     fn new() -> (Self, watch::Receiver<u64>) {
         let (sender, receiver) = watch::channel(0u64);
-        (
-            Self {
-                sender,
-                version: 0,
-            },
-            receiver,
-        )
+        (Self { sender, version: 0 }, receiver)
     }
 
     fn notify(&mut self) {
@@ -1594,11 +1591,7 @@ impl SniIndicator {
     fn render_icon(layer_text: &str, vk_text: &str) -> SniIcon {
         let layer_width = Self::text_width(layer_text);
         let vk_width = Self::text_width(vk_text);
-        let gap = if vk_text.is_empty() {
-            0
-        } else {
-            SNI_GLYPH_GAP
-        };
+        let gap = if vk_text.is_empty() { 0 } else { SNI_GLYPH_GAP };
         let icon_width = layer_width + gap + vk_width;
         let mut buffer = vec![0u8; icon_width * SNI_ICON_HEIGHT * 4];
         let glyph_y = (SNI_ICON_HEIGHT - SNI_GLYPH_HEIGHT) / 2;
@@ -1814,6 +1807,12 @@ fn native_terminal_window() -> WindowInfo {
         title: String::new(),
         is_native_terminal: true,
     }
+}
+
+fn is_native_terminal_session() -> bool {
+    env::var("XDG_SESSION_TYPE")
+        .map(|value| value == "tty")
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2076,7 +2075,12 @@ async fn query_focus_for_env(
         }
         Environment::Wayland => tokio::task::block_in_place(query_wayland_active_window),
         Environment::X11 => tokio::task::block_in_place(query_x11_active_window),
-        Environment::Unknown => Ok(WindowInfo::default()),
+        Environment::Unknown => {
+            if is_native_terminal_session() {
+                return Ok(native_terminal_window());
+            }
+            Ok(WindowInfo::default())
+        }
     }
 }
 
@@ -2951,11 +2955,10 @@ impl KanataClient {
     pub async fn change_layer(&self, layer_name: &str) -> bool {
         let mut inner = self.inner.lock().await;
 
-        let target_layer =
-            match Self::resolve_layer_name_from_inner(&inner, layer_name, true) {
-                Some(layer) => layer,
-                None => return false,
-            };
+        let target_layer = match Self::resolve_layer_name_from_inner(&inner, layer_name, true) {
+            Some(layer) => layer,
+            None => return false,
+        };
 
         let current = inner.current_layer.clone();
         if current.as_deref() == Some(&target_layer) {
@@ -3077,7 +3080,10 @@ impl KanataClient {
     ) -> Vec<String> {
         match known_virtual_keys {
             None => vks,
-            Some(known_vks) => vks.into_iter().filter(|vk| known_vks.contains(vk)).collect(),
+            Some(known_vks) => vks
+                .into_iter()
+                .filter(|vk| known_vks.contains(vk))
+                .collect(),
         }
     }
 
@@ -3194,6 +3200,10 @@ fn detect_environment() -> Environment {
     let desktop = env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()
         .to_lowercase();
+
+    if desktop.contains("gnome-greeter") {
+        return Environment::Unknown;
+    }
 
     // GNOME - needs special DBus extension
     if desktop.contains("gnome") || env::var("GNOME_SETUP_DISPLAY").is_ok() {
@@ -4988,7 +4998,9 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     );
     kanata.connect_with_retry().await;
 
-    let focus_handler = if matches!(env, Environment::Unknown) {
+    let needs_focus_handler =
+        !matches!(env, Environment::Unknown) || config.native_terminal_rule.is_some();
+    let focus_handler = if !needs_focus_handler {
         None
     } else {
         Some(Arc::new(Mutex::new(FocusHandler::new(
