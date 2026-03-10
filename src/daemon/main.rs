@@ -1809,12 +1809,6 @@ fn native_terminal_window() -> WindowInfo {
     }
 }
 
-fn is_native_terminal_session() -> bool {
-    env::var("XDG_SESSION_TYPE")
-        .map(|value| value == "tty")
-        .unwrap_or(false)
-}
-
 #[derive(Clone, Copy, Debug)]
 struct RawFdWatcher {
     fd: RawFd,
@@ -2075,12 +2069,8 @@ async fn query_focus_for_env(
         }
         Environment::Wayland => tokio::task::block_in_place(query_wayland_active_window),
         Environment::X11 => tokio::task::block_in_place(query_x11_active_window),
-        Environment::Unknown => {
-            if is_native_terminal_session() {
-                return Ok(native_terminal_window());
-            }
-            Ok(WindowInfo::default())
-        }
+        Environment::LinuxConsoleWithLogind => Ok(native_terminal_window()),
+        Environment::Unknown => Ok(WindowInfo::default()),
     }
 }
 
@@ -3175,6 +3165,7 @@ pub enum Environment {
     Kde,
     Wayland,
     X11,
+    LinuxConsoleWithLogind,
     Unknown,
 }
 
@@ -3191,6 +3182,7 @@ impl Environment {
             Environment::Kde => "kde",
             Environment::Wayland => "wayland",
             Environment::X11 => "x11",
+            Environment::LinuxConsoleWithLogind => "linux-console-with-logind",
             Environment::Unknown => "unknown",
         }
     }
@@ -4695,6 +4687,31 @@ async fn run_gnome(
     Ok(outcome)
 }
 
+async fn run_linux_console_with_logind(
+    kanata: KanataClient,
+    handler: Option<Arc<Mutex<FocusHandler>>>,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+    shutdown_handle: ShutdownHandle,
+) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(handler) = handler {
+        apply_focus_for_env(
+            Environment::LinuxConsoleWithLogind,
+            None,
+            false,
+            &handler,
+            &status_broadcaster,
+            &pause_broadcaster,
+            &kanata,
+        )
+        .await?;
+    }
+
+    let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
+    Ok(outcome)
+}
+
 // === KDE Backend ===
 
 #[derive(Debug)]
@@ -4960,10 +4977,10 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
 
     let install_gnome_extension = resolve_install_gnome_extension(&matches);
 
-    let env = detect_environment();
-    println!("[Init] Detected environment: {}", env.as_str());
+    let detected_env = detect_environment();
+    println!("[Init] Detected environment: {}", detected_env.as_str());
 
-    if env == Environment::Gnome {
+    if detected_env == Environment::Gnome {
         setup_gnome_extension(install_gnome_extension);
     }
 
@@ -4999,7 +5016,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     kanata.connect_with_retry().await;
 
     let needs_focus_handler =
-        !matches!(env, Environment::Unknown) || config.native_terminal_rule.is_some();
+        !matches!(detected_env, Environment::Unknown) || config.native_terminal_rule.is_some();
     let focus_handler = if !needs_focus_handler {
         None
     } else {
@@ -5010,8 +5027,9 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         ))))
     };
 
+    let mut env = detected_env;
     if let Some(handler) = focus_handler.clone() {
-        let session_connection = if matches!(env, Environment::Gnome | Environment::Kde) {
+        let session_connection = if matches!(detected_env, Environment::Gnome | Environment::Kde) {
             Some(Connection::session().await?)
         } else {
             None
@@ -5019,8 +5037,8 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         let is_kde6 = env::var("KDE_SESSION_VERSION")
             .map(|v| v == "6")
             .unwrap_or(false);
-        start_logind_session_monitor_best_effort(
-            env,
+        let logind_enabled = start_logind_session_monitor_best_effort(
+            detected_env,
             session_connection,
             is_kde6,
             handler,
@@ -5030,6 +5048,9 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             start_logind_session_monitor,
         )
         .await;
+        if detected_env == Environment::Unknown && logind_enabled {
+            env = Environment::LinuxConsoleWithLogind;
+        }
     }
 
     let dbus_control_guard = if matches!(env, Environment::Wayland | Environment::X11) {
@@ -5180,6 +5201,17 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                 shutdown_handle,
             )
             .await?;
+        }
+        Environment::LinuxConsoleWithLogind => {
+            return run_linux_console_with_logind(
+                kanata,
+                focus_handler,
+                status_broadcaster,
+                restart_handle,
+                pause_broadcaster,
+                shutdown_handle,
+            )
+            .await;
         }
         Environment::Unknown => {
             eprintln!("[Error] Could not detect display environment");
