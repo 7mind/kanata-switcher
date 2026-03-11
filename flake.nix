@@ -372,14 +372,14 @@
           ];
         };
 
-        systemd.user.services.kanata-switcher-graphical-session-restart = {
-          description = "Restart kanata-switcher after graphical session start";
-          wantedBy = [ "graphical-session.target" ];
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = graphicalSessionRestartCommand;
-          };
-        };
+        #systemd.user.services.kanata-switcher-graphical-session-restart = {
+        #  description = "Restart kanata-switcher after graphical session start";
+        #  wantedBy = [ "graphical-session.target" ];
+        #  serviceConfig = {
+        #    Type = "oneshot";
+        #    ExecStart = graphicalSessionRestartCommand;
+        #  };
+        #};
 
         programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
           enable = true;
