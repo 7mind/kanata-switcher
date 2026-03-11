@@ -12,6 +12,7 @@
 8. **Autostart fallback** - `--install-autostart` writes a user autostart `.desktop` entry with the daemon args you passed (absolute Exec path); `--uninstall-autostart` removes it
 9. **Runtime lifecycle supervision** - backend transitions are controlled in-daemon via lifecycle providers (logind continuous mode, startup-snapshot fallback mode)
 10. **Supervisor wake-on-backend-finish** - active backend task completion is part of the supervisor wait set, preventing hangs when a backend exits without lifecycle signal changes
+11. **SNI runtime-environment coherence** - local SNI pause/unpause uses runtime backend environment published by supervisor transitions, not fixed startup environment
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 

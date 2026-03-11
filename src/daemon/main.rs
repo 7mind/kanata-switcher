@@ -1034,6 +1034,11 @@ struct PauseBroadcaster {
 }
 
 #[derive(Clone, Debug)]
+struct RuntimeEnvironmentBroadcaster {
+    sender: watch::Sender<Environment>,
+}
+
+#[derive(Clone, Debug)]
 struct ShutdownHandle {
     sender: watch::Sender<bool>,
 }
@@ -1089,6 +1094,21 @@ impl PauseBroadcaster {
         }
         self.sender.send_replace(paused);
         true
+    }
+}
+
+impl RuntimeEnvironmentBroadcaster {
+    fn new(initial: Environment) -> Self {
+        let (sender, _) = watch::channel(initial);
+        Self { sender }
+    }
+
+    fn current(&self) -> Environment {
+        *self.sender.borrow()
+    }
+
+    fn set_current(&self, env: Environment) {
+        self.sender.send_replace(env);
     }
 }
 
@@ -1347,7 +1367,7 @@ struct SniLocalControl {
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
-    env: Environment,
+    runtime_environment: RuntimeEnvironmentBroadcaster,
     connection: Option<Connection>,
     is_kde6: bool,
 }
@@ -1427,7 +1447,7 @@ impl SniControlOps for SniControl {
         match self {
             SniControl::Local(control) => {
                 unpause_daemon(
-                    control.env,
+                    control.runtime_environment.current(),
                     control.connection.clone(),
                     control.is_kde6,
                     &control.pause_broadcaster,
@@ -2513,6 +2533,7 @@ struct BackendContext {
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
+    runtime_environment: RuntimeEnvironmentBroadcaster,
 }
 
 struct BackendHandle {
@@ -2563,6 +2584,17 @@ fn runtime_target_label(target: RuntimeTarget) -> &'static str {
         RuntimeTarget::Backend(BackendKind::Wayland) => "wayland",
         RuntimeTarget::Backend(BackendKind::X11) => "x11",
         RuntimeTarget::Backend(BackendKind::LinuxConsole) => "linux-console",
+    }
+}
+
+fn runtime_target_to_environment(target: RuntimeTarget) -> Environment {
+    match target {
+        RuntimeTarget::Backend(BackendKind::Gnome) => Environment::Gnome,
+        RuntimeTarget::Backend(BackendKind::Kde) => Environment::Kde,
+        RuntimeTarget::Backend(BackendKind::Wayland) => Environment::Wayland,
+        RuntimeTarget::Backend(BackendKind::X11) => Environment::X11,
+        RuntimeTarget::Backend(BackendKind::LinuxConsole) => Environment::LinuxConsoleWithLogind,
+        RuntimeTarget::Idle => Environment::Unknown,
     }
 }
 
@@ -2843,6 +2875,9 @@ where
     }
 
     state.current_target = desired_target;
+    context
+        .runtime_environment
+        .set_current(runtime_target_to_environment(desired_target));
     Ok(())
 }
 
@@ -2857,6 +2892,9 @@ async fn stop_current_backend(
         }
     }
     state.current_target = RuntimeTarget::Idle;
+    context
+        .runtime_environment
+        .set_current(Environment::Unknown);
     Ok(())
 }
 
@@ -2888,6 +2926,9 @@ where
     Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
 {
     let mut state = SupervisorState::new();
+    context
+        .runtime_environment
+        .set_current(runtime_target_to_environment(state.current_target));
     let mut restart_receiver = restart_handle.subscribe();
     let mut shutdown_receiver = shutdown_handle.subscribe();
     let mut provider_open = true;
@@ -5865,6 +5906,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
 
     // Create shutdown guard - will switch to default layer when dropped
     let _shutdown_guard = ShutdownGuard::new(kanata.clone());
+    let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Unknown);
 
     // Set up signal handlers
     let shutdown_handle_for_signal = shutdown_handle.clone();
@@ -5918,7 +5960,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                     status_broadcaster: status_broadcaster.clone(),
                     pause_broadcaster: pause_broadcaster.clone(),
                     restart_handle: restart_handle.clone(),
-                    env: detected_env,
+                    runtime_environment: runtime_environment.clone(),
                     connection: None,
                     is_kde6: false,
                 }))
@@ -5945,6 +5987,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         status_broadcaster,
         restart_handle: restart_handle.clone(),
         pause_broadcaster,
+        runtime_environment,
     };
 
     run_lifecycle_supervisor(

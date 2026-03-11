@@ -2206,6 +2206,7 @@ fn test_backend_context() -> BackendContext {
         status_broadcaster,
         restart_handle: RestartHandle::new(),
         pause_broadcaster: PauseBroadcaster::new(),
+        runtime_environment: RuntimeEnvironmentBroadcaster::new(Environment::Unknown),
     }
 }
 
@@ -2474,6 +2475,63 @@ fn test_runtime_target_label_is_stable() {
 }
 
 #[test]
+fn test_runtime_target_to_environment_mapping() {
+    assert_eq!(
+        runtime_target_to_environment(RuntimeTarget::Backend(BackendKind::Gnome)),
+        Environment::Gnome
+    );
+    assert_eq!(
+        runtime_target_to_environment(RuntimeTarget::Backend(BackendKind::Kde)),
+        Environment::Kde
+    );
+    assert_eq!(
+        runtime_target_to_environment(RuntimeTarget::Backend(BackendKind::Wayland)),
+        Environment::Wayland
+    );
+    assert_eq!(
+        runtime_target_to_environment(RuntimeTarget::Backend(BackendKind::X11)),
+        Environment::X11
+    );
+    assert_eq!(
+        runtime_target_to_environment(RuntimeTarget::Backend(BackendKind::LinuxConsole)),
+        Environment::LinuxConsoleWithLogind
+    );
+    assert_eq!(
+        runtime_target_to_environment(RuntimeTarget::Idle),
+        Environment::Unknown
+    );
+}
+
+#[tokio::test]
+async fn test_sni_local_control_tracks_runtime_environment_switches() {
+    with_test_timeout(async {
+        let status_broadcaster = StatusBroadcaster::new();
+        let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Wayland);
+        let control = SniLocalControl {
+            runtime_handle: tokio::runtime::Handle::current(),
+            kanata: KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone()),
+            handler: Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true))),
+            status_broadcaster,
+            pause_broadcaster: PauseBroadcaster::new(),
+            restart_handle: RestartHandle::new(),
+            runtime_environment: runtime_environment.clone(),
+            connection: None,
+            is_kde6: false,
+        };
+
+        assert_eq!(control.runtime_environment.current(), Environment::Wayland);
+        runtime_environment.set_current(Environment::LinuxConsoleWithLogind);
+        assert_eq!(
+            control.runtime_environment.current(),
+            Environment::LinuxConsoleWithLogind
+        );
+        runtime_environment.set_current(Environment::X11);
+        assert_eq!(control.runtime_environment.current(), Environment::X11);
+    })
+    .await;
+}
+
+#[test]
 fn test_map_run_outcome_to_backend_exit() {
     assert_eq!(
         map_run_outcome_to_backend_exit(RunOutcome::Restart),
@@ -2483,6 +2541,67 @@ fn test_map_run_outcome_to_backend_exit() {
         map_run_outcome_to_backend_exit(RunOutcome::Exit),
         BackendExit::Exit
     );
+}
+
+#[tokio::test]
+async fn test_transition_runtime_target_updates_runtime_environment() {
+    with_test_timeout(async {
+        let context = test_backend_context();
+        let mut state = SupervisorState::new();
+        assert_eq!(context.runtime_environment.current(), Environment::Unknown);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::X11),
+            &context,
+            "to-x11",
+            |kind, _| async move {
+                Ok(test_running_backend_handle(
+                    kind,
+                    Arc::new(AtomicBool::new(false)),
+                ))
+            },
+        )
+        .await
+        .expect("transition to x11 should succeed");
+        assert_eq!(context.runtime_environment.current(), Environment::X11);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::LinuxConsole),
+            &context,
+            "to-linux-console",
+            |kind, _| async move {
+                Ok(test_running_backend_handle(
+                    kind,
+                    Arc::new(AtomicBool::new(false)),
+                ))
+            },
+        )
+        .await
+        .expect("transition to linux console should succeed");
+        assert_eq!(
+            context.runtime_environment.current(),
+            Environment::LinuxConsoleWithLogind
+        );
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Idle,
+            &context,
+            "to-idle",
+            |kind, _| async move {
+                Ok(test_running_backend_handle(
+                    kind,
+                    Arc::new(AtomicBool::new(false)),
+                ))
+            },
+        )
+        .await
+        .expect("transition to idle should succeed");
+        assert_eq!(context.runtime_environment.current(), Environment::Unknown);
+    })
+    .await;
 }
 
 #[test]
