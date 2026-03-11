@@ -4133,6 +4133,7 @@ const GNOME_SHELL_OBJECT_PATH: &str = "/org/gnome/Shell";
 const GNOME_SHELL_EXTENSIONS_INTERFACE: &str = "org.gnome.Shell.Extensions";
 const DBUS_ERROR_SERVICE_UNKNOWN: &str = "org.freedesktop.DBus.Error.ServiceUnknown";
 const DBUS_ERROR_NAME_HAS_NO_OWNER: &str = "org.freedesktop.DBus.Error.NameHasNoOwner";
+const DBUS_ERROR_UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 
 enum GnomeDbusProbeResult {
     Status(GnomeExtensionStatus),
@@ -4142,9 +4143,17 @@ enum GnomeDbusProbeResult {
 
 fn is_dbus_service_unavailable(error: &zbus::Error) -> bool {
     match error {
-        zbus::Error::MethodError(name, _, _) => {
+        zbus::Error::MethodError(name, description, _) => {
             name.as_ref() == DBUS_ERROR_SERVICE_UNKNOWN
                 || name.as_ref() == DBUS_ERROR_NAME_HAS_NO_OWNER
+                || (name.as_ref() == DBUS_ERROR_UNKNOWN_METHOD
+                    && description
+                        .as_deref()
+                        .map(|message| {
+                            message.contains("Object does not exist at path")
+                                || message.contains("No such interface")
+                        })
+                        .unwrap_or(false))
         }
         _ => false,
     }
@@ -4180,7 +4189,7 @@ fn gnome_extension_dbus_probe_with_connection(
         Ok(r) => r,
         Err(e) => {
             if is_dbus_service_unavailable(&e) {
-                println!("[GNOME] D-Bus probe: GNOME Shell not on the session bus yet");
+                println!("[GNOME] D-Bus probe: GNOME Shell D-Bus interface not ready yet");
                 return GnomeDbusProbeResult::ShellUnavailable;
             }
             eprintln!("[GNOME] D-Bus probe: GetExtensionInfo call failed: {}", e);
@@ -4608,8 +4617,30 @@ fn setup_gnome_extension(auto_install: bool) {
             std::process::exit(1);
         }
 
-        status = gnome_extension_status();
-        print_gnome_extension_status(&status);
+        let mut elapsed_ms: u64 = 0;
+        loop {
+            status = gnome_extension_status();
+            if status.shell_service_available {
+                print_gnome_extension_status(&status);
+                break;
+            }
+
+            if elapsed_ms >= GNOME_SHELL_WAIT_TIMEOUT.as_millis() as u64 {
+                print_gnome_extension_status(&status);
+                std::process::exit(1);
+            }
+
+            std::thread::sleep(Duration::from_millis(RETRY_INTERVAL_MS));
+            elapsed_ms += RETRY_INTERVAL_MS;
+
+            if elapsed_ms % 1_000 == 0 {
+                println!(
+                    "[GNOME] Waiting for GNOME Shell D-Bus interface... ({}ms/{}ms)",
+                    elapsed_ms,
+                    GNOME_SHELL_WAIT_TIMEOUT.as_millis()
+                );
+            }
+        }
     }
 
     // Retry on all states except:
