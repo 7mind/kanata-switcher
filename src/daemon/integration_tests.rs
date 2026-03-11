@@ -3710,10 +3710,17 @@ async fn test_gnome_extension_dbus_probe_integration() {
                 .expect("Failed to connect client");
 
             // Call the actual probe function - this verifies the full integration
-            let status = gnome_extension_dbus_probe_with_connection(&client_connection);
+            let status = match gnome_extension_dbus_probe_with_connection(&client_connection) {
+                GnomeDbusProbeResult::Status(status) => status,
+                GnomeDbusProbeResult::ShellUnavailable => {
+                    panic!("D-Bus probe unexpectedly reported shell unavailable")
+                }
+                GnomeDbusProbeResult::ProbeFailed => {
+                    panic!("D-Bus probe unexpectedly failed against mock service")
+                }
+            };
 
             // Verify the probe succeeded and correctly parsed the response
-            let status = status.expect("D-Bus probe should succeed against mock service");
             assert!(status.active, "Extension with state=1.0 should be active");
             assert!(status.enabled, "Extension with state=1.0 should be enabled");
             assert!(
@@ -3765,8 +3772,13 @@ async fn test_gnome_extension_dbus_probe_integration() {
                 .build()
                 .expect("Connect");
 
-            let status = gnome_extension_dbus_probe_with_connection(&client_connection)
-                .expect("Probe should succeed");
+            let status = match gnome_extension_dbus_probe_with_connection(&client_connection) {
+                GnomeDbusProbeResult::Status(status) => status,
+                GnomeDbusProbeResult::ShellUnavailable => {
+                    panic!("Probe unexpectedly reported shell unavailable")
+                }
+                GnomeDbusProbeResult::ProbeFailed => panic!("Probe unexpectedly failed"),
+            };
 
             assert!(
                 !status.active,
@@ -3873,8 +3885,13 @@ async fn test_gnome_extension_delayed_activation() {
 
         // Simulate retry logic: poll every 50ms until active or timeout
         let start = Instant::now();
-        let mut status = gnome_extension_dbus_probe_with_connection(&client_connection)
-            .expect("Initial probe should succeed");
+        let mut status = match gnome_extension_dbus_probe_with_connection(&client_connection) {
+            GnomeDbusProbeResult::Status(status) => status,
+            GnomeDbusProbeResult::ShellUnavailable => {
+                panic!("Initial probe unexpectedly reported shell unavailable")
+            }
+            GnomeDbusProbeResult::ProbeFailed => panic!("Initial probe unexpectedly failed"),
+        };
 
         assert!(!status.active, "Initial state should not be active");
         assert_eq!(
@@ -3885,8 +3902,13 @@ async fn test_gnome_extension_delayed_activation() {
 
         while !status.active && start.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(50));
-            status = gnome_extension_dbus_probe_with_connection(&client_connection)
-                .expect("Probe should succeed");
+            status = match gnome_extension_dbus_probe_with_connection(&client_connection) {
+                GnomeDbusProbeResult::Status(status) => status,
+                GnomeDbusProbeResult::ShellUnavailable => {
+                    panic!("Probe unexpectedly reported shell unavailable")
+                }
+                GnomeDbusProbeResult::ProbeFailed => panic!("Probe unexpectedly failed"),
+            };
         }
 
         let elapsed = start.elapsed();

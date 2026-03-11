@@ -2099,50 +2099,20 @@ async fn apply_focus_for_env(
     }
     Ok(())
 }
-async fn apply_session_focus(
-    active: bool,
-    env: Environment,
-    connection: Option<&Connection>,
-    is_kde6: bool,
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    pause_broadcaster: &PauseBroadcaster,
-    kanata: &KanataClient,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if active {
-        return apply_focus_for_env(
-            env,
-            connection,
-            is_kde6,
-            handler,
-            status_broadcaster,
-            pause_broadcaster,
-            kanata,
-        )
-        .await;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogindSessionKind {
+    Direct,
+    Display,
+}
 
-    let win = native_terminal_window();
-    let default_layer = kanata.default_layer().await.unwrap_or_default();
-    if let Some(actions) = handle_focus_event(
-        handler,
-        status_broadcaster,
-        pause_broadcaster,
-        &win,
-        kanata,
-        &default_layer,
-    )
-    .await
-    {
-        execute_focus_actions(kanata, actions).await;
-    }
-
-    Ok(())
+struct ResolvedLogindSessionPath {
+    path: OwnedObjectPath,
+    kind: LogindSessionKind,
 }
 
 async fn resolve_logind_session_path(
     connection: &Connection,
-) -> Result<OwnedObjectPath, LogindSessionPathResolutionError> {
+) -> Result<ResolvedLogindSessionPath, LogindSessionPathResolutionError> {
     let manager = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
@@ -2161,7 +2131,10 @@ async fn resolve_logind_session_path(
         let path = decode_logind_object_path_reply(&reply, "GetSession")
             .map_err(LogindSessionPathResolutionError::fatal)?;
         println!("[Logind] Using session path: {}", path.as_str());
-        return Ok(path);
+        return Ok(ResolvedLogindSessionPath {
+            path,
+            kind: LogindSessionKind::Direct,
+        });
     }
     println!("[Logind] XDG_SESSION_ID not set; resolving session via logind");
 
@@ -2171,7 +2144,10 @@ async fn resolve_logind_session_path(
             let path = decode_logind_object_path_reply(&reply, "GetSessionByPID")
                 .map_err(LogindSessionPathResolutionError::fatal)?;
             println!("[Logind] Using session path: {}", path.as_str());
-            Ok(path)
+            Ok(ResolvedLogindSessionPath {
+                path,
+                kind: LogindSessionKind::Direct,
+            })
         }
         Err(error) => {
             if is_logind_no_session_error(&error) {
@@ -2301,7 +2277,7 @@ async fn resolve_logind_display_session_path(
     manager: &zbus::Proxy<'_>,
     connection: &Connection,
     pid: u32,
-) -> Result<OwnedObjectPath, LogindSessionPathResolutionError> {
+) -> Result<ResolvedLogindSessionPath, LogindSessionPathResolutionError> {
     let user_reply = manager
         .call_method("GetUserByPID", &(pid))
         .await
@@ -2328,7 +2304,10 @@ async fn resolve_logind_display_session_path(
         return Err(LogindSessionPathResolutionError::DisplayNotReady);
     }
     println!("[Logind] Using display session path: {}", display.as_str());
-    Ok(display)
+    Ok(ResolvedLogindSessionPath {
+        path: display,
+        kind: LogindSessionKind::Display,
+    })
 }
 
 const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
@@ -2336,7 +2315,7 @@ const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000
 async fn resolve_logind_session_path_for_env(
     env: Environment,
     connection: &Connection,
-) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ResolvedLogindSessionPath, Box<dyn std::error::Error + Send + Sync>> {
     let mut attempt = 0usize;
     loop {
         match resolve_logind_session_path(connection).await {
@@ -2361,6 +2340,53 @@ async fn resolve_logind_session_path_for_env(
     }
 }
 
+async fn apply_logind_focus(
+    active: bool,
+    native_terminal_when_active: bool,
+    env: Environment,
+    connection: Option<&Connection>,
+    is_kde6: bool,
+    handler: &Arc<Mutex<FocusHandler>>,
+    status_broadcaster: &StatusBroadcaster,
+    pause_broadcaster: &PauseBroadcaster,
+    kanata: &KanataClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let native_terminal_active = if native_terminal_when_active {
+        active
+    } else {
+        !active
+    };
+
+    if native_terminal_active {
+        let win = native_terminal_window();
+        let default_layer = kanata.default_layer().await.unwrap_or_default();
+        if let Some(actions) = handle_focus_event(
+            handler,
+            status_broadcaster,
+            pause_broadcaster,
+            &win,
+            kanata,
+            &default_layer,
+        )
+        .await
+        {
+            execute_focus_actions(kanata, actions).await;
+        }
+        return Ok(());
+    }
+
+    apply_focus_for_env(
+        env,
+        connection,
+        is_kde6,
+        handler,
+        status_broadcaster,
+        pause_broadcaster,
+        kanata,
+    )
+    .await
+}
+
 async fn start_logind_session_monitor(
     env: Environment,
     session_connection: Option<Connection>,
@@ -2371,7 +2397,10 @@ async fn start_logind_session_monitor(
     kanata: KanataClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::system().await?;
-    let session_path = resolve_logind_session_path_for_env(env, &connection).await?;
+    let resolved_session = resolve_logind_session_path_for_env(env, &connection).await?;
+    let session_path = resolved_session.path.clone();
+    let native_terminal_when_active =
+        env == Environment::Unknown && resolved_session.kind == LogindSessionKind::Direct;
     let session_proxy = zbus::Proxy::new(
         &connection,
         LOGIND_BUS_NAME,
@@ -2381,19 +2410,18 @@ async fn start_logind_session_monitor(
     .await?;
     let active: bool = session_proxy.get_property("Active").await?;
 
-    if !active {
-        apply_session_focus(
-            false,
-            env,
-            session_connection.as_ref(),
-            is_kde6,
-            &handler,
-            &status_broadcaster,
-            &pause_broadcaster,
-            &kanata,
-        )
-        .await?;
-    }
+    apply_logind_focus(
+        active,
+        native_terminal_when_active,
+        env,
+        session_connection.as_ref(),
+        is_kde6,
+        &handler,
+        &status_broadcaster,
+        &pause_broadcaster,
+        &kanata,
+    )
+    .await?;
 
     let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
         .destination(LOGIND_BUS_NAME)?
@@ -2432,8 +2460,9 @@ async fn start_logind_session_monitor(
             }
             last_active = next_active;
 
-            if let Err(error) = apply_session_focus(
+            if let Err(error) = apply_logind_focus(
                 next_active,
+                native_terminal_when_active,
                 env,
                 session_connection.as_ref(),
                 is_kde6,
@@ -4936,26 +4965,9 @@ async fn run_gnome(
 }
 
 async fn run_linux_console_with_logind(
-    kanata: KanataClient,
-    handler: Option<Arc<Mutex<FocusHandler>>>,
-    status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
-    pause_broadcaster: PauseBroadcaster,
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(handler) = handler {
-        apply_focus_for_env(
-            Environment::LinuxConsoleWithLogind,
-            None,
-            false,
-            &handler,
-            &status_broadcaster,
-            &pause_broadcaster,
-            &kanata,
-        )
-        .await?;
-    }
-
     let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
     Ok(outcome)
 }
@@ -5452,11 +5464,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         }
         Environment::LinuxConsoleWithLogind => {
             return run_linux_console_with_logind(
-                kanata,
-                focus_handler,
-                status_broadcaster,
                 restart_handle,
-                pause_broadcaster,
                 shutdown_handle,
             )
             .await;
