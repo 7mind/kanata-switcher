@@ -2099,20 +2099,9 @@ async fn apply_focus_for_env(
     }
     Ok(())
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LogindSessionKind {
-    Direct,
-    Display,
-}
-
-struct ResolvedLogindSessionPath {
-    path: OwnedObjectPath,
-    kind: LogindSessionKind,
-}
-
 async fn resolve_logind_session_path(
     connection: &Connection,
-) -> Result<ResolvedLogindSessionPath, LogindSessionPathResolutionError> {
+) -> Result<OwnedObjectPath, LogindSessionPathResolutionError> {
     let manager = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
@@ -2131,10 +2120,7 @@ async fn resolve_logind_session_path(
         let path = decode_logind_object_path_reply(&reply, "GetSession")
             .map_err(LogindSessionPathResolutionError::fatal)?;
         println!("[Logind] Using session path: {}", path.as_str());
-        return Ok(ResolvedLogindSessionPath {
-            path,
-            kind: LogindSessionKind::Direct,
-        });
+        return Ok(path);
     }
     println!("[Logind] XDG_SESSION_ID not set; resolving session via logind");
 
@@ -2144,10 +2130,7 @@ async fn resolve_logind_session_path(
             let path = decode_logind_object_path_reply(&reply, "GetSessionByPID")
                 .map_err(LogindSessionPathResolutionError::fatal)?;
             println!("[Logind] Using session path: {}", path.as_str());
-            Ok(ResolvedLogindSessionPath {
-                path,
-                kind: LogindSessionKind::Direct,
-            })
+            Ok(path)
         }
         Err(error) => {
             if is_logind_no_session_error(&error) {
@@ -2277,7 +2260,7 @@ async fn resolve_logind_display_session_path(
     manager: &zbus::Proxy<'_>,
     connection: &Connection,
     pid: u32,
-) -> Result<ResolvedLogindSessionPath, LogindSessionPathResolutionError> {
+) -> Result<OwnedObjectPath, LogindSessionPathResolutionError> {
     let user_reply = manager
         .call_method("GetUserByPID", &(pid))
         .await
@@ -2304,10 +2287,7 @@ async fn resolve_logind_display_session_path(
         return Err(LogindSessionPathResolutionError::DisplayNotReady);
     }
     println!("[Logind] Using display session path: {}", display.as_str());
-    Ok(ResolvedLogindSessionPath {
-        path: display,
-        kind: LogindSessionKind::Display,
-    })
+    Ok(display)
 }
 
 const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
@@ -2315,7 +2295,7 @@ const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000
 async fn resolve_logind_session_path_for_env(
     env: Environment,
     connection: &Connection,
-) -> Result<ResolvedLogindSessionPath, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
     let mut attempt = 0usize;
     loop {
         match resolve_logind_session_path(connection).await {
@@ -2387,6 +2367,10 @@ async fn apply_logind_focus(
     .await
 }
 
+fn session_type_indicates_native_terminal(session_type: &str) -> bool {
+    session_type == "tty"
+}
+
 async fn start_logind_session_monitor(
     env: Environment,
     session_connection: Option<Connection>,
@@ -2397,10 +2381,7 @@ async fn start_logind_session_monitor(
     kanata: KanataClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::system().await?;
-    let resolved_session = resolve_logind_session_path_for_env(env, &connection).await?;
-    let session_path = resolved_session.path.clone();
-    let native_terminal_when_active =
-        env == Environment::Unknown && resolved_session.kind == LogindSessionKind::Direct;
+    let session_path = resolve_logind_session_path_for_env(env, &connection).await?;
     let session_proxy = zbus::Proxy::new(
         &connection,
         LOGIND_BUS_NAME,
@@ -2409,6 +2390,17 @@ async fn start_logind_session_monitor(
     )
     .await?;
     let active: bool = session_proxy.get_property("Active").await?;
+    let session_type = session_proxy
+        .get_property::<String>("Type")
+        .await
+        .unwrap_or_default();
+    let native_terminal_when_active = session_type_indicates_native_terminal(&session_type);
+    println!(
+        "[Logind] Session type={} (env={}), native_terminal_when_active={}",
+        session_type,
+        env.as_str(),
+        native_terminal_when_active
+    );
 
     apply_logind_focus(
         active,

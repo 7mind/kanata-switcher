@@ -1945,6 +1945,34 @@ fn test_logind_empty_object_path_detection() {
 }
 
 #[test]
+fn test_logind_session_type_tty_maps_to_native_terminal() {
+    assert!(session_type_indicates_native_terminal("tty"));
+}
+
+#[test]
+fn test_logind_session_type_display_does_not_map_to_native_terminal() {
+    assert!(!session_type_indicates_native_terminal("wayland"));
+    assert!(!session_type_indicates_native_terminal("x11"));
+}
+
+#[test]
+fn test_logind_session_type_mapping_is_environment_independent() {
+    let envs = [
+        Environment::Gnome,
+        Environment::Kde,
+        Environment::Wayland,
+        Environment::X11,
+        Environment::LinuxConsoleWithLogind,
+        Environment::Unknown,
+    ];
+
+    for _env in envs {
+        assert!(session_type_indicates_native_terminal("tty"));
+        assert!(!session_type_indicates_native_terminal("wayland"));
+    }
+}
+
+#[test]
 fn test_parse_logind_object_path_value() {
     use zbus::zvariant::ObjectPath;
 
