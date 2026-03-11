@@ -1,10 +1,10 @@
 use super::*;
 use clap::Parser;
-use zbus::Message;
 use proptest::prelude::*;
 use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use zbus::Message;
 
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -618,10 +618,7 @@ fn test_sni_settings_store_writes_to_dconf() {
 
 #[test]
 fn test_sni_settings_store_read_error_disables_write() {
-    let (backend, state) = mock_dconf_backend(
-        Err("No such file or directory".to_string()),
-        Ok(()),
-    );
+    let (backend, state) = mock_dconf_backend(Err("No such file or directory".to_string()), Ok(()));
     let mut store = SniSettingsStore::with_backend(backend);
     let value = store.read_focus_only();
     assert_eq!(value, None);
@@ -633,10 +630,7 @@ fn test_sni_settings_store_read_error_disables_write() {
 
 #[test]
 fn test_sni_settings_store_key_not_set_allows_write() {
-    let (backend, state) = mock_dconf_backend(
-        Err("key not set".to_string()),
-        Ok(()),
-    );
+    let (backend, state) = mock_dconf_backend(Err("key not set".to_string()), Ok(()));
     let mut store = SniSettingsStore::with_backend(backend);
     let value = store.read_focus_only();
     assert_eq!(value, None);
@@ -852,14 +846,8 @@ async fn test_update_status_for_focus_updates_snapshot() {
     let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
 
     let win = win("firefox", "");
-    let actions = update_status_for_focus(
-        &handler,
-        &status_broadcaster,
-        &win,
-        &kanata,
-        "default",
-    )
-    .await;
+    let actions =
+        update_status_for_focus(&handler, &status_broadcaster, &win, &kanata, "default").await;
     assert!(actions.is_some());
 
     let snapshot = status_broadcaster.snapshot();
@@ -881,22 +869,13 @@ async fn test_update_status_for_focus_unknown_layer_uses_default() {
     );
 
     {
-        let mut inner = kanata
-            .inner
-            .try_lock()
-            .expect("Expected KanataClient lock");
+        let mut inner = kanata.inner.try_lock().expect("Expected KanataClient lock");
         inner.known_layers = vec!["default".to_string()];
     }
 
     let win = win("firefox", "");
-    let actions = update_status_for_focus(
-        &handler,
-        &status_broadcaster,
-        &win,
-        &kanata,
-        "default",
-    )
-    .await;
+    let actions =
+        update_status_for_focus(&handler, &status_broadcaster, &win, &kanata, "default").await;
     assert!(actions.is_some());
 
     let snapshot = status_broadcaster.snapshot();
@@ -2084,23 +2063,14 @@ async fn test_update_status_for_focus_filters_invalid_virtual_keys() {
     );
 
     {
-        let mut inner = kanata
-            .inner
-            .try_lock()
-            .expect("Expected KanataClient lock");
+        let mut inner = kanata.inner.try_lock().expect("Expected KanataClient lock");
         // Set known VKs to a list that does NOT include invalid_vk
         inner.known_virtual_keys = Some(vec!["valid_vk".to_string()]);
     }
 
     let win = win("firefox", "");
-    let _actions = update_status_for_focus(
-        &handler,
-        &status_broadcaster,
-        &win,
-        &kanata,
-        "default",
-    )
-    .await;
+    let _actions =
+        update_status_for_focus(&handler, &status_broadcaster, &win, &kanata, "default").await;
 
     let snapshot = status_broadcaster.snapshot();
     // The invalid VK should be filtered out - status should show NO virtual keys
@@ -2134,23 +2104,14 @@ async fn test_update_status_for_focus_shows_valid_virtual_keys() {
     );
 
     {
-        let mut inner = kanata
-            .inner
-            .try_lock()
-            .expect("Expected KanataClient lock");
+        let mut inner = kanata.inner.try_lock().expect("Expected KanataClient lock");
         // Set known VKs to include vk_browser
         inner.known_virtual_keys = Some(vec!["vk_browser".to_string()]);
     }
 
     let win = win("firefox", "");
-    let _actions = update_status_for_focus(
-        &handler,
-        &status_broadcaster,
-        &win,
-        &kanata,
-        "default",
-    )
-    .await;
+    let _actions =
+        update_status_for_focus(&handler, &status_broadcaster, &win, &kanata, "default").await;
 
     let snapshot = status_broadcaster.snapshot();
     // The valid VK should appear in the status
@@ -2265,7 +2226,10 @@ fn test_config_parses_rule_with_class_no_fallthrough() {
     // A rule with a class matcher doesn't need fallthrough
     let json = r#"[{"class": "firefox", "layer": "browser"}]"#;
     let result: Result<Vec<ConfigEntry>, _> = serde_json::from_str(json);
-    assert!(result.is_ok(), "Config should parse rule with class matcher");
+    assert!(
+        result.is_ok(),
+        "Config should parse rule with class matcher"
+    );
     if let Ok(entries) = result {
         if let ConfigEntry::Rule(rule) = &entries[0] {
             assert!(rule.class.is_some());

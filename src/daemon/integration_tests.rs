@@ -65,8 +65,10 @@ where
         .expect("test timeout")
 }
 
-fn start_wayland_test_server(
-) -> (std::sync::MutexGuard<'static, ()>, wayland_mock::WaylandMockServer) {
+fn start_wayland_test_server() -> (
+    std::sync::MutexGuard<'static, ()>,
+    wayland_mock::WaylandMockServer,
+) {
     let lock = WAYLAND_ENV_LOCK.lock().unwrap();
     let server = wayland_mock::WaylandMockServer::start();
     (lock, server)
@@ -266,9 +268,7 @@ impl MockKanataServer {
 
     /// Start a mock server simulating older kanata that doesn't support RequestFakeKeyNames
     fn start_legacy() -> Self {
-        Self::start_with_config(MockKanataConfig {
-            virtual_keys: None,
-        })
+        Self::start_with_config(MockKanataConfig { virtual_keys: None })
     }
 
     fn start_with_config(config: MockKanataConfig) -> Self {
@@ -338,8 +338,10 @@ impl MockKanataServer {
                                     match &config.virtual_keys {
                                         Some(vks) => {
                                             let names_json = serde_json::to_string(vks).unwrap();
-                                            let response =
-                                                format!(r#"{{"FakeKeyNames":{{"names":{}}}}}"#, names_json);
+                                            let response = format!(
+                                                r#"{{"FakeKeyNames":{{"names":{}}}}}"#,
+                                                names_json
+                                            );
                                             writeln!(stream, "{}", response).ok();
                                         }
                                         None => {
@@ -4298,14 +4300,9 @@ async fn test_invalid_vk_does_not_block_layer_change_legacy_kanata() {
             is_native_terminal: false,
         };
         let default_layer = kanata.default_layer().await.unwrap_or_default();
-        let actions = update_status_for_focus(
-            &handler,
-            &status_broadcaster,
-            &win,
-            &kanata,
-            &default_layer,
-        )
-        .await;
+        let actions =
+            update_status_for_focus(&handler, &status_broadcaster, &win, &kanata, &default_layer)
+                .await;
 
         if let Some(actions) = actions {
             execute_focus_actions(&kanata, actions).await;
@@ -4398,7 +4395,9 @@ async fn test_valid_vk_works_with_invalid_vk_in_other_rule() {
         );
         // Invalid VK should NOT be in messages
         assert!(
-            !messages.iter().any(|m| matches!(m, KanataMessage::ActOnFakeKey { name, .. } if name == "invalid_vk")),
+            !messages.iter().any(
+                |m| matches!(m, KanataMessage::ActOnFakeKey { name, .. } if name == "invalid_vk")
+            ),
             "Invalid VK should not be sent"
         );
     })
@@ -4430,9 +4429,9 @@ async fn test_raw_vk_action_mixed_valid_invalid() {
             layer: Some("terminal".to_string()),
             virtual_key: None,
             raw_vk_action: Some(vec![
-                ("vk_vim".to_string(), "Tap".to_string()),       // Valid
-                ("invalid_vk1".to_string(), "Press".to_string()), // Invalid
-                ("vk_terminal".to_string(), "Toggle".to_string()), // Valid
+                ("vk_vim".to_string(), "Tap".to_string()),          // Valid
+                ("invalid_vk1".to_string(), "Press".to_string()),   // Invalid
+                ("vk_terminal".to_string(), "Toggle".to_string()),  // Valid
                 ("invalid_vk2".to_string(), "Release".to_string()), // Invalid
             ]),
             fallthrough: false,
@@ -4483,11 +4482,15 @@ async fn test_raw_vk_action_mixed_valid_invalid() {
 
         // Invalid VKs should NOT be in messages
         assert!(
-            !messages.iter().any(|m| matches!(m, KanataMessage::ActOnFakeKey { name, .. } if name == "invalid_vk1")),
+            !messages.iter().any(
+                |m| matches!(m, KanataMessage::ActOnFakeKey { name, .. } if name == "invalid_vk1")
+            ),
             "Invalid vk1 should not be sent"
         );
         assert!(
-            !messages.iter().any(|m| matches!(m, KanataMessage::ActOnFakeKey { name, .. } if name == "invalid_vk2")),
+            !messages.iter().any(
+                |m| matches!(m, KanataMessage::ActOnFakeKey { name, .. } if name == "invalid_vk2")
+            ),
             "Invalid vk2 should not be sent"
         );
     })
@@ -4622,8 +4625,8 @@ struct IsolatedDconfEnv {
 
 impl IsolatedDconfEnv {
     fn new() -> Result<Self, String> {
-        let temp_dir = tempfile::TempDir::new()
-            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        let temp_dir =
+            tempfile::TempDir::new().map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
         let config_home = temp_dir.path().join("config");
         let runtime_dir = temp_dir.path().join("runtime");
@@ -4703,7 +4706,11 @@ fn test_dconf_write_and_read_bool_isolated() {
 
     // Write true
     let write_result = env.dconf_write(DCONF_TEST_KEY, true);
-    assert!(write_result.is_ok(), "dconf write failed: {:?}", write_result);
+    assert!(
+        write_result.is_ok(),
+        "dconf write failed: {:?}",
+        write_result
+    );
 
     // Read back
     let read_result = env.dconf_read(DCONF_TEST_KEY);
@@ -4711,7 +4718,11 @@ fn test_dconf_write_and_read_bool_isolated() {
 
     // Write false
     let write_result = env.dconf_write(DCONF_TEST_KEY, false);
-    assert!(write_result.is_ok(), "dconf write failed: {:?}", write_result);
+    assert!(
+        write_result.is_ok(),
+        "dconf write failed: {:?}",
+        write_result
+    );
 
     // Read back
     let read_result = env.dconf_read(DCONF_TEST_KEY);
@@ -4731,7 +4742,10 @@ fn test_dconf_read_unset_key_isolated() {
 
     // Read unset key should return error (fresh isolated environment)
     let read_result = env.dconf_read(DCONF_TEST_KEY);
-    assert!(read_result.is_err(), "Reading unset key should return error");
+    assert!(
+        read_result.is_err(),
+        "Reading unset key should return error"
+    );
     assert!(
         read_result.unwrap_err().contains("key not set"),
         "Error should indicate key not set"
@@ -4745,9 +4759,8 @@ fn test_sni_settings_store_with_isolated_dconf() {
         return;
     }
 
-    let env = std::sync::Arc::new(
-        IsolatedDconfEnv::new().expect("Failed to create isolated dconf env")
-    );
+    let env =
+        std::sync::Arc::new(IsolatedDconfEnv::new().expect("Failed to create isolated dconf env"));
 
     // Create a backend that uses the isolated environment
     struct IsolatedDconfBackend {
@@ -4769,7 +4782,10 @@ fn test_sni_settings_store_with_isolated_dconf() {
     // First read should fail (key not set in fresh env), but store should remain available
     let initial = store.read_focus_only();
     assert_eq!(initial, None);
-    assert!(store.available, "Store should remain available after key-not-set error");
+    assert!(
+        store.available,
+        "Store should remain available after key-not-set error"
+    );
 
     // Write should succeed
     store.write_focus_only(true);
