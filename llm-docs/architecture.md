@@ -39,6 +39,12 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
 
 Detection order: GNOME → KDE → Wayland → X11 → Unknown
 
+Startup env detection is now a fallback path. Runtime backend ownership is supervised by a lifecycle controller:
+- Provider `logind` (continuous): when `org.freedesktop.login1` is available, session `Active`/`Type` events drive backend transitions (`tty`/`wayland`/`x11` + idle).
+- Provider `startup-snapshot` (single event): when login1 is unavailable, the daemon runs startup-only backend selection.
+
+No polling fallback is used when login1 is unavailable.
+
 Backends are event-driven but the daemon performs one-shot focus queries on startup and unpause:
 - GNOME: extension provides GetFocus over DBus
 - KDE: daemon injects a one-shot KWin script and receives a DBus callback
@@ -226,6 +232,8 @@ services.kanata-switcher = {
 HM module adds `--no-install-gnome-extension` by default. Use either:
 - `gnomeExtension.enable = true` for Nix-managed (recommended)
 - `gnomeExtension.autoInstall = true` for mutable runtime install
+
+The old user helper service `kanata-switcher-graphical-session-restart` was removed; lifecycle transitions are handled in-daemon.
 
 ## CLI Options
 

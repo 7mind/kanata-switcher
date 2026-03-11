@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-11: Runtime lifecycle supervision refactor landed. Daemon now uses login1-driven continuous backend transitions (with startup-snapshot fallback when login1 is unavailable), and the Home Manager graphical-session restart helper service was removed from flake outputs.
 - 2026-01-18: logind session monitoring failure is non-fatal; daemon continues without native terminal switching.
 - 2026-01-18: logind session resolution now falls back to the user's `Display` session when `GetSessionByPID` reports no session (systemd user service with lingering).
 - 2026-01-19: logind object path parsing accepts signatures `o`, `s`, `v`, or structures containing an object path (robust reply decoding).

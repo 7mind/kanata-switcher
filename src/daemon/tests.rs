@@ -2267,3 +2267,140 @@ fn test_config_parses_rule_with_class_no_fallthrough() {
         }
     }
 }
+
+// === Runtime Lifecycle Tests ===
+
+#[test]
+fn test_session_type_to_session_kind_mappings() {
+    assert_eq!(
+        session_type_to_session_kind(true, "tty"),
+        SessionKind::NativeTerminal
+    );
+    assert_eq!(
+        session_type_to_session_kind(true, "x11"),
+        SessionKind::GraphicalX11
+    );
+    assert_eq!(
+        session_type_to_session_kind(true, "wayland"),
+        SessionKind::GraphicalWayland
+    );
+    assert_eq!(
+        session_type_to_session_kind(true, "mir"),
+        SessionKind::NoSession
+    );
+    assert_eq!(
+        session_type_to_session_kind(false, "wayland"),
+        SessionKind::NoSession
+    );
+}
+
+#[test]
+fn test_resolve_runtime_target_matrix() {
+    let none = DesktopCapabilities {
+        gnome_owner: false,
+        gnome_focus_ready: false,
+        kde_owner: false,
+    };
+    let gnome_ready = DesktopCapabilities {
+        gnome_owner: true,
+        gnome_focus_ready: true,
+        kde_owner: false,
+    };
+    let gnome_not_ready = DesktopCapabilities {
+        gnome_owner: true,
+        gnome_focus_ready: false,
+        kde_owner: false,
+    };
+    let kde = DesktopCapabilities {
+        gnome_owner: false,
+        gnome_focus_ready: false,
+        kde_owner: true,
+    };
+
+    assert_eq!(
+        resolve_runtime_target(SessionKind::NoSession, none),
+        RuntimeTarget::Idle
+    );
+    assert_eq!(
+        resolve_runtime_target(SessionKind::NativeTerminal, none),
+        RuntimeTarget::Backend(BackendKind::LinuxConsole)
+    );
+    assert_eq!(
+        resolve_runtime_target(SessionKind::GraphicalX11, none),
+        RuntimeTarget::Backend(BackendKind::X11)
+    );
+    assert_eq!(
+        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_ready),
+        RuntimeTarget::Backend(BackendKind::Gnome)
+    );
+    assert_eq!(
+        resolve_runtime_target(SessionKind::GraphicalWayland, kde),
+        RuntimeTarget::Backend(BackendKind::Kde)
+    );
+    assert_eq!(
+        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_not_ready),
+        RuntimeTarget::Backend(BackendKind::Wayland)
+    );
+}
+
+#[test]
+fn test_target_requires_session_bus() {
+    assert!(target_requires_session_bus(RuntimeTarget::Backend(
+        BackendKind::Gnome
+    )));
+    assert!(target_requires_session_bus(RuntimeTarget::Backend(
+        BackendKind::Kde
+    )));
+    assert!(target_requires_session_bus(RuntimeTarget::Backend(
+        BackendKind::Wayland
+    )));
+    assert!(target_requires_session_bus(RuntimeTarget::Backend(
+        BackendKind::X11
+    )));
+    assert!(!target_requires_session_bus(RuntimeTarget::Backend(
+        BackendKind::LinuxConsole
+    )));
+    assert!(!target_requires_session_bus(RuntimeTarget::Idle));
+}
+
+#[tokio::test]
+async fn test_startup_snapshot_provider_emits_once() {
+    with_test_timeout(async {
+        let mut provider = StartupSnapshotProvider::new(Environment::Wayland);
+        let first = provider
+            .next_snapshot()
+            .await
+            .expect("startup snapshot should emit once");
+        assert_eq!(first.session_kind, SessionKind::GraphicalWayland);
+        assert!(provider.next_snapshot().await.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_transition_runtime_target_noop_on_same_target() {
+    with_test_timeout(async {
+        let status_broadcaster = StatusBroadcaster::new();
+        let context = BackendContext {
+            kanata: KanataClient::new(
+                "127.0.0.1",
+                10000,
+                Some("default".to_string()),
+                true,
+                status_broadcaster.clone(),
+            ),
+            handler: Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true))),
+            status_broadcaster,
+            restart_handle: RestartHandle::new(),
+            pause_broadcaster: PauseBroadcaster::new(),
+        };
+
+        let mut state = SupervisorState::new();
+        transition_runtime_target(&mut state, RuntimeTarget::Idle, &context, "test-noop")
+            .await
+            .expect("noop transition should succeed");
+        assert_eq!(state.current_target, RuntimeTarget::Idle);
+        assert!(state.backend.is_none());
+    })
+    .await;
+}

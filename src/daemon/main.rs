@@ -24,7 +24,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::sync::{Mutex as TokioMutex, oneshot, watch};
+use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot, watch};
 use wayland_client::{
     Connection as WaylandConnection, Dispatch, Proxy, QueueHandle,
     backend::{ObjectId, WaylandError},
@@ -43,7 +43,7 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use zbus::Connection;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Structure, Value};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Structure, Value};
 
 // Generated COSMIC protocols
 mod cosmic_workspace {
@@ -104,6 +104,7 @@ const LOGIND_SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 const LOGIND_USER_INTERFACE: &str = "org.freedesktop.login1.User";
 const LOGIND_ERROR_NO_SESSION_FOR_PID: &str = "org.freedesktop.login1.NoSessionForPID";
 const LOGIND_EMPTY_OBJECT_PATH: &str = "/";
+const KDE_KWIN_BUS_NAME: &str = "org.kde.KWin";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlCommand {
@@ -2320,6 +2321,7 @@ async fn resolve_logind_session_path_for_env(
     }
 }
 
+#[allow(dead_code)]
 async fn apply_logind_focus(
     active: bool,
     native_terminal_when_active: bool,
@@ -2367,10 +2369,12 @@ async fn apply_logind_focus(
     .await
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn session_type_indicates_native_terminal(session_type: &str) -> bool {
     session_type == "tty"
 }
 
+#[allow(dead_code)]
 async fn start_logind_session_monitor(
     env: Environment,
     session_connection: Option<Connection>,
@@ -2474,6 +2478,7 @@ async fn start_logind_session_monitor(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn start_logind_session_monitor_best_effort<F, Fut>(
     env: Environment,
     session_connection: Option<Connection>,
@@ -2514,6 +2519,537 @@ where
                 error
             );
             false
+        }
+    }
+}
+
+type DynError = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Debug)]
+struct StartupSnapshotProvider {
+    snapshot: Option<LifecycleSnapshot>,
+}
+
+impl StartupSnapshotProvider {
+    fn new(env: Environment) -> Self {
+        Self {
+            snapshot: Some(startup_environment_to_snapshot(env)),
+        }
+    }
+
+    async fn next_snapshot(&mut self) -> Option<LifecycleSnapshot> {
+        self.snapshot.take()
+    }
+}
+
+#[derive(Debug)]
+struct LogindLifecycleProvider {
+    receiver: mpsc::UnboundedReceiver<LifecycleSnapshot>,
+}
+
+impl LogindLifecycleProvider {
+    async fn new(env: Environment) -> Result<Self, DynError> {
+        let connection = Connection::system().await?;
+        let session_path = resolve_logind_session_path_for_env(env, &connection).await?;
+        let session_proxy = zbus::Proxy::new(
+            &connection,
+            LOGIND_BUS_NAME,
+            session_path.clone(),
+            LOGIND_SESSION_INTERFACE,
+        )
+        .await?;
+        let active: bool = session_proxy.get_property("Active").await?;
+        let session_type: String = session_proxy
+            .get_property("Type")
+            .await
+            .unwrap_or_else(|_| String::new());
+
+        let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
+            .destination(LOGIND_BUS_NAME)?
+            .path(session_path)?
+            .build()
+            .await?;
+        let mut signals = properties_proxy.receive_properties_changed().await?;
+
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let initial = LifecycleSnapshot {
+            active,
+            session_type: session_type.clone(),
+            session_kind: session_type_to_session_kind(active, &session_type),
+        };
+        sender
+            .send(initial)
+            .expect("lifecycle receiver dropped during provider init");
+
+        tokio::spawn(async move {
+            let mut last_active = active;
+            let mut last_type = session_type;
+            while let Some(signal) = signals.next().await {
+                let args = match signal.args() {
+                    Ok(args) => args,
+                    Err(error) => panic!("[Lifecycle] Failed to decode logind signal: {}", error),
+                };
+                let mut changed = false;
+
+                if let Some(value) = args.changed_properties.get("Active") {
+                    let parsed_active = match value.downcast_ref::<bool>() {
+                        Ok(parsed) => parsed,
+                        Err(_) => panic!("[Lifecycle] Failed to parse logind Active property"),
+                    };
+                    if parsed_active != last_active {
+                        last_active = parsed_active;
+                        changed = true;
+                    }
+                }
+
+                if let Some(value) = args.changed_properties.get("Type") {
+                    let parsed_type = if let Ok(parsed) = value.downcast_ref::<String>() {
+                        parsed
+                    } else if let Ok(parsed) = value.downcast_ref::<Str<'_>>() {
+                        parsed.to_string()
+                    } else {
+                        panic!("[Lifecycle] Failed to parse logind Type property");
+                    };
+                    if parsed_type != last_type {
+                        last_type = parsed_type;
+                        changed = true;
+                    }
+                }
+
+                if !changed {
+                    continue;
+                }
+
+                let snapshot = LifecycleSnapshot {
+                    active: last_active,
+                    session_type: last_type.clone(),
+                    session_kind: session_type_to_session_kind(last_active, &last_type),
+                };
+                if sender.send(snapshot).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Self { receiver })
+    }
+
+    async fn next_snapshot(&mut self) -> Option<LifecycleSnapshot> {
+        self.receiver.recv().await
+    }
+}
+
+#[derive(Debug)]
+enum LifecycleProvider {
+    Logind(LogindLifecycleProvider),
+    Startup(StartupSnapshotProvider),
+}
+
+impl LifecycleProvider {
+    async fn build(env: Environment) -> Self {
+        match LogindLifecycleProvider::new(env).await {
+            Ok(provider) => {
+                println!("[Lifecycle] Provider=logind (continuous)");
+                Self::Logind(provider)
+            }
+            Err(error) => {
+                eprintln!(
+                    "[Lifecycle] Provider=startup-snapshot (logind unavailable): {}",
+                    error
+                );
+                Self::Startup(StartupSnapshotProvider::new(env))
+            }
+        }
+    }
+
+    fn is_continuous(&self) -> bool {
+        matches!(self, Self::Logind(_))
+    }
+
+    async fn next_snapshot(&mut self) -> Option<LifecycleSnapshot> {
+        match self {
+            Self::Logind(provider) => provider.next_snapshot().await,
+            Self::Startup(provider) => provider.next_snapshot().await,
+        }
+    }
+}
+
+fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExit {
+    match outcome {
+        RunOutcome::Restart => BackendExit::Restart,
+        RunOutcome::Exit => BackendExit::Exit,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendExit {
+    Restart,
+    Exit,
+}
+
+#[derive(Clone)]
+struct BackendContext {
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+}
+
+struct BackendHandle {
+    kind: BackendKind,
+    shutdown_handle: ShutdownHandle,
+    join_handle: Option<tokio::task::JoinHandle<Result<BackendExit, DynError>>>,
+}
+
+impl BackendHandle {
+    fn is_finished(&self) -> bool {
+        match &self.join_handle {
+            Some(join_handle) => join_handle.is_finished(),
+            None => true,
+        }
+    }
+
+    async fn take_join_result(&mut self) -> Result<BackendExit, DynError> {
+        let join_handle = self
+            .join_handle
+            .take()
+            .expect("backend join handle missing");
+        let result = join_handle.await.map_err(|error| {
+            let message = format!("[Lifecycle] Backend task join failure: {}", error);
+            Box::<dyn std::error::Error + Send + Sync>::from(message)
+        })?;
+        result
+    }
+
+    async fn stop(&mut self) -> Result<BackendExit, DynError> {
+        if self.join_handle.is_none() {
+            return Ok(BackendExit::Exit);
+        }
+        self.shutdown_handle.request();
+        self.take_join_result().await
+    }
+}
+
+fn runtime_target_label(target: RuntimeTarget) -> &'static str {
+    match target {
+        RuntimeTarget::Idle => "idle",
+        RuntimeTarget::Backend(BackendKind::Gnome) => "gnome",
+        RuntimeTarget::Backend(BackendKind::Kde) => "kde",
+        RuntimeTarget::Backend(BackendKind::Wayland) => "wayland",
+        RuntimeTarget::Backend(BackendKind::X11) => "x11",
+        RuntimeTarget::Backend(BackendKind::LinuxConsole) => "linux-console",
+    }
+}
+
+async fn detect_desktop_capabilities() -> Result<DesktopCapabilities, DynError> {
+    let connection = Connection::session().await?;
+    let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
+    let gnome_owner = session_bus_name_has_owner(&dbus, GNOME_SHELL_BUS_NAME).await;
+    let kde_owner = session_bus_name_has_owner(&dbus, KDE_KWIN_BUS_NAME).await;
+    let gnome_focus_ready = if gnome_owner {
+        query_gnome_focus(&connection).await.is_ok()
+    } else {
+        false
+    };
+    Ok(DesktopCapabilities {
+        gnome_owner,
+        gnome_focus_ready,
+        kde_owner,
+    })
+}
+
+async fn resolve_runtime_target_for_snapshot(
+    snapshot: &LifecycleSnapshot,
+) -> Result<RuntimeTarget, DynError> {
+    let capabilities = if snapshot.session_kind == SessionKind::GraphicalWayland {
+        detect_desktop_capabilities().await?
+    } else {
+        DesktopCapabilities {
+            gnome_owner: false,
+            gnome_focus_ready: false,
+            kde_owner: false,
+        }
+    };
+    Ok(resolve_runtime_target(snapshot.session_kind, capabilities))
+}
+
+async fn run_gnome_backend_task(
+    context: BackendContext,
+    shutdown_handle: ShutdownHandle,
+) -> Result<BackendExit, DynError> {
+    let outcome = run_gnome(
+        context.kanata,
+        context.handler,
+        context.status_broadcaster,
+        context.restart_handle,
+        context.pause_broadcaster,
+        shutdown_handle,
+    )
+    .await?;
+    Ok(map_run_outcome_to_backend_exit(outcome))
+}
+
+async fn run_kde_backend_task(
+    context: BackendContext,
+    shutdown_handle: ShutdownHandle,
+) -> Result<BackendExit, DynError> {
+    let outcome = run_kde(
+        context.kanata,
+        context.handler,
+        context.status_broadcaster,
+        context.restart_handle,
+        context.pause_broadcaster,
+        shutdown_handle,
+    )
+    .await?;
+    Ok(map_run_outcome_to_backend_exit(outcome))
+}
+
+async fn run_wayland_backend_task(
+    context: BackendContext,
+    shutdown_handle: ShutdownHandle,
+) -> Result<BackendExit, DynError> {
+    let connection = Connection::session().await?;
+    let focus_query_connection = Connection::session().await?;
+    register_dbus_service(
+        &connection,
+        focus_query_connection,
+        Environment::Wayland,
+        false,
+        context.kanata.clone(),
+        context.handler.clone(),
+        context.status_broadcaster.clone(),
+        context.restart_handle.clone(),
+        context.pause_broadcaster.clone(),
+    )
+    .await?;
+    let _dbus_control_guard = DbusControlGuard::new(connection);
+    run_wayland(
+        context.kanata,
+        context.handler,
+        context.status_broadcaster,
+        context.pause_broadcaster,
+        shutdown_handle,
+    )
+    .await?;
+    Ok(BackendExit::Exit)
+}
+
+async fn run_x11_backend_task(
+    context: BackendContext,
+    shutdown_handle: ShutdownHandle,
+) -> Result<BackendExit, DynError> {
+    let connection = Connection::session().await?;
+    let focus_query_connection = Connection::session().await?;
+    register_dbus_service(
+        &connection,
+        focus_query_connection,
+        Environment::X11,
+        false,
+        context.kanata.clone(),
+        context.handler.clone(),
+        context.status_broadcaster.clone(),
+        context.restart_handle.clone(),
+        context.pause_broadcaster.clone(),
+    )
+    .await?;
+    let _dbus_control_guard = DbusControlGuard::new(connection);
+    run_x11(
+        context.kanata,
+        context.handler,
+        context.status_broadcaster,
+        context.pause_broadcaster,
+        shutdown_handle,
+    )
+    .await?;
+    Ok(BackendExit::Exit)
+}
+
+async fn run_linux_console_backend_task(
+    context: BackendContext,
+    shutdown_handle: ShutdownHandle,
+) -> Result<BackendExit, DynError> {
+    apply_focus_for_env(
+        Environment::LinuxConsoleWithLogind,
+        None,
+        false,
+        &context.handler,
+        &context.status_broadcaster,
+        &context.pause_broadcaster,
+        &context.kanata,
+    )
+    .await?;
+    let outcome = wait_for_restart_or_shutdown(&context.restart_handle, &shutdown_handle).await;
+    Ok(map_run_outcome_to_backend_exit(outcome))
+}
+
+async fn start_backend(
+    kind: BackendKind,
+    context: &BackendContext,
+) -> Result<BackendHandle, DynError> {
+    let shutdown_handle = ShutdownHandle::new();
+    let join_handle = match kind {
+        BackendKind::Gnome => {
+            let task_context = context.clone();
+            let task_shutdown = shutdown_handle.clone();
+            tokio::spawn(async move { run_gnome_backend_task(task_context, task_shutdown).await })
+        }
+        BackendKind::Kde => {
+            let task_context = context.clone();
+            let task_shutdown = shutdown_handle.clone();
+            tokio::spawn(async move { run_kde_backend_task(task_context, task_shutdown).await })
+        }
+        BackendKind::Wayland => {
+            let task_context = context.clone();
+            let task_shutdown = shutdown_handle.clone();
+            tokio::spawn(async move { run_wayland_backend_task(task_context, task_shutdown).await })
+        }
+        BackendKind::X11 => {
+            let task_context = context.clone();
+            let task_shutdown = shutdown_handle.clone();
+            tokio::spawn(async move { run_x11_backend_task(task_context, task_shutdown).await })
+        }
+        BackendKind::LinuxConsole => {
+            let task_context = context.clone();
+            let task_shutdown = shutdown_handle.clone();
+            tokio::spawn(async move {
+                run_linux_console_backend_task(task_context, task_shutdown).await
+            })
+        }
+    };
+
+    Ok(BackendHandle {
+        kind,
+        shutdown_handle,
+        join_handle: Some(join_handle),
+    })
+}
+
+struct SupervisorState {
+    current_target: RuntimeTarget,
+    backend: Option<BackendHandle>,
+}
+
+impl SupervisorState {
+    fn new() -> Self {
+        Self {
+            current_target: RuntimeTarget::Idle,
+            backend: None,
+        }
+    }
+}
+
+async fn transition_runtime_target(
+    state: &mut SupervisorState,
+    desired_target: RuntimeTarget,
+    context: &BackendContext,
+    reason: &str,
+) -> Result<(), DynError> {
+    if state.current_target == desired_target {
+        return Ok(());
+    }
+
+    println!(
+        "[LifecycleTransition] from={} to={} reason={}",
+        runtime_target_label(state.current_target),
+        runtime_target_label(desired_target),
+        reason
+    );
+
+    if let Some(mut backend) = state.backend.take() {
+        let exit = backend.stop().await?;
+        if exit == BackendExit::Restart {
+            context.restart_handle.request();
+        }
+    }
+
+    if let RuntimeTarget::Backend(kind) = desired_target {
+        let backend = start_backend(kind, context).await?;
+        state.backend = Some(backend);
+    }
+
+    state.current_target = desired_target;
+    Ok(())
+}
+
+async fn stop_current_backend(
+    state: &mut SupervisorState,
+    context: &BackendContext,
+) -> Result<(), DynError> {
+    if let Some(mut backend) = state.backend.take() {
+        let exit = backend.stop().await?;
+        if exit == BackendExit::Restart {
+            context.restart_handle.request();
+        }
+    }
+    state.current_target = RuntimeTarget::Idle;
+    Ok(())
+}
+
+async fn run_lifecycle_supervisor(
+    mut provider: LifecycleProvider,
+    context: BackendContext,
+    restart_handle: RestartHandle,
+    shutdown_handle: ShutdownHandle,
+) -> Result<RunOutcome, DynError> {
+    let mut state = SupervisorState::new();
+    let mut restart_receiver = restart_handle.subscribe();
+    let mut shutdown_receiver = shutdown_handle.subscribe();
+    let mut provider_open = true;
+
+    loop {
+        if *shutdown_receiver.borrow() {
+            stop_current_backend(&mut state, &context).await?;
+            return Ok(RunOutcome::Exit);
+        }
+        if *restart_receiver.borrow() {
+            stop_current_backend(&mut state, &context).await?;
+            return Ok(RunOutcome::Restart);
+        }
+
+        if let Some(backend) = state.backend.as_mut() {
+            if backend.is_finished() {
+                let exit = backend.take_join_result().await?;
+                let kind = backend.kind;
+                state.backend = None;
+                state.current_target = RuntimeTarget::Idle;
+                return match exit {
+                    BackendExit::Restart => Ok(RunOutcome::Restart),
+                    BackendExit::Exit => {
+                        Err(format!("[Lifecycle] backend {:?} exited unexpectedly", kind).into())
+                    }
+                };
+            }
+        }
+
+        if provider_open {
+            tokio::select! {
+                _ = shutdown_receiver.changed() => {}
+                _ = restart_receiver.changed() => {}
+                next_snapshot = provider.next_snapshot() => {
+                    match next_snapshot {
+                        Some(snapshot) => {
+                            let desired_target = resolve_runtime_target_for_snapshot(&snapshot).await?;
+                            let reason = format!(
+                                "active={} type={} kind={:?}",
+                                snapshot.active,
+                                snapshot.session_type,
+                                snapshot.session_kind
+                            );
+                            transition_runtime_target(&mut state, desired_target, &context, &reason).await?;
+                        }
+                        None => {
+                            provider_open = false;
+                        }
+                    }
+                }
+            }
+        } else {
+            tokio::select! {
+                _ = shutdown_receiver.changed() => {}
+                _ = restart_receiver.changed() => {}
+            }
         }
     }
 }
@@ -3253,6 +3789,128 @@ pub enum Environment {
 enum RunOutcome {
     Restart,
     Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionKind {
+    NoSession,
+    GraphicalX11,
+    GraphicalWayland,
+    NativeTerminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopFlavor {
+    Gnome,
+    Kde,
+    GenericWayland,
+    X11,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendKind {
+    Gnome,
+    Kde,
+    Wayland,
+    X11,
+    LinuxConsole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeTarget {
+    Backend(BackendKind),
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DesktopCapabilities {
+    gnome_owner: bool,
+    gnome_focus_ready: bool,
+    kde_owner: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LifecycleSnapshot {
+    active: bool,
+    session_type: String,
+    session_kind: SessionKind,
+}
+
+fn session_type_to_session_kind(active: bool, session_type: &str) -> SessionKind {
+    if !active {
+        return SessionKind::NoSession;
+    }
+    match session_type {
+        "tty" => SessionKind::NativeTerminal,
+        "x11" => SessionKind::GraphicalX11,
+        "wayland" => SessionKind::GraphicalWayland,
+        _ => SessionKind::NoSession,
+    }
+}
+
+fn resolve_desktop_flavor(
+    session_kind: SessionKind,
+    capabilities: DesktopCapabilities,
+) -> DesktopFlavor {
+    match session_kind {
+        SessionKind::GraphicalX11 => DesktopFlavor::X11,
+        SessionKind::GraphicalWayland => {
+            if capabilities.gnome_owner && capabilities.gnome_focus_ready {
+                DesktopFlavor::Gnome
+            } else if capabilities.kde_owner {
+                DesktopFlavor::Kde
+            } else {
+                DesktopFlavor::GenericWayland
+            }
+        }
+        SessionKind::NativeTerminal | SessionKind::NoSession => DesktopFlavor::Unknown,
+    }
+}
+
+fn resolve_runtime_target(
+    session_kind: SessionKind,
+    capabilities: DesktopCapabilities,
+) -> RuntimeTarget {
+    match session_kind {
+        SessionKind::NoSession => RuntimeTarget::Idle,
+        SessionKind::NativeTerminal => RuntimeTarget::Backend(BackendKind::LinuxConsole),
+        SessionKind::GraphicalX11 => RuntimeTarget::Backend(BackendKind::X11),
+        SessionKind::GraphicalWayland => match resolve_desktop_flavor(session_kind, capabilities) {
+            DesktopFlavor::Gnome => RuntimeTarget::Backend(BackendKind::Gnome),
+            DesktopFlavor::Kde => RuntimeTarget::Backend(BackendKind::Kde),
+            DesktopFlavor::GenericWayland => RuntimeTarget::Backend(BackendKind::Wayland),
+            DesktopFlavor::X11 => RuntimeTarget::Backend(BackendKind::X11),
+            DesktopFlavor::Unknown => RuntimeTarget::Idle,
+        },
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn target_requires_session_bus(target: RuntimeTarget) -> bool {
+    match target {
+        RuntimeTarget::Backend(BackendKind::Gnome)
+        | RuntimeTarget::Backend(BackendKind::Kde)
+        | RuntimeTarget::Backend(BackendKind::Wayland)
+        | RuntimeTarget::Backend(BackendKind::X11) => true,
+        RuntimeTarget::Backend(BackendKind::LinuxConsole) | RuntimeTarget::Idle => false,
+    }
+}
+
+fn startup_environment_to_snapshot(env: Environment) -> LifecycleSnapshot {
+    let (active, session_type) = match env {
+        Environment::Gnome | Environment::Kde | Environment::Wayland => (true, "wayland"),
+        Environment::X11 => (true, "x11"),
+        Environment::LinuxConsoleWithLogind => (true, "tty"),
+        Environment::Unknown => (false, ""),
+    };
+    let session_type = session_type.to_string();
+    let session_kind = session_type_to_session_kind(active, &session_type);
+    LifecycleSnapshot {
+        active,
+        session_type,
+        session_kind,
+    }
 }
 
 impl Environment {
@@ -4956,14 +5614,6 @@ async fn run_gnome(
     Ok(outcome)
 }
 
-async fn run_linux_console_with_logind(
-    restart_handle: RestartHandle,
-    shutdown_handle: ShutdownHandle,
-) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
-    let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
-    Ok(outcome)
-}
-
 // === KDE Backend ===
 
 #[derive(Debug)]
@@ -5267,67 +5917,18 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     );
     kanata.connect_with_retry().await;
 
-    let needs_focus_handler =
-        !matches!(detected_env, Environment::Unknown) || config.native_terminal_rule.is_some();
-    let focus_handler = if !needs_focus_handler {
-        None
-    } else {
-        Some(Arc::new(Mutex::new(FocusHandler::new(
-            config.rules.clone(),
-            config.native_terminal_rule.clone(),
-            quiet_focus,
-        ))))
-    };
+    let focus_handler = Arc::new(Mutex::new(FocusHandler::new(
+        config.rules.clone(),
+        config.native_terminal_rule.clone(),
+        quiet_focus,
+    )));
 
-    let mut env = detected_env;
-    if let Some(handler) = focus_handler.clone() {
-        let session_connection = if matches!(detected_env, Environment::Gnome | Environment::Kde) {
-            Some(Connection::session().await?)
-        } else {
-            None
-        };
-        let is_kde6 = env::var("KDE_SESSION_VERSION")
-            .map(|v| v == "6")
-            .unwrap_or(false);
-        let logind_enabled = start_logind_session_monitor_best_effort(
-            detected_env,
-            session_connection,
-            is_kde6,
-            handler,
-            status_broadcaster.clone(),
-            pause_broadcaster.clone(),
-            kanata.clone(),
-            start_logind_session_monitor,
-        )
-        .await;
-        if detected_env == Environment::Unknown && logind_enabled {
-            env = Environment::LinuxConsoleWithLogind;
-        }
+    let lifecycle_provider = LifecycleProvider::build(detected_env).await;
+    if !lifecycle_provider.is_continuous() && detected_env == Environment::Unknown {
+        eprintln!("[Error] Could not detect display environment");
+        eprintln!("[Error] login1 unavailable and no startup graphical environment detected");
+        std::process::exit(1);
     }
-
-    let dbus_control_guard = if matches!(env, Environment::Wayland | Environment::X11) {
-        let handler = focus_handler
-            .clone()
-            .expect("Focus handler missing for DBus control service");
-        let connection = Connection::session().await?;
-        let focus_query_connection = Connection::session().await?;
-        register_dbus_service(
-            &connection,
-            focus_query_connection,
-            env,
-            false,
-            kanata.clone(),
-            handler,
-            status_broadcaster.clone(),
-            restart_handle.clone(),
-            pause_broadcaster.clone(),
-        )
-        .await?;
-        Some(DbusControlGuard::new(connection))
-    } else {
-        None
-    };
-    let _dbus_control_guard = dbus_control_guard;
 
     // Create shutdown guard - will switch to default layer when dropped
     let _shutdown_guard = ShutdownGuard::new(kanata.clone());
@@ -5357,13 +5958,13 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         shutdown_handle_for_signal.request();
     });
 
-    let enable_indicator = !args.no_indicator && env != Environment::Gnome;
-    if args.no_indicator && env != Environment::Gnome {
+    let enable_indicator = !args.no_indicator && detected_env != Environment::Gnome;
+    if args.no_indicator && detected_env != Environment::Gnome {
         println!("[SNI] Indicator disabled via --no-indicator");
     }
 
     let sni_control = if enable_indicator {
-        match env {
+        match detected_env {
             Environment::Kde => match Connection::session().await {
                 Ok(connection) => Some(SniControl::Dbus(SniDbusControl {
                     runtime_handle: runtime_handle.clone(),
@@ -5376,9 +5977,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                 }
             },
             Environment::Wayland | Environment::X11 => {
-                let handler = focus_handler
-                    .clone()
-                    .expect("Focus handler missing for non-GNOME backend");
+                let handler = focus_handler.clone();
                 Some(SniControl::Local(SniLocalControl {
                     runtime_handle: runtime_handle.clone(),
                     kanata: kanata.clone(),
@@ -5386,7 +5985,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
                     status_broadcaster: status_broadcaster.clone(),
                     pause_broadcaster: pause_broadcaster.clone(),
                     restart_handle: restart_handle.clone(),
-                    env,
+                    env: detected_env,
                     connection: None,
                     is_kde6: false,
                 }))
@@ -5407,68 +6006,21 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     });
     let _sni_guard = SniGuard::new(sni_handle);
 
-    match env {
-        Environment::Gnome => {
-            let handler = focus_handler.expect("Focus handler missing for GNOME backend");
-            return run_gnome(
-                kanata,
-                handler,
-                status_broadcaster,
-                restart_handle,
-                pause_broadcaster,
-                shutdown_handle,
-            )
-            .await;
-        }
-        Environment::Kde => {
-            let handler = focus_handler.expect("Focus handler missing for KDE backend");
-            return run_kde(
-                kanata,
-                handler,
-                status_broadcaster,
-                restart_handle,
-                pause_broadcaster,
-                shutdown_handle,
-            )
-            .await;
-        }
-        Environment::Wayland => {
-            let handler = focus_handler.expect("Focus handler missing for Wayland backend");
-            run_wayland(
-                kanata,
-                handler,
-                status_broadcaster,
-                pause_broadcaster,
-                shutdown_handle,
-            )
-            .await?;
-        }
-        Environment::X11 => {
-            let handler = focus_handler.expect("Focus handler missing for X11 backend");
-            run_x11(
-                kanata,
-                handler,
-                status_broadcaster,
-                pause_broadcaster,
-                shutdown_handle,
-            )
-            .await?;
-        }
-        Environment::LinuxConsoleWithLogind => {
-            return run_linux_console_with_logind(
-                restart_handle,
-                shutdown_handle,
-            )
-            .await;
-        }
-        Environment::Unknown => {
-            eprintln!("[Error] Could not detect display environment");
-            eprintln!("[Error] Ensure WAYLAND_DISPLAY or DISPLAY is set");
-            std::process::exit(1);
-        }
-    }
+    let backend_context = BackendContext {
+        kanata,
+        handler: focus_handler,
+        status_broadcaster,
+        restart_handle: restart_handle.clone(),
+        pause_broadcaster,
+    };
 
-    Ok(RunOutcome::Exit)
+    run_lifecycle_supervisor(
+        lifecycle_provider,
+        backend_context,
+        restart_handle,
+        shutdown_handle,
+    )
+    .await
 }
 
 // === Tests ===

@@ -46,6 +46,11 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 | X11                                  | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
 | Linux console (VT switch)            | Daemon monitors session state via systemd-logind DBus interface   |
 
+### Lifecycle Behavior
+
+- With `org.freedesktop.login1` available (systemd-logind/elogind), the daemon continuously tracks session lifecycle (`tty`/`wayland`/`x11` + active/inactive) and transitions backends internally without systemd restart helper services.
+- Without login1, backend selection is startup-only: the daemon picks one backend at launch and does not continuously adapt to later session/desktop changes.
+
 ### Prerequisites
 
 1. Kanata running with TCP server enabled:
@@ -116,7 +121,7 @@ Example config:
 - Can include `virtual_key` and/or `raw_vk_action`
 - Can appear at most once (multiple = error), position doesn't matter
 - When absent, daemon switches to the default layer (explicit or auto-detected)
-- If systemd-logind is unavailable (no system bus, permissions, etc.), the daemon keeps running but Linux console-based switching is disabled; a warning will be logged on startup.
+- If systemd-logind/elogind is unavailable, backend selection is startup-only and Linux console transitions are not monitored continuously.
 
 **Virtual keys:**
 

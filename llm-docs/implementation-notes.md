@@ -10,6 +10,7 @@
 6. **CLI control commands** - `--restart`, `--pause`, `--unpause` send DBus requests to an existing daemon and exit
 7. **SNI indicator for non-GNOME** - StatusNotifier item with Pause/Restart and “Show app layer only” menu toggle (disable with `--no-indicator`)
 8. **Autostart fallback** - `--install-autostart` writes a user autostart `.desktop` entry with the daemon args you passed (absolute Exec path); `--uninstall-autostart` removes it
+9. **Runtime lifecycle supervision** - backend transitions are controlled in-daemon via lifecycle providers (logind continuous mode, startup-snapshot fallback mode)
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 
@@ -112,12 +113,18 @@ When all windows are closed (no window focused), the daemon switches to the defa
 
 ## Native Terminal Handling
 
-The daemon watches `org.freedesktop.login1.Session.Active` on the system bus. When the session becomes inactive (Ctrl+Alt+F*), it applies the `on_native_terminal` rule if present, otherwise it behaves like an unfocused state. When the session becomes active again, it refreshes focus by querying the backend (GNOME GetFocus DBus, KDE script callback, Wayland/X11 active-window query).
+When login1 is available, the daemon watches `org.freedesktop.login1.Session.Active` and `Type` on the system bus and transitions runtime targets internally:
+- active `tty` -> Linux console backend
+- active `wayland` -> GNOME/KDE/generic Wayland backend (owner/readiness-probed)
+- active `x11` -> X11 backend
+- inactive -> Idle (no focus backend running)
+
+On Linux console activation it applies `on_native_terminal` focus actions; when returning to graphical sessions, backend startup performs initial focus sync.
 
 Session resolution prefers `XDG_SESSION_ID`, otherwise `GetSessionByPID`. If the PID is not in a logind session (common for systemd user services with lingering), it falls back to the user’s `Display` session via `GetUserByPID` + `org.freedesktop.login1.User.Display`.
 Logind replies are decoded by inspecting the reply signature (accepting `o`, `s`, `v`, or structures containing an object path) to tolerate object paths returned as a direct value, a structure (single- or multi-field), or a string.
 
-If logind monitoring fails to start (no system bus, permissions, etc.), the daemon logs the error and continues without native terminal switching.
+If login1 is unavailable, the daemon falls back to startup-only provider mode: it picks one backend from startup env and does not continuously adapt to later lifecycle transitions.
 
 ## X11 Backend
 
