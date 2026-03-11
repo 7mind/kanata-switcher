@@ -3,7 +3,9 @@ use clap::Parser;
 use proptest::prelude::*;
 use std::future::Future;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, watch};
 use zbus::Message;
 
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -2207,6 +2209,43 @@ fn test_backend_context() -> BackendContext {
     }
 }
 
+fn test_running_backend_handle(kind: BackendKind, stopped: Arc<AtomicBool>) -> BackendHandle {
+    let shutdown_handle = ShutdownHandle::new();
+    let mut receiver = shutdown_handle.subscribe();
+    let (finished_tx, finished_rx) = watch::channel(false);
+    let join_handle = tokio::spawn(async move {
+        while !*receiver.borrow() {
+            if receiver.changed().await.is_err() {
+                break;
+            }
+        }
+        stopped.store(true, Ordering::SeqCst);
+        let _ = finished_tx.send(true);
+        Ok(BackendExit::Exit)
+    });
+    BackendHandle {
+        kind,
+        shutdown_handle,
+        join_handle: Some(join_handle),
+        finished_rx,
+    }
+}
+
+fn test_finished_backend_handle(kind: BackendKind, exit: BackendExit) -> BackendHandle {
+    let shutdown_handle = ShutdownHandle::new();
+    let (finished_tx, finished_rx) = watch::channel(false);
+    let join_handle = tokio::spawn(async move {
+        let _ = finished_tx.send(true);
+        Ok(exit)
+    });
+    BackendHandle {
+        kind,
+        shutdown_handle,
+        join_handle: Some(join_handle),
+        finished_rx,
+    }
+}
+
 #[test]
 fn test_session_type_to_session_kind_mappings() {
     assert!(session_type_indicates_native_terminal("tty"));
@@ -2231,6 +2270,70 @@ fn test_session_type_to_session_kind_mappings() {
         session_type_to_session_kind(false, "wayland"),
         SessionKind::NoSession
     );
+}
+
+#[test]
+fn test_active_unknown_session_type_resolves_to_idle_target() {
+    let session_kind = session_type_to_session_kind(true, "mir");
+    assert_eq!(session_kind, SessionKind::NoSession);
+    let target = resolve_runtime_target(
+        session_kind,
+        DesktopCapabilities {
+            gnome_owner: false,
+            gnome_focus_ready: false,
+            kde_owner: false,
+        },
+    );
+    assert_eq!(target, RuntimeTarget::Idle);
+}
+
+#[test]
+fn test_decode_logind_change_emits_on_type_change_without_active_change() {
+    use zbus::zvariant::{Str, Value};
+
+    let type_value = Value::from(Str::from("x11"));
+    let snapshot =
+        decode_logind_lifecycle_snapshot_change(true, "wayland", None, Some(&type_value))
+            .expect("type change should emit snapshot");
+    assert!(snapshot.active);
+    assert_eq!(snapshot.session_type, "x11");
+    assert_eq!(snapshot.session_kind, SessionKind::GraphicalX11);
+}
+
+#[test]
+fn test_decode_logind_change_skips_duplicate_active_and_type_values() {
+    use zbus::zvariant::{Str, Value};
+
+    let active_value = Value::from(true);
+    let type_value = Value::from(Str::from("wayland"));
+    assert!(
+        decode_logind_lifecycle_snapshot_change(
+            true,
+            "wayland",
+            Some(&active_value),
+            Some(&type_value)
+        )
+        .is_none(),
+        "duplicate values should not emit snapshots"
+    );
+}
+
+#[test]
+#[should_panic(expected = "Failed to parse logind Active property")]
+fn test_decode_logind_change_panics_on_invalid_active_value() {
+    use zbus::zvariant::{Str, Value};
+
+    let active_value = Value::from(Str::from("true"));
+    let _ = decode_logind_lifecycle_snapshot_change(true, "wayland", Some(&active_value), None);
+}
+
+#[test]
+#[should_panic(expected = "Failed to parse logind Type property")]
+fn test_decode_logind_change_panics_on_invalid_type_value() {
+    use zbus::zvariant::Value;
+
+    let type_value = Value::from(7i32);
+    let _ = decode_logind_lifecycle_snapshot_change(true, "wayland", None, Some(&type_value));
 }
 
 #[test]
@@ -2509,6 +2612,97 @@ async fn test_transition_runtime_target_noop_on_same_target() {
 }
 
 #[tokio::test]
+async fn test_transition_runtime_target_no_churn_on_same_target_with_running_backend() {
+    with_test_timeout(async {
+        let context = test_backend_context();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let backend = test_running_backend_handle(BackendKind::LinuxConsole, stopped.clone());
+
+        let mut state = SupervisorState::new();
+        state.current_target = RuntimeTarget::Backend(BackendKind::LinuxConsole);
+        state.backend = Some(backend);
+
+        transition_runtime_target(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::LinuxConsole),
+            &context,
+            "same-target",
+        )
+        .await
+        .expect("same-target transition should be noop");
+
+        assert_eq!(
+            state.current_target,
+            RuntimeTarget::Backend(BackendKind::LinuxConsole)
+        );
+        assert!(state.backend.is_some());
+        assert!(
+            !stopped.load(Ordering::SeqCst),
+            "backend should not be stopped on same-target transition"
+        );
+
+        stop_current_backend(&mut state, &context)
+            .await
+            .expect("cleanup stop should succeed");
+        assert!(stopped.load(Ordering::SeqCst));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_transition_runtime_target_stops_old_before_starting_new() {
+    with_test_timeout(async {
+        let context = test_backend_context();
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let old_backend = test_running_backend_handle(BackendKind::X11, old_stopped.clone());
+
+        let mut state = SupervisorState::new();
+        state.current_target = RuntimeTarget::Backend(BackendKind::X11);
+        state.backend = Some(old_backend);
+
+        let started = Arc::new(AtomicBool::new(false));
+        let started_clone = started.clone();
+        let old_stopped_clone = old_stopped.clone();
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::LinuxConsole),
+            &context,
+            "ordering-test",
+            move |kind, _| {
+                let started = started_clone.clone();
+                let old_stopped = old_stopped_clone.clone();
+                async move {
+                    assert!(
+                        old_stopped.load(Ordering::SeqCst),
+                        "starter must run only after previous backend is fully stopped"
+                    );
+                    started.store(true, Ordering::SeqCst);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+        )
+        .await
+        .expect("transition should succeed");
+
+        assert!(old_stopped.load(Ordering::SeqCst));
+        assert!(started.load(Ordering::SeqCst));
+        assert_eq!(
+            state.current_target,
+            RuntimeTarget::Backend(BackendKind::LinuxConsole)
+        );
+        assert!(state.backend.is_some());
+
+        stop_current_backend(&mut state, &context)
+            .await
+            .expect("cleanup stop should succeed");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_stop_current_backend_with_no_backend_is_noop() {
     with_test_timeout(async {
         let context = test_backend_context();
@@ -2596,6 +2790,157 @@ async fn test_run_lifecycle_supervisor_shutdown_after_startup_provider_exhausted
             .expect("supervisor task join")
             .expect("supervisor should return outcome");
         assert_eq!(outcome, RunOutcome::Exit);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_poll_finished_backend_outcome_returns_restart() {
+    with_test_timeout(async {
+        let mut state = SupervisorState::new();
+        state.current_target = RuntimeTarget::Backend(BackendKind::LinuxConsole);
+        state.backend = Some(test_finished_backend_handle(
+            BackendKind::LinuxConsole,
+            BackendExit::Restart,
+        ));
+        for _ in 0..10 {
+            if state
+                .backend
+                .as_ref()
+                .expect("backend should be set")
+                .is_finished()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let outcome = poll_finished_backend_outcome(&mut state)
+            .await
+            .expect("finished backend poll should succeed");
+        assert_eq!(outcome, Some(RunOutcome::Restart));
+        assert!(state.backend.is_none());
+        assert_eq!(state.current_target, RuntimeTarget::Idle);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_poll_finished_backend_outcome_errors_on_unexpected_exit() {
+    with_test_timeout(async {
+        let mut state = SupervisorState::new();
+        state.current_target = RuntimeTarget::Backend(BackendKind::X11);
+        state.backend = Some(test_finished_backend_handle(
+            BackendKind::X11,
+            BackendExit::Exit,
+        ));
+        for _ in 0..10 {
+            if state
+                .backend
+                .as_ref()
+                .expect("backend should be set")
+                .is_finished()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let result = poll_finished_backend_outcome(&mut state).await;
+        assert!(
+            result.is_err(),
+            "unexpected backend exit should be an error"
+        );
+        let message = result.err().expect("error expected").to_string();
+        assert!(
+            message.contains("exited unexpectedly"),
+            "unexpected exit error should mention regression context"
+        );
+        assert!(state.backend.is_none());
+        assert_eq!(state.current_target, RuntimeTarget::Idle);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_shutdown_wins_race_while_backend_running() {
+    with_test_timeout(async {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(LifecycleSnapshot {
+                active: true,
+                session_type: "tty".to_string(),
+                session_kind: SessionKind::NativeTerminal,
+            })
+            .expect("snapshot send should succeed");
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor(
+            provider,
+            context,
+            restart_handle.clone(),
+            shutdown_handle.clone(),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        restart_handle.request();
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Exit);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_wakes_on_backend_completion_after_provider_exhausts() {
+    with_test_timeout(async {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(LifecycleSnapshot {
+                active: true,
+                session_type: "tty".to_string(),
+                session_kind: SessionKind::NativeTerminal,
+            })
+            .expect("snapshot send should succeed");
+        drop(sender);
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+
+        let outcome = run_lifecycle_supervisor_with_starter(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle,
+            |kind, _context| async move {
+                let shutdown_handle = ShutdownHandle::new();
+                let (finished_tx, finished_rx) = watch::channel(false);
+                let join_handle = tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    let _ = finished_tx.send(true);
+                    Ok(BackendExit::Restart)
+                });
+
+                Ok(BackendHandle {
+                    kind,
+                    shutdown_handle,
+                    join_handle: Some(join_handle),
+                    finished_rx,
+                })
+            },
+        )
+        .await
+        .expect("supervisor should observe backend completion");
+
+        assert_eq!(outcome, RunOutcome::Restart);
     })
     .await;
 }

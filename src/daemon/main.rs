@@ -2387,42 +2387,17 @@ impl LogindLifecycleProvider {
                     Ok(args) => args,
                     Err(error) => panic!("[Lifecycle] Failed to decode logind signal: {}", error),
                 };
-                let mut changed = false;
-
-                if let Some(value) = args.changed_properties.get("Active") {
-                    let parsed_active = match value.downcast_ref::<bool>() {
-                        Ok(parsed) => parsed,
-                        Err(_) => panic!("[Lifecycle] Failed to parse logind Active property"),
-                    };
-                    if parsed_active != last_active {
-                        last_active = parsed_active;
-                        changed = true;
-                    }
-                }
-
-                if let Some(value) = args.changed_properties.get("Type") {
-                    let parsed_type = if let Ok(parsed) = value.downcast_ref::<String>() {
-                        parsed
-                    } else if let Ok(parsed) = value.downcast_ref::<Str<'_>>() {
-                        parsed.to_string()
-                    } else {
-                        panic!("[Lifecycle] Failed to parse logind Type property");
-                    };
-                    if parsed_type != last_type {
-                        last_type = parsed_type;
-                        changed = true;
-                    }
-                }
-
-                if !changed {
+                let snapshot = decode_logind_lifecycle_snapshot_change(
+                    last_active,
+                    &last_type,
+                    args.changed_properties.get("Active"),
+                    args.changed_properties.get("Type"),
+                );
+                let Some(snapshot) = snapshot else {
                     continue;
-                }
-
-                let snapshot = LifecycleSnapshot {
-                    active: last_active,
-                    session_type: last_type.clone(),
-                    session_kind: session_type_to_session_kind(last_active, &last_type),
                 };
+                last_active = snapshot.active;
+                last_type = snapshot.session_type.clone();
                 if sender.send(snapshot).is_err() {
                     break;
                 }
@@ -2435,6 +2410,52 @@ impl LogindLifecycleProvider {
     async fn next_snapshot(&mut self) -> Option<LifecycleSnapshot> {
         self.receiver.recv().await
     }
+}
+
+fn decode_logind_lifecycle_snapshot_change(
+    last_active: bool,
+    last_type: &str,
+    active_value: Option<&Value<'_>>,
+    type_value: Option<&Value<'_>>,
+) -> Option<LifecycleSnapshot> {
+    let mut next_active = last_active;
+    let mut next_type = last_type.to_string();
+    let mut changed = false;
+
+    if let Some(value) = active_value {
+        let parsed_active = match value.downcast_ref::<bool>() {
+            Ok(parsed) => parsed,
+            Err(_) => panic!("[Lifecycle] Failed to parse logind Active property"),
+        };
+        if parsed_active != last_active {
+            next_active = parsed_active;
+            changed = true;
+        }
+    }
+
+    if let Some(value) = type_value {
+        let parsed_type = if let Ok(parsed) = value.downcast_ref::<String>() {
+            parsed
+        } else if let Ok(parsed) = value.downcast_ref::<Str<'_>>() {
+            parsed.to_string()
+        } else {
+            panic!("[Lifecycle] Failed to parse logind Type property");
+        };
+        if parsed_type != last_type {
+            next_type = parsed_type;
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+
+    Some(LifecycleSnapshot {
+        active: next_active,
+        session_type: next_type.clone(),
+        session_kind: session_type_to_session_kind(next_active, &next_type),
+    })
 }
 
 #[derive(Debug)]
@@ -2498,6 +2519,7 @@ struct BackendHandle {
     kind: BackendKind,
     shutdown_handle: ShutdownHandle,
     join_handle: Option<tokio::task::JoinHandle<Result<BackendExit, DynError>>>,
+    finished_rx: watch::Receiver<bool>,
 }
 
 impl BackendHandle {
@@ -2526,6 +2548,10 @@ impl BackendHandle {
         }
         self.shutdown_handle.request();
         self.take_join_result().await
+    }
+
+    fn finished_receiver(&self) -> watch::Receiver<bool> {
+        self.finished_rx.clone()
     }
 }
 
@@ -2687,32 +2713,56 @@ async fn start_backend(
     context: &BackendContext,
 ) -> Result<BackendHandle, DynError> {
     let shutdown_handle = ShutdownHandle::new();
+    let (finished_tx, finished_rx) = watch::channel(false);
     let join_handle = match kind {
         BackendKind::Gnome => {
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
-            tokio::spawn(async move { run_gnome_backend_task(task_context, task_shutdown).await })
+            let task_finished = finished_tx.clone();
+            tokio::spawn(async move {
+                let result = run_gnome_backend_task(task_context, task_shutdown).await;
+                let _ = task_finished.send(true);
+                result
+            })
         }
         BackendKind::Kde => {
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
-            tokio::spawn(async move { run_kde_backend_task(task_context, task_shutdown).await })
+            let task_finished = finished_tx.clone();
+            tokio::spawn(async move {
+                let result = run_kde_backend_task(task_context, task_shutdown).await;
+                let _ = task_finished.send(true);
+                result
+            })
         }
         BackendKind::Wayland => {
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
-            tokio::spawn(async move { run_wayland_backend_task(task_context, task_shutdown).await })
+            let task_finished = finished_tx.clone();
+            tokio::spawn(async move {
+                let result = run_wayland_backend_task(task_context, task_shutdown).await;
+                let _ = task_finished.send(true);
+                result
+            })
         }
         BackendKind::X11 => {
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
-            tokio::spawn(async move { run_x11_backend_task(task_context, task_shutdown).await })
+            let task_finished = finished_tx.clone();
+            tokio::spawn(async move {
+                let result = run_x11_backend_task(task_context, task_shutdown).await;
+                let _ = task_finished.send(true);
+                result
+            })
         }
         BackendKind::LinuxConsole => {
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
+            let task_finished = finished_tx.clone();
             tokio::spawn(async move {
-                run_linux_console_backend_task(task_context, task_shutdown).await
+                let result = run_linux_console_backend_task(task_context, task_shutdown).await;
+                let _ = task_finished.send(true);
+                result
             })
         }
     };
@@ -2721,6 +2771,7 @@ async fn start_backend(
         kind,
         shutdown_handle,
         join_handle: Some(join_handle),
+        finished_rx,
     })
 }
 
@@ -2738,12 +2789,34 @@ impl SupervisorState {
     }
 }
 
+#[cfg(test)]
 async fn transition_runtime_target(
     state: &mut SupervisorState,
     desired_target: RuntimeTarget,
     context: &BackendContext,
     reason: &str,
 ) -> Result<(), DynError> {
+    transition_runtime_target_with_starter(
+        state,
+        desired_target,
+        context,
+        reason,
+        |kind, context| async move { start_backend(kind, &context).await },
+    )
+    .await
+}
+
+async fn transition_runtime_target_with_starter<F, Fut>(
+    state: &mut SupervisorState,
+    desired_target: RuntimeTarget,
+    context: &BackendContext,
+    reason: &str,
+    starter: F,
+) -> Result<(), DynError>
+where
+    F: Fn(BackendKind, BackendContext) -> Fut,
+    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
+{
     if state.current_target == desired_target {
         return Ok(());
     }
@@ -2765,7 +2838,7 @@ async fn transition_runtime_target(
     }
 
     if let RuntimeTarget::Backend(kind) = desired_target {
-        let backend = start_backend(kind, context).await?;
+        let backend = starter(kind, context.clone()).await?;
         state.backend = Some(backend);
     }
 
@@ -2788,11 +2861,32 @@ async fn stop_current_backend(
 }
 
 async fn run_lifecycle_supervisor(
-    mut provider: LifecycleProvider,
+    provider: LifecycleProvider,
     context: BackendContext,
     restart_handle: RestartHandle,
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, DynError> {
+    run_lifecycle_supervisor_with_starter(
+        provider,
+        context,
+        restart_handle,
+        shutdown_handle,
+        |kind, context| async move { start_backend(kind, &context).await },
+    )
+    .await
+}
+
+async fn run_lifecycle_supervisor_with_starter<F, Fut>(
+    mut provider: LifecycleProvider,
+    context: BackendContext,
+    restart_handle: RestartHandle,
+    shutdown_handle: ShutdownHandle,
+    starter: F,
+) -> Result<RunOutcome, DynError>
+where
+    F: Fn(BackendKind, BackendContext) -> Fut,
+    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
+{
     let mut state = SupervisorState::new();
     let mut restart_receiver = restart_handle.subscribe();
     let mut shutdown_receiver = shutdown_handle.subscribe();
@@ -2808,25 +2902,19 @@ async fn run_lifecycle_supervisor(
             return Ok(RunOutcome::Restart);
         }
 
-        if let Some(backend) = state.backend.as_mut() {
-            if backend.is_finished() {
-                let exit = backend.take_join_result().await?;
-                let kind = backend.kind;
-                state.backend = None;
-                state.current_target = RuntimeTarget::Idle;
-                return match exit {
-                    BackendExit::Restart => Ok(RunOutcome::Restart),
-                    BackendExit::Exit => {
-                        Err(format!("[Lifecycle] backend {:?} exited unexpectedly", kind).into())
-                    }
-                };
-            }
+        if let Some(outcome) = poll_finished_backend_outcome(&mut state).await? {
+            return Ok(outcome);
         }
 
+        let mut backend_finished = state
+            .backend
+            .as_ref()
+            .map(|backend| backend.finished_receiver());
         if provider_open {
             tokio::select! {
                 _ = shutdown_receiver.changed() => {}
                 _ = restart_receiver.changed() => {}
+                _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
                 next_snapshot = provider.next_snapshot() => {
                     match next_snapshot {
                         Some(snapshot) => {
@@ -2837,7 +2925,14 @@ async fn run_lifecycle_supervisor(
                                 snapshot.session_type,
                                 snapshot.session_kind
                             );
-                            transition_runtime_target(&mut state, desired_target, &context, &reason).await?;
+                            transition_runtime_target_with_starter(
+                                &mut state,
+                                desired_target,
+                                &context,
+                                &reason,
+                                &starter,
+                            )
+                            .await?;
                         }
                         None => {
                             provider_open = false;
@@ -2849,7 +2944,41 @@ async fn run_lifecycle_supervisor(
             tokio::select! {
                 _ = shutdown_receiver.changed() => {}
                 _ = restart_receiver.changed() => {}
+                _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
             }
+        }
+    }
+}
+
+async fn wait_for_backend_completion_signal(backend_finished: &mut Option<watch::Receiver<bool>>) {
+    let Some(receiver) = backend_finished.as_mut() else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *receiver.borrow() {
+        return;
+    }
+    let _ = receiver.changed().await;
+}
+
+async fn poll_finished_backend_outcome(
+    state: &mut SupervisorState,
+) -> Result<Option<RunOutcome>, DynError> {
+    let Some(backend) = state.backend.as_mut() else {
+        return Ok(None);
+    };
+    if !backend.is_finished() {
+        return Ok(None);
+    }
+
+    let exit = backend.take_join_result().await?;
+    let kind = backend.kind;
+    state.backend = None;
+    state.current_target = RuntimeTarget::Idle;
+    match exit {
+        BackendExit::Restart => Ok(Some(RunOutcome::Restart)),
+        BackendExit::Exit => {
+            Err(format!("[Lifecycle] backend {:?} exited unexpectedly", kind).into())
         }
     }
 }
