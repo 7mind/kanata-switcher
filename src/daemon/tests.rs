@@ -2190,6 +2190,23 @@ fn test_config_parses_rule_with_class_no_fallthrough() {
 
 // === Runtime Lifecycle Tests ===
 
+fn test_backend_context() -> BackendContext {
+    let status_broadcaster = StatusBroadcaster::new();
+    BackendContext {
+        kanata: KanataClient::new(
+            "127.0.0.1",
+            10000,
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        ),
+        handler: Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true))),
+        status_broadcaster,
+        restart_handle: RestartHandle::new(),
+        pause_broadcaster: PauseBroadcaster::new(),
+    }
+}
+
 #[test]
 fn test_session_type_to_session_kind_mappings() {
     assert!(session_type_indicates_native_terminal("tty"));
@@ -2316,6 +2333,16 @@ fn test_startup_environment_to_snapshot_mapping() {
     assert!(!unknown.active);
     assert_eq!(unknown.session_type, "");
     assert_eq!(unknown.session_kind, SessionKind::NoSession);
+
+    let kde = startup_environment_to_snapshot(Environment::Kde);
+    assert!(kde.active);
+    assert_eq!(kde.session_type, "wayland");
+    assert_eq!(kde.session_kind, SessionKind::GraphicalWayland);
+
+    let wayland = startup_environment_to_snapshot(Environment::Wayland);
+    assert!(wayland.active);
+    assert_eq!(wayland.session_type, "wayland");
+    assert_eq!(wayland.session_kind, SessionKind::GraphicalWayland);
 }
 
 #[test]
@@ -2355,6 +2382,103 @@ fn test_map_run_outcome_to_backend_exit() {
     );
 }
 
+#[test]
+fn test_resolve_desktop_flavor_wayland_precedence() {
+    let gnome_ready_and_kde = DesktopCapabilities {
+        gnome_owner: true,
+        gnome_focus_ready: true,
+        kde_owner: true,
+    };
+    assert_eq!(
+        resolve_desktop_flavor(SessionKind::GraphicalWayland, gnome_ready_and_kde),
+        DesktopFlavor::Gnome
+    );
+
+    let gnome_not_ready_and_kde = DesktopCapabilities {
+        gnome_owner: true,
+        gnome_focus_ready: false,
+        kde_owner: true,
+    };
+    assert_eq!(
+        resolve_desktop_flavor(SessionKind::GraphicalWayland, gnome_not_ready_and_kde),
+        DesktopFlavor::Kde
+    );
+
+    let none = DesktopCapabilities {
+        gnome_owner: false,
+        gnome_focus_ready: false,
+        kde_owner: false,
+    };
+    assert_eq!(
+        resolve_desktop_flavor(SessionKind::GraphicalWayland, none),
+        DesktopFlavor::GenericWayland
+    );
+    assert_eq!(
+        resolve_desktop_flavor(SessionKind::GraphicalX11, none),
+        DesktopFlavor::X11
+    );
+    assert_eq!(
+        resolve_desktop_flavor(SessionKind::NoSession, none),
+        DesktopFlavor::Unknown
+    );
+}
+
+#[tokio::test]
+async fn test_lifecycle_provider_startup_variant_emits_once() {
+    with_test_timeout(async {
+        let mut provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::X11));
+        assert!(!provider.is_continuous());
+
+        let first = provider
+            .next_snapshot()
+            .await
+            .expect("startup provider should emit initial snapshot");
+        assert_eq!(first.session_kind, SessionKind::GraphicalX11);
+        assert!(provider.next_snapshot().await.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_lifecycle_provider_startup_is_not_continuous_after_exhaustion() {
+    with_test_timeout(async {
+        let mut provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Unknown));
+        assert!(!provider.is_continuous());
+        let _ = provider.next_snapshot().await;
+        assert!(!provider.is_continuous());
+        assert!(provider.next_snapshot().await.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_resolve_runtime_target_for_non_wayland_snapshot() {
+    with_test_timeout(async {
+        let x11_snapshot = LifecycleSnapshot {
+            active: true,
+            session_type: "x11".to_string(),
+            session_kind: SessionKind::GraphicalX11,
+        };
+        let x11_target = resolve_runtime_target_for_snapshot(&x11_snapshot)
+            .await
+            .expect("x11 snapshot resolution should succeed");
+        assert_eq!(x11_target, RuntimeTarget::Backend(BackendKind::X11));
+
+        let idle_snapshot = LifecycleSnapshot {
+            active: false,
+            session_type: "".to_string(),
+            session_kind: SessionKind::NoSession,
+        };
+        let idle_target = resolve_runtime_target_for_snapshot(&idle_snapshot)
+            .await
+            .expect("idle snapshot resolution should succeed");
+        assert_eq!(idle_target, RuntimeTarget::Idle);
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn test_startup_snapshot_provider_emits_once() {
     with_test_timeout(async {
@@ -2372,20 +2496,7 @@ async fn test_startup_snapshot_provider_emits_once() {
 #[tokio::test]
 async fn test_transition_runtime_target_noop_on_same_target() {
     with_test_timeout(async {
-        let status_broadcaster = StatusBroadcaster::new();
-        let context = BackendContext {
-            kanata: KanataClient::new(
-                "127.0.0.1",
-                10000,
-                Some("default".to_string()),
-                true,
-                status_broadcaster.clone(),
-            ),
-            handler: Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true))),
-            status_broadcaster,
-            restart_handle: RestartHandle::new(),
-            pause_broadcaster: PauseBroadcaster::new(),
-        };
+        let context = test_backend_context();
 
         let mut state = SupervisorState::new();
         transition_runtime_target(&mut state, RuntimeTarget::Idle, &context, "test-noop")
@@ -2393,6 +2504,98 @@ async fn test_transition_runtime_target_noop_on_same_target() {
             .expect("noop transition should succeed");
         assert_eq!(state.current_target, RuntimeTarget::Idle);
         assert!(state.backend.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_stop_current_backend_with_no_backend_is_noop() {
+    with_test_timeout(async {
+        let context = test_backend_context();
+        let mut state = SupervisorState::new();
+        state.current_target = RuntimeTarget::Backend(BackendKind::LinuxConsole);
+
+        stop_current_backend(&mut state, &context)
+            .await
+            .expect("stop with no backend should succeed");
+
+        assert_eq!(state.current_target, RuntimeTarget::Idle);
+        assert!(state.backend.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_restart_after_startup_provider_exhausted() {
+    with_test_timeout(async {
+        let provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Unknown));
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor(
+            provider,
+            context,
+            restart_handle.clone(),
+            shutdown_handle,
+        ));
+
+        tokio::task::yield_now().await;
+        restart_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Restart);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_shutdown_wins_when_both_pre_set() {
+    with_test_timeout(async {
+        let provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Unknown));
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        shutdown_handle.request();
+        restart_handle.request();
+
+        let outcome = run_lifecycle_supervisor(provider, context, restart_handle, shutdown_handle)
+            .await
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Exit);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_shutdown_after_startup_provider_exhausted() {
+    with_test_timeout(async {
+        let provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Unknown));
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+        ));
+
+        tokio::task::yield_now().await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Exit);
     })
     .await;
 }
