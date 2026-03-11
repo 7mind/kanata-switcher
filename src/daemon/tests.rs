@@ -1808,58 +1808,6 @@ fn test_gnome_extension_state_missing() {
 }
 
 #[tokio::test]
-async fn test_logind_monitor_startup_failure_is_non_fatal() {
-    with_test_timeout(async {
-        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
-        let status_broadcaster = StatusBroadcaster::new();
-        let pause_broadcaster = PauseBroadcaster::new();
-        let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
-
-        let started = start_logind_session_monitor_best_effort(
-            Environment::Wayland,
-            None,
-            false,
-            handler,
-            status_broadcaster.clone(),
-            pause_broadcaster,
-            kanata,
-            |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "logind unavailable").into())
-            },
-        )
-        .await;
-
-        assert!(!started);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn test_logind_monitor_startup_success_returns_true() {
-    with_test_timeout(async {
-        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
-        let status_broadcaster = StatusBroadcaster::new();
-        let pause_broadcaster = PauseBroadcaster::new();
-        let kanata = KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone());
-
-        let started = start_logind_session_monitor_best_effort(
-            Environment::Wayland,
-            None,
-            false,
-            handler,
-            status_broadcaster.clone(),
-            pause_broadcaster,
-            kanata,
-            |_env, _session, _is_kde6, _handler, _status, _pause, _kanata| async { Ok(()) },
-        )
-        .await;
-
-        assert!(started);
-    })
-    .await;
-}
-
-#[tokio::test]
 async fn test_wait_for_restart_or_shutdown_returns_restart() {
     with_test_timeout(async {
         let restart_handle = RestartHandle::new();
@@ -1942,34 +1890,6 @@ fn test_logind_empty_object_path_detection() {
 
     assert!(is_logind_empty_object_path(&empty));
     assert!(!is_logind_empty_object_path(&non_empty));
-}
-
-#[test]
-fn test_logind_session_type_tty_maps_to_native_terminal() {
-    assert!(session_type_indicates_native_terminal("tty"));
-}
-
-#[test]
-fn test_logind_session_type_display_does_not_map_to_native_terminal() {
-    assert!(!session_type_indicates_native_terminal("wayland"));
-    assert!(!session_type_indicates_native_terminal("x11"));
-}
-
-#[test]
-fn test_logind_session_type_mapping_is_environment_independent() {
-    let envs = [
-        Environment::Gnome,
-        Environment::Kde,
-        Environment::Wayland,
-        Environment::X11,
-        Environment::LinuxConsoleWithLogind,
-        Environment::Unknown,
-    ];
-
-    for _env in envs {
-        assert!(session_type_indicates_native_terminal("tty"));
-        assert!(!session_type_indicates_native_terminal("wayland"));
-    }
 }
 
 #[test]
@@ -2272,6 +2192,8 @@ fn test_config_parses_rule_with_class_no_fallthrough() {
 
 #[test]
 fn test_session_type_to_session_kind_mappings() {
+    assert!(session_type_indicates_native_terminal("tty"));
+    assert!(!session_type_indicates_native_terminal("wayland"));
     assert_eq!(
         session_type_to_session_kind(true, "tty"),
         SessionKind::NativeTerminal
@@ -2341,6 +2263,16 @@ fn test_resolve_runtime_target_matrix() {
         resolve_runtime_target(SessionKind::GraphicalWayland, gnome_not_ready),
         RuntimeTarget::Backend(BackendKind::Wayland)
     );
+
+    let gnome_not_ready_and_kde_owner = DesktopCapabilities {
+        gnome_owner: true,
+        gnome_focus_ready: false,
+        kde_owner: true,
+    };
+    assert_eq!(
+        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_not_ready_and_kde_owner),
+        RuntimeTarget::Backend(BackendKind::Kde)
+    );
 }
 
 #[test]
@@ -2361,6 +2293,66 @@ fn test_target_requires_session_bus() {
         BackendKind::LinuxConsole
     )));
     assert!(!target_requires_session_bus(RuntimeTarget::Idle));
+}
+
+#[test]
+fn test_startup_environment_to_snapshot_mapping() {
+    let gnome = startup_environment_to_snapshot(Environment::Gnome);
+    assert!(gnome.active);
+    assert_eq!(gnome.session_type, "wayland");
+    assert_eq!(gnome.session_kind, SessionKind::GraphicalWayland);
+
+    let x11 = startup_environment_to_snapshot(Environment::X11);
+    assert!(x11.active);
+    assert_eq!(x11.session_type, "x11");
+    assert_eq!(x11.session_kind, SessionKind::GraphicalX11);
+
+    let linux_console = startup_environment_to_snapshot(Environment::LinuxConsoleWithLogind);
+    assert!(linux_console.active);
+    assert_eq!(linux_console.session_type, "tty");
+    assert_eq!(linux_console.session_kind, SessionKind::NativeTerminal);
+
+    let unknown = startup_environment_to_snapshot(Environment::Unknown);
+    assert!(!unknown.active);
+    assert_eq!(unknown.session_type, "");
+    assert_eq!(unknown.session_kind, SessionKind::NoSession);
+}
+
+#[test]
+fn test_runtime_target_label_is_stable() {
+    assert_eq!(runtime_target_label(RuntimeTarget::Idle), "idle");
+    assert_eq!(
+        runtime_target_label(RuntimeTarget::Backend(BackendKind::Gnome)),
+        "gnome"
+    );
+    assert_eq!(
+        runtime_target_label(RuntimeTarget::Backend(BackendKind::Kde)),
+        "kde"
+    );
+    assert_eq!(
+        runtime_target_label(RuntimeTarget::Backend(BackendKind::Wayland)),
+        "wayland"
+    );
+    assert_eq!(
+        runtime_target_label(RuntimeTarget::Backend(BackendKind::X11)),
+        "x11"
+    );
+    assert_eq!(
+        runtime_target_label(RuntimeTarget::Backend(BackendKind::LinuxConsole)),
+        "linux-console"
+    );
+}
+
+#[test]
+fn test_map_run_outcome_to_backend_exit() {
+    assert_eq!(
+        map_run_outcome_to_backend_exit(RunOutcome::Restart),
+        BackendExit::Restart
+    );
+    assert_eq!(
+        map_run_outcome_to_backend_exit(RunOutcome::Exit),
+        BackendExit::Exit
+    );
 }
 
 #[tokio::test]

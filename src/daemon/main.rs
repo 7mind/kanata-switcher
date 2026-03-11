@@ -2321,208 +2321,6 @@ async fn resolve_logind_session_path_for_env(
     }
 }
 
-#[allow(dead_code)]
-async fn apply_logind_focus(
-    active: bool,
-    native_terminal_when_active: bool,
-    env: Environment,
-    connection: Option<&Connection>,
-    is_kde6: bool,
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    pause_broadcaster: &PauseBroadcaster,
-    kanata: &KanataClient,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let native_terminal_active = if native_terminal_when_active {
-        active
-    } else {
-        !active
-    };
-
-    if native_terminal_active {
-        let win = native_terminal_window();
-        let default_layer = kanata.default_layer().await.unwrap_or_default();
-        if let Some(actions) = handle_focus_event(
-            handler,
-            status_broadcaster,
-            pause_broadcaster,
-            &win,
-            kanata,
-            &default_layer,
-        )
-        .await
-        {
-            execute_focus_actions(kanata, actions).await;
-        }
-        return Ok(());
-    }
-
-    apply_focus_for_env(
-        env,
-        connection,
-        is_kde6,
-        handler,
-        status_broadcaster,
-        pause_broadcaster,
-        kanata,
-    )
-    .await
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn session_type_indicates_native_terminal(session_type: &str) -> bool {
-    session_type == "tty"
-}
-
-#[allow(dead_code)]
-async fn start_logind_session_monitor(
-    env: Environment,
-    session_connection: Option<Connection>,
-    is_kde6: bool,
-    handler: Arc<Mutex<FocusHandler>>,
-    status_broadcaster: StatusBroadcaster,
-    pause_broadcaster: PauseBroadcaster,
-    kanata: KanataClient,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let connection = Connection::system().await?;
-    let session_path = resolve_logind_session_path_for_env(env, &connection).await?;
-    let session_proxy = zbus::Proxy::new(
-        &connection,
-        LOGIND_BUS_NAME,
-        session_path.clone(),
-        LOGIND_SESSION_INTERFACE,
-    )
-    .await?;
-    let active: bool = session_proxy.get_property("Active").await?;
-    let session_type = session_proxy
-        .get_property::<String>("Type")
-        .await
-        .unwrap_or_default();
-    let native_terminal_when_active = session_type_indicates_native_terminal(&session_type);
-    println!(
-        "[Logind] Session type={} (env={}), native_terminal_when_active={}",
-        session_type,
-        env.as_str(),
-        native_terminal_when_active
-    );
-
-    apply_logind_focus(
-        active,
-        native_terminal_when_active,
-        env,
-        session_connection.as_ref(),
-        is_kde6,
-        &handler,
-        &status_broadcaster,
-        &pause_broadcaster,
-        &kanata,
-    )
-    .await?;
-
-    let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
-        .destination(LOGIND_BUS_NAME)?
-        .path(session_path.clone())?
-        .build()
-        .await?;
-    let mut signals = properties_proxy.receive_properties_changed().await?;
-
-    let session_connection = session_connection.clone();
-    tokio::spawn(async move {
-        let mut last_active = active;
-        while let Some(signal) = signals.next().await {
-            let args = match signal.args() {
-                Ok(args) => args,
-                Err(error) => {
-                    eprintln!(
-                        "[Logind] Failed to parse PropertiesChanged signal: {}",
-                        error
-                    );
-                    std::process::exit(1);
-                }
-            };
-            let Some(value) = args.changed_properties.get("Active") else {
-                continue;
-            };
-            let next_active = match value.downcast_ref::<bool>().ok() {
-                Some(active_value) => active_value,
-                None => {
-                    eprintln!("[Logind] Failed to parse Active property");
-                    std::process::exit(1);
-                }
-            };
-
-            if next_active == last_active {
-                continue;
-            }
-            last_active = next_active;
-
-            if let Err(error) = apply_logind_focus(
-                next_active,
-                native_terminal_when_active,
-                env,
-                session_connection.as_ref(),
-                is_kde6,
-                &handler,
-                &status_broadcaster,
-                &pause_broadcaster,
-                &kanata,
-            )
-            .await
-            {
-                eprintln!("[Logind] Failed to apply session focus: {}", error);
-                std::process::exit(1);
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-async fn start_logind_session_monitor_best_effort<F, Fut>(
-    env: Environment,
-    session_connection: Option<Connection>,
-    is_kde6: bool,
-    handler: Arc<Mutex<FocusHandler>>,
-    status_broadcaster: StatusBroadcaster,
-    pause_broadcaster: PauseBroadcaster,
-    kanata: KanataClient,
-    starter: F,
-) -> bool
-where
-    F: FnOnce(
-        Environment,
-        Option<Connection>,
-        bool,
-        Arc<Mutex<FocusHandler>>,
-        StatusBroadcaster,
-        PauseBroadcaster,
-        KanataClient,
-    ) -> Fut,
-    Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-{
-    match starter(
-        env,
-        session_connection,
-        is_kde6,
-        handler,
-        status_broadcaster,
-        pause_broadcaster,
-        kanata,
-    )
-    .await
-    {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!(
-                "[Logind] Disabled native terminal monitoring (startup failed): {}",
-                error
-            );
-            false
-        }
-    }
-}
-
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug)]
@@ -2949,11 +2747,13 @@ async fn transition_runtime_target(
     if state.current_target == desired_target {
         return Ok(());
     }
+    let requires_session_bus = target_requires_session_bus(desired_target);
 
     println!(
-        "[LifecycleTransition] from={} to={} reason={}",
+        "[LifecycleTransition] from={} to={} session_bus_required={} reason={}",
         runtime_target_label(state.current_target),
         runtime_target_label(desired_target),
+        requires_session_bus,
         reason
     );
 
@@ -3841,12 +3641,18 @@ fn session_type_to_session_kind(active: bool, session_type: &str) -> SessionKind
     if !active {
         return SessionKind::NoSession;
     }
+    if session_type_indicates_native_terminal(session_type) {
+        return SessionKind::NativeTerminal;
+    }
     match session_type {
-        "tty" => SessionKind::NativeTerminal,
         "x11" => SessionKind::GraphicalX11,
         "wayland" => SessionKind::GraphicalWayland,
         _ => SessionKind::NoSession,
     }
+}
+
+fn session_type_indicates_native_terminal(session_type: &str) -> bool {
+    session_type == "tty"
 }
 
 fn resolve_desktop_flavor(
@@ -3886,7 +3692,6 @@ fn resolve_runtime_target(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn target_requires_session_bus(target: RuntimeTarget) -> bool {
     match target {
         RuntimeTarget::Backend(BackendKind::Gnome)
@@ -4782,7 +4587,6 @@ fn gnome_state_name(state: u8) -> &'static str {
 
 /// Parse GNOME Shell extension state from D-Bus response.
 /// State values: 1.0=ENABLED, 2.0=DISABLED, 3.0=ERROR, 4.0=OUT_OF_DATE, 5.0=DOWNLOADING, 6.0=INITIALIZED
-#[cfg_attr(test, allow(dead_code))]
 fn parse_gnome_extension_state(
     body: &HashMap<String, zbus::zvariant::OwnedValue>,
 ) -> GnomeExtensionStatus {
