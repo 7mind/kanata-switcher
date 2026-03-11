@@ -2142,19 +2142,24 @@ async fn apply_session_focus(
 
 async fn resolve_logind_session_path(
     connection: &Connection,
-) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<OwnedObjectPath, LogindSessionPathResolutionError> {
     let manager = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
         LOGIND_MANAGER_PATH,
         LOGIND_MANAGER_INTERFACE,
     )
-    .await?;
+    .await
+    .map_err(LogindSessionPathResolutionError::fatal)?;
 
     if let Ok(session_id) = env::var("XDG_SESSION_ID") {
         println!("[Logind] Using XDG_SESSION_ID={}", session_id);
-        let reply = manager.call_method("GetSession", &(session_id)).await?;
-        let path = decode_logind_object_path_reply(&reply, "GetSession")?;
+        let reply = manager
+            .call_method("GetSession", &(session_id))
+            .await
+            .map_err(LogindSessionPathResolutionError::fatal)?;
+        let path = decode_logind_object_path_reply(&reply, "GetSession")
+            .map_err(LogindSessionPathResolutionError::fatal)?;
         println!("[Logind] Using session path: {}", path.as_str());
         return Ok(path);
     }
@@ -2163,7 +2168,8 @@ async fn resolve_logind_session_path(
     let pid = std::process::id();
     match manager.call_method("GetSessionByPID", &(pid)).await {
         Ok(reply) => {
-            let path = decode_logind_object_path_reply(&reply, "GetSessionByPID")?;
+            let path = decode_logind_object_path_reply(&reply, "GetSessionByPID")
+                .map_err(LogindSessionPathResolutionError::fatal)?;
             println!("[Logind] Using session path: {}", path.as_str());
             Ok(path)
         }
@@ -2171,7 +2177,7 @@ async fn resolve_logind_session_path(
             if is_logind_no_session_error(&error) {
                 return resolve_logind_display_session_path(&manager, connection, pid).await;
             }
-            Err(error.into())
+            Err(LogindSessionPathResolutionError::fatal(error))
         }
     }
 }
@@ -2180,6 +2186,20 @@ fn is_logind_no_session_error(error: &zbus::Error) -> bool {
     match error {
         zbus::Error::MethodError(name, _, _) => name.as_ref() == LOGIND_ERROR_NO_SESSION_FOR_PID,
         _ => false,
+    }
+}
+
+enum LogindSessionPathResolutionError {
+    DisplayNotReady,
+    Fatal(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl LogindSessionPathResolutionError {
+    fn fatal<E>(error: E) -> Self
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        Self::Fatal(error.into())
     }
 }
 
@@ -2281,25 +2301,64 @@ async fn resolve_logind_display_session_path(
     manager: &zbus::Proxy<'_>,
     connection: &Connection,
     pid: u32,
-) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
-    let user_reply = manager.call_method("GetUserByPID", &(pid)).await?;
-    let user_path = decode_logind_object_path_reply(&user_reply, "GetUserByPID")?;
+) -> Result<OwnedObjectPath, LogindSessionPathResolutionError> {
+    let user_reply = manager
+        .call_method("GetUserByPID", &(pid))
+        .await
+        .map_err(LogindSessionPathResolutionError::fatal)?;
+    let user_path = decode_logind_object_path_reply(&user_reply, "GetUserByPID")
+        .map_err(LogindSessionPathResolutionError::fatal)?;
     let user_proxy = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
         user_path,
         LOGIND_USER_INTERFACE,
     )
-    .await?;
+    .await
+    .map_err(LogindSessionPathResolutionError::fatal)?;
     let display = parse_logind_object_path(
-        user_proxy.get_property::<OwnedValue>("Display").await?,
+        user_proxy
+            .get_property::<OwnedValue>("Display")
+            .await
+            .map_err(LogindSessionPathResolutionError::fatal)?,
         "User.Display",
-    )?;
+    )
+    .map_err(LogindSessionPathResolutionError::fatal)?;
     if is_logind_empty_object_path(&display) {
-        return Err("logind user has no display session".into());
+        return Err(LogindSessionPathResolutionError::DisplayNotReady);
     }
     println!("[Logind] Using display session path: {}", display.as_str());
     Ok(display)
+}
+
+const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
+
+async fn resolve_logind_session_path_for_env(
+    env: Environment,
+    connection: &Connection,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    let mut attempt = 0usize;
+    loop {
+        match resolve_logind_session_path(connection).await {
+            Ok(path) => return Ok(path),
+            Err(LogindSessionPathResolutionError::DisplayNotReady)
+                if env == Environment::Unknown =>
+            {
+                let delay_ms = LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS
+                    [attempt.min(LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS.len() - 1)];
+                println!(
+                    "[Logind] Display session not ready yet; retrying in {}ms",
+                    delay_ms
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                attempt += 1;
+            }
+            Err(LogindSessionPathResolutionError::DisplayNotReady) => {
+                return Err("logind user has no display session".into());
+            }
+            Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
+        }
+    }
 }
 
 async fn start_logind_session_monitor(
@@ -2312,7 +2371,7 @@ async fn start_logind_session_monitor(
     kanata: KanataClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::system().await?;
-    let session_path = resolve_logind_session_path(&connection).await?;
+    let session_path = resolve_logind_session_path_for_env(env, &connection).await?;
     let session_proxy = zbus::Proxy::new(
         &connection,
         LOGIND_BUS_NAME,
