@@ -13,6 +13,8 @@
 9. **Runtime lifecycle supervision** - backend transitions are controlled in-daemon via lifecycle providers (logind continuous mode, startup-snapshot fallback mode)
 10. **Supervisor wake-on-backend-finish** - active backend task completion is part of the supervisor wait set, preventing hangs when a backend exits without lifecycle signal changes
 11. **SNI runtime-environment coherence** - local SNI pause/unpause uses runtime backend environment published by supervisor transitions, not fixed startup environment
+12. **Wayland capability re-evaluation** - supervisor periodically re-resolves wayland backend flavor from last lifecycle snapshot to handle GNOME/KDE readiness races without waiting for new logind events
+13. **Runtime-driven SNI lifecycle** - SNI control mode (local/dbus/off) is selected from current runtime environment transitions, not only startup environment detection
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 

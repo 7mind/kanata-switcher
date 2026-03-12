@@ -3,7 +3,7 @@ use clap::Parser;
 use proptest::prelude::*;
 use std::future::Future;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 use zbus::Message;
@@ -2502,6 +2502,39 @@ fn test_runtime_target_to_environment_mapping() {
     );
 }
 
+#[test]
+fn test_sni_control_mode_tracks_runtime_environment_changes() {
+    let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Unknown);
+    assert_eq!(
+        sni_control_mode_for_environment(runtime_environment.current()),
+        None
+    );
+
+    runtime_environment.set_current(Environment::Wayland);
+    assert_eq!(
+        sni_control_mode_for_environment(runtime_environment.current()),
+        Some(SniControlMode::Local)
+    );
+
+    runtime_environment.set_current(Environment::X11);
+    assert_eq!(
+        sni_control_mode_for_environment(runtime_environment.current()),
+        Some(SniControlMode::Local)
+    );
+
+    runtime_environment.set_current(Environment::Kde);
+    assert_eq!(
+        sni_control_mode_for_environment(runtime_environment.current()),
+        Some(SniControlMode::Dbus)
+    );
+
+    runtime_environment.set_current(Environment::Gnome);
+    assert_eq!(
+        sni_control_mode_for_environment(runtime_environment.current()),
+        None
+    );
+}
+
 #[tokio::test]
 async fn test_sni_local_control_tracks_runtime_environment_switches() {
     with_test_timeout(async {
@@ -3060,6 +3093,80 @@ async fn test_run_lifecycle_supervisor_wakes_on_backend_completion_after_provide
         .expect("supervisor should observe backend completion");
 
         assert_eq!(outcome, RunOutcome::Restart);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_rechecks_wayland_capabilities_without_new_snapshots() {
+    with_test_timeout(async {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(LifecycleSnapshot {
+                active: true,
+                session_type: "wayland".to_string(),
+                session_kind: SessionKind::GraphicalWayland,
+            })
+            .expect("snapshot send should succeed");
+        drop(sender);
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls_clone = resolver_calls.clone();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| {
+                let resolver_calls = resolver_calls_clone.clone();
+                async move {
+                    let call_index = resolver_calls.fetch_add(1, Ordering::SeqCst);
+                    if call_index == 0 {
+                        Ok(RuntimeTarget::Backend(BackendKind::Wayland))
+                    } else {
+                        Ok(RuntimeTarget::Backend(BackendKind::Gnome))
+                    }
+                }
+            },
+            std::time::Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(90)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Exit);
+
+        let kinds = started_kinds.lock().unwrap().clone();
+        assert_eq!(kinds.first(), Some(&BackendKind::Wayland));
+        assert!(
+            kinds.contains(&BackendKind::Gnome),
+            "capability recheck should promote from generic wayland to gnome"
+        );
+        assert!(
+            resolver_calls.load(Ordering::SeqCst) >= 2,
+            "resolver should be called again without new lifecycle snapshots"
+        );
     })
     .await;
 }

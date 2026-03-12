@@ -37,6 +37,8 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-12: Wayland desktop-capability backend selection (GNOME/KDE vs generic) is now periodically re-evaluated from the last lifecycle snapshot, so startup races no longer get stuck on generic Wayland until next logind `Active`/`Type` change.
+- 2026-03-12: SNI indicator lifecycle is now runtime-environment-driven; control mode is rebuilt on backend-environment transitions (including `Unknown` -> graphical), instead of being fixed at process startup.
 - 2026-03-11: SNI local control now reads runtime environment from lifecycle-supervised backend state (not startup detection), so unpause focus refresh tracks backend switches (e.g. wayland -> tty -> x11).
 - 2026-03-11: Lifecycle supervisor now waits on backend completion signals in `tokio::select!` (including after provider exhaustion), so unexpected backend exits/restarts are observed immediately instead of stalling idle.
 - 2026-03-11: Runtime lifecycle supervision refactor landed. Daemon now uses login1-driven continuous backend transitions (with startup-snapshot fallback when login1 is unavailable), and the Home Manager graphical-session restart helper service was removed from flake outputs.

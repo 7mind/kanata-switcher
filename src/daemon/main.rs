@@ -1110,6 +1110,10 @@ impl RuntimeEnvironmentBroadcaster {
     fn set_current(&self, env: Environment) {
         self.sender.send_replace(env);
     }
+
+    fn subscribe(&self) -> watch::Receiver<Environment> {
+        self.sender.subscribe()
+    }
 }
 
 impl StatusBroadcaster {
@@ -1383,6 +1387,20 @@ struct SniDbusControl {
 enum SniControl {
     Local(SniLocalControl),
     Dbus(SniDbusControl),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SniControlMode {
+    Local,
+    Dbus,
+}
+
+fn sni_control_mode_for_environment(env: Environment) -> Option<SniControlMode> {
+    match env {
+        Environment::Wayland | Environment::X11 => Some(SniControlMode::Local),
+        Environment::Kde => Some(SniControlMode::Dbus),
+        Environment::Gnome | Environment::LinuxConsoleWithLogind | Environment::Unknown => None,
+    }
 }
 
 trait SniControlOps: Send + Sync {
@@ -2598,6 +2616,8 @@ fn runtime_target_to_environment(target: RuntimeTarget) -> Environment {
     }
 }
 
+const WAYLAND_CAPABILITY_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
+
 async fn detect_desktop_capabilities() -> Result<DesktopCapabilities, DynError> {
     let connection = Connection::session().await?;
     let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
@@ -2915,7 +2935,7 @@ async fn run_lifecycle_supervisor(
 }
 
 async fn run_lifecycle_supervisor_with_starter<F, Fut>(
-    mut provider: LifecycleProvider,
+    provider: LifecycleProvider,
     context: BackendContext,
     restart_handle: RestartHandle,
     shutdown_handle: ShutdownHandle,
@@ -2925,6 +2945,33 @@ where
     F: Fn(BackendKind, BackendContext) -> Fut,
     Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
 {
+    run_lifecycle_supervisor_with_starter_and_resolver(
+        provider,
+        context,
+        restart_handle,
+        shutdown_handle,
+        starter,
+        |snapshot| async move { resolve_runtime_target_for_snapshot(&snapshot).await },
+        WAYLAND_CAPABILITY_RECHECK_INTERVAL,
+    )
+    .await
+}
+
+async fn run_lifecycle_supervisor_with_starter_and_resolver<F, Fut, R, RFut>(
+    mut provider: LifecycleProvider,
+    context: BackendContext,
+    restart_handle: RestartHandle,
+    shutdown_handle: ShutdownHandle,
+    starter: F,
+    resolver: R,
+    wayland_capability_recheck_interval: Duration,
+) -> Result<RunOutcome, DynError>
+where
+    F: Fn(BackendKind, BackendContext) -> Fut,
+    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
+    R: Fn(LifecycleSnapshot) -> RFut,
+    RFut: std::future::Future<Output = Result<RuntimeTarget, DynError>>,
+{
     let mut state = SupervisorState::new();
     context
         .runtime_environment
@@ -2932,6 +2979,7 @@ where
     let mut restart_receiver = restart_handle.subscribe();
     let mut shutdown_receiver = shutdown_handle.subscribe();
     let mut provider_open = true;
+    let mut last_snapshot: Option<LifecycleSnapshot> = None;
 
     loop {
         if *shutdown_receiver.borrow() {
@@ -2956,10 +3004,28 @@ where
                 _ = shutdown_receiver.changed() => {}
                 _ = restart_receiver.changed() => {}
                 _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
+                _ = wait_for_wayland_capability_recheck(
+                    last_snapshot.as_ref(),
+                    wayland_capability_recheck_interval,
+                ) => {
+                    let snapshot = last_snapshot
+                        .clone()
+                        .expect("capability recheck requires last snapshot");
+                    let desired_target = resolver(snapshot).await?;
+                    transition_runtime_target_with_starter(
+                        &mut state,
+                        desired_target,
+                        &context,
+                        "wayland-capability-recheck",
+                        &starter,
+                    )
+                    .await?;
+                }
                 next_snapshot = provider.next_snapshot() => {
                     match next_snapshot {
                         Some(snapshot) => {
-                            let desired_target = resolve_runtime_target_for_snapshot(&snapshot).await?;
+                            last_snapshot = Some(snapshot.clone());
+                            let desired_target = resolver(snapshot.clone()).await?;
                             let reason = format!(
                                 "active={} type={} kind={:?}",
                                 snapshot.active,
@@ -2986,9 +3052,41 @@ where
                 _ = shutdown_receiver.changed() => {}
                 _ = restart_receiver.changed() => {}
                 _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
+                _ = wait_for_wayland_capability_recheck(
+                    last_snapshot.as_ref(),
+                    wayland_capability_recheck_interval,
+                ) => {
+                    let snapshot = last_snapshot
+                        .clone()
+                        .expect("capability recheck requires last snapshot");
+                    let desired_target = resolver(snapshot).await?;
+                    transition_runtime_target_with_starter(
+                        &mut state,
+                        desired_target,
+                        &context,
+                        "wayland-capability-recheck",
+                        &starter,
+                    )
+                    .await?;
+                }
             }
         }
     }
+}
+
+async fn wait_for_wayland_capability_recheck(
+    last_snapshot: Option<&LifecycleSnapshot>,
+    interval: Duration,
+) {
+    let Some(snapshot) = last_snapshot else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if snapshot.session_kind != SessionKind::GraphicalWayland {
+        std::future::pending::<()>().await;
+        return;
+    }
+    tokio::time::sleep(interval).await;
 }
 
 async fn wait_for_backend_completion_signal(backend_finished: &mut Option<watch::Receiver<bool>>) {
@@ -4563,19 +4661,123 @@ fn start_sni_indicator(
     Some(handle)
 }
 
+async fn build_sni_control_for_mode(
+    mode: SniControlMode,
+    runtime_handle: tokio::runtime::Handle,
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
+    restart_handle: RestartHandle,
+    runtime_environment: RuntimeEnvironmentBroadcaster,
+) -> Option<SniControl> {
+    match mode {
+        SniControlMode::Local => Some(SniControl::Local(SniLocalControl {
+            runtime_handle,
+            kanata,
+            handler,
+            status_broadcaster,
+            pause_broadcaster,
+            restart_handle,
+            runtime_environment,
+            connection: None,
+            is_kde6: false,
+        })),
+        SniControlMode::Dbus => match Connection::session().await {
+            Ok(connection) => Some(SniControl::Dbus(SniDbusControl {
+                runtime_handle,
+                connection,
+                restart_handle,
+            })),
+            Err(error) => {
+                eprintln!("[SNI] Failed to connect to session bus: {}", error);
+                None
+            }
+        },
+    }
+}
+
 struct SniGuard {
-    handle: Option<ksni::Handle<SniIndicator>>,
+    handle: Arc<Mutex<Option<ksni::Handle<SniIndicator>>>>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl SniGuard {
-    fn new(handle: Option<ksni::Handle<SniIndicator>>) -> Self {
-        Self { handle }
+    fn disabled() -> Self {
+        Self {
+            handle: Arc::new(Mutex::new(None)),
+            task: None,
+        }
+    }
+
+    fn runtime_managed(
+        runtime_environment: RuntimeEnvironmentBroadcaster,
+        runtime_handle: tokio::runtime::Handle,
+        kanata: KanataClient,
+        handler: Arc<Mutex<FocusHandler>>,
+        status_broadcaster: StatusBroadcaster,
+        pause_broadcaster: PauseBroadcaster,
+        restart_handle: RestartHandle,
+        indicator_focus_only: Option<TrayFocusOnly>,
+    ) -> Self {
+        let shared_handle: Arc<Mutex<Option<ksni::Handle<SniIndicator>>>> =
+            Arc::new(Mutex::new(None));
+        let task_handle_store = shared_handle.clone();
+        let mut env_receiver = runtime_environment.subscribe();
+        let task = tokio::spawn(async move {
+            let mut active_mode: Option<SniControlMode> = None;
+            loop {
+                let env = *env_receiver.borrow();
+                let desired_mode = sni_control_mode_for_environment(env);
+                if desired_mode != active_mode {
+                    if let Some(handle) = task_handle_store.lock().unwrap().take() {
+                        println!("[SNI] Shutting down indicator");
+                        handle.shutdown();
+                    }
+                    active_mode = None;
+                    if let Some(mode) = desired_mode {
+                        let control = build_sni_control_for_mode(
+                            mode,
+                            runtime_handle.clone(),
+                            kanata.clone(),
+                            handler.clone(),
+                            status_broadcaster.clone(),
+                            pause_broadcaster.clone(),
+                            restart_handle.clone(),
+                            runtime_environment.clone(),
+                        )
+                        .await;
+                        if let Some(control) = control {
+                            let handle = start_sni_indicator(
+                                control,
+                                status_broadcaster.clone(),
+                                pause_broadcaster.clone(),
+                                indicator_focus_only,
+                            );
+                            *task_handle_store.lock().unwrap() = handle;
+                            active_mode = Some(mode);
+                        }
+                    }
+                }
+
+                if env_receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            handle: shared_handle,
+            task: Some(task),
+        }
     }
 }
 
 impl Drop for SniGuard {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        if let Some(handle) = self.handle.lock().unwrap().take() {
             println!("[SNI] Shutting down indicator");
             handle.shutdown();
         }
@@ -5938,48 +6140,20 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         println!("[SNI] Indicator disabled via --no-indicator");
     }
 
-    let sni_control = if enable_indicator {
-        match detected_env {
-            Environment::Kde => match Connection::session().await {
-                Ok(connection) => Some(SniControl::Dbus(SniDbusControl {
-                    runtime_handle: runtime_handle.clone(),
-                    connection,
-                    restart_handle: restart_handle.clone(),
-                })),
-                Err(error) => {
-                    eprintln!("[SNI] Failed to connect to session bus: {}", error);
-                    None
-                }
-            },
-            Environment::Wayland | Environment::X11 => {
-                let handler = focus_handler.clone();
-                Some(SniControl::Local(SniLocalControl {
-                    runtime_handle: runtime_handle.clone(),
-                    kanata: kanata.clone(),
-                    handler,
-                    status_broadcaster: status_broadcaster.clone(),
-                    pause_broadcaster: pause_broadcaster.clone(),
-                    restart_handle: restart_handle.clone(),
-                    runtime_environment: runtime_environment.clone(),
-                    connection: None,
-                    is_kde6: false,
-                }))
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    let sni_handle = sni_control.and_then(|control| {
-        start_sni_indicator(
-            control,
+    let _sni_guard = if enable_indicator {
+        SniGuard::runtime_managed(
+            runtime_environment.clone(),
+            runtime_handle.clone(),
+            kanata.clone(),
+            focus_handler.clone(),
             status_broadcaster.clone(),
             pause_broadcaster.clone(),
+            restart_handle.clone(),
             args.indicator_focus_only,
         )
-    });
-    let _sni_guard = SniGuard::new(sni_handle);
+    } else {
+        SniGuard::disabled()
+    };
 
     let backend_context = BackendContext {
         kanata,
