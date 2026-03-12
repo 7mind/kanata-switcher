@@ -37,6 +37,9 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-12: Supervisor no longer exits on transient Wayland capability resolver failures; it logs probe errors, keeps current backend running, and retries on later recheck/snapshot events.
+- 2026-03-12: SNI guard is now created whenever indicator is enabled (independent of startup GNOME), so runtime transitions can still enable indicator/local controls after non-graphical or GNOME startup states.
+- 2026-03-12: Runtime SNI transition planning restarts indicator resources on every environment change (including same-mode transitions like X11 <-> Wayland) to mirror restart-equivalent DE transition semantics.
 - 2026-03-12: Wayland desktop-capability backend selection (GNOME/KDE vs generic) is now periodically re-evaluated from the last lifecycle snapshot, so startup races no longer get stuck on generic Wayland until next logind `Active`/`Type` change.
 - 2026-03-12: SNI indicator lifecycle is now runtime-environment-driven; control mode is rebuilt on backend-environment transitions (including `Unknown` -> graphical), instead of being fixed at process startup.
 - 2026-03-11: SNI local control now reads runtime environment from lifecycle-supervised backend state (not startup detection), so unpause focus refresh tracks backend switches (e.g. wayland -> tty -> x11).

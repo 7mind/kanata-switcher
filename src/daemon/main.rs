@@ -1395,11 +1395,39 @@ enum SniControlMode {
     Dbus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SniRuntimeTransitionPlan {
+    Keep,
+    Stop,
+    Start(SniControlMode),
+    Restart(SniControlMode),
+}
+
 fn sni_control_mode_for_environment(env: Environment) -> Option<SniControlMode> {
     match env {
         Environment::Wayland | Environment::X11 => Some(SniControlMode::Local),
         Environment::Kde => Some(SniControlMode::Dbus),
         Environment::Gnome | Environment::LinuxConsoleWithLogind | Environment::Unknown => None,
+    }
+}
+
+fn plan_sni_runtime_transition(
+    active_mode: Option<SniControlMode>,
+    active_env: Option<Environment>,
+    desired_env: Environment,
+) -> SniRuntimeTransitionPlan {
+    let desired_mode = sni_control_mode_for_environment(desired_env);
+    match (active_mode, desired_mode) {
+        (None, None) => SniRuntimeTransitionPlan::Keep,
+        (Some(_), None) => SniRuntimeTransitionPlan::Stop,
+        (None, Some(mode)) => SniRuntimeTransitionPlan::Start(mode),
+        (Some(current_mode), Some(next_mode)) => {
+            if current_mode != next_mode || active_env != Some(desired_env) {
+                SniRuntimeTransitionPlan::Restart(next_mode)
+            } else {
+                SniRuntimeTransitionPlan::Keep
+            }
+        }
     }
 }
 
@@ -3011,35 +3039,53 @@ where
                     let snapshot = last_snapshot
                         .clone()
                         .expect("capability recheck requires last snapshot");
-                    let desired_target = resolver(snapshot).await?;
-                    transition_runtime_target_with_starter(
-                        &mut state,
-                        desired_target,
-                        &context,
-                        "wayland-capability-recheck",
-                        &starter,
-                    )
-                    .await?;
+                    match resolver(snapshot).await {
+                        Ok(desired_target) => {
+                            transition_runtime_target_with_starter(
+                                &mut state,
+                                desired_target,
+                                &context,
+                                "wayland-capability-recheck",
+                                &starter,
+                            )
+                            .await?;
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[Lifecycle] Skipping wayland capability recheck after resolver error: {}",
+                                error
+                            );
+                        }
+                    }
                 }
                 next_snapshot = provider.next_snapshot() => {
                     match next_snapshot {
                         Some(snapshot) => {
                             last_snapshot = Some(snapshot.clone());
-                            let desired_target = resolver(snapshot.clone()).await?;
-                            let reason = format!(
-                                "active={} type={} kind={:?}",
-                                snapshot.active,
-                                snapshot.session_type,
-                                snapshot.session_kind
-                            );
-                            transition_runtime_target_with_starter(
-                                &mut state,
-                                desired_target,
-                                &context,
-                                &reason,
-                                &starter,
-                            )
-                            .await?;
+                            match resolver(snapshot.clone()).await {
+                                Ok(desired_target) => {
+                                    let reason = format!(
+                                        "active={} type={} kind={:?}",
+                                        snapshot.active,
+                                        snapshot.session_type,
+                                        snapshot.session_kind
+                                    );
+                                    transition_runtime_target_with_starter(
+                                        &mut state,
+                                        desired_target,
+                                        &context,
+                                        &reason,
+                                        &starter,
+                                    )
+                                    .await?;
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "[Lifecycle] Skipping transition after resolver error: {}",
+                                        error
+                                    );
+                                }
+                            }
                         }
                         None => {
                             provider_open = false;
@@ -3059,15 +3105,24 @@ where
                     let snapshot = last_snapshot
                         .clone()
                         .expect("capability recheck requires last snapshot");
-                    let desired_target = resolver(snapshot).await?;
-                    transition_runtime_target_with_starter(
-                        &mut state,
-                        desired_target,
-                        &context,
-                        "wayland-capability-recheck",
-                        &starter,
-                    )
-                    .await?;
+                    match resolver(snapshot).await {
+                        Ok(desired_target) => {
+                            transition_runtime_target_with_starter(
+                                &mut state,
+                                desired_target,
+                                &context,
+                                "wayland-capability-recheck",
+                                &starter,
+                            )
+                            .await?;
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[Lifecycle] Skipping wayland capability recheck after resolver error: {}",
+                                error
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -4726,16 +4781,27 @@ impl SniGuard {
         let mut env_receiver = runtime_environment.subscribe();
         let task = tokio::spawn(async move {
             let mut active_mode: Option<SniControlMode> = None;
+            let mut active_env: Option<Environment> = None;
             loop {
                 let env = *env_receiver.borrow();
-                let desired_mode = sni_control_mode_for_environment(env);
-                if desired_mode != active_mode {
-                    if let Some(handle) = task_handle_store.lock().unwrap().take() {
-                        println!("[SNI] Shutting down indicator");
-                        handle.shutdown();
+                match plan_sni_runtime_transition(active_mode, active_env, env) {
+                    SniRuntimeTransitionPlan::Keep => {}
+                    SniRuntimeTransitionPlan::Stop => {
+                        if let Some(handle) = task_handle_store.lock().unwrap().take() {
+                            println!("[SNI] Shutting down indicator");
+                            handle.shutdown();
+                        }
+                        active_mode = None;
+                        active_env = None;
                     }
-                    active_mode = None;
-                    if let Some(mode) = desired_mode {
+                    SniRuntimeTransitionPlan::Start(mode)
+                    | SniRuntimeTransitionPlan::Restart(mode) => {
+                        if let Some(handle) = task_handle_store.lock().unwrap().take() {
+                            println!("[SNI] Shutting down indicator");
+                            handle.shutdown();
+                        }
+                        active_mode = None;
+                        active_env = None;
                         let control = build_sni_control_for_mode(
                             mode,
                             runtime_handle.clone(),
@@ -4756,6 +4822,7 @@ impl SniGuard {
                             );
                             *task_handle_store.lock().unwrap() = handle;
                             active_mode = Some(mode);
+                            active_env = Some(env);
                         }
                     }
                 }
@@ -6135,8 +6202,8 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         shutdown_handle_for_signal.request();
     });
 
-    let enable_indicator = !args.no_indicator && detected_env != Environment::Gnome;
-    if args.no_indicator && detected_env != Environment::Gnome {
+    let enable_indicator = !args.no_indicator;
+    if args.no_indicator {
         println!("[SNI] Indicator disabled via --no-indicator");
     }
 

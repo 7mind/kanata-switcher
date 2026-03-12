@@ -2535,6 +2535,50 @@ fn test_sni_control_mode_tracks_runtime_environment_changes() {
     );
 }
 
+#[test]
+fn test_plan_sni_runtime_transition_restarts_on_environment_change() {
+    assert_eq!(
+        plan_sni_runtime_transition(None, None, Environment::Unknown),
+        SniRuntimeTransitionPlan::Keep
+    );
+    assert_eq!(
+        plan_sni_runtime_transition(None, None, Environment::Wayland),
+        SniRuntimeTransitionPlan::Start(SniControlMode::Local)
+    );
+    assert_eq!(
+        plan_sni_runtime_transition(
+            Some(SniControlMode::Local),
+            Some(Environment::X11),
+            Environment::Wayland
+        ),
+        SniRuntimeTransitionPlan::Restart(SniControlMode::Local)
+    );
+    assert_eq!(
+        plan_sni_runtime_transition(
+            Some(SniControlMode::Local),
+            Some(Environment::Wayland),
+            Environment::Wayland
+        ),
+        SniRuntimeTransitionPlan::Keep
+    );
+    assert_eq!(
+        plan_sni_runtime_transition(
+            Some(SniControlMode::Local),
+            Some(Environment::Wayland),
+            Environment::Kde
+        ),
+        SniRuntimeTransitionPlan::Restart(SniControlMode::Dbus)
+    );
+    assert_eq!(
+        plan_sni_runtime_transition(
+            Some(SniControlMode::Dbus),
+            Some(Environment::Kde),
+            Environment::Gnome
+        ),
+        SniRuntimeTransitionPlan::Stop
+    );
+}
+
 #[tokio::test]
 async fn test_sni_local_control_tracks_runtime_environment_switches() {
     with_test_timeout(async {
@@ -2855,6 +2899,102 @@ async fn test_transition_runtime_target_stops_old_before_starting_new() {
 }
 
 #[tokio::test]
+async fn test_transition_runtime_target_desktop_sequence_is_restart_equivalent() {
+    with_test_timeout(async {
+        let context = test_backend_context();
+        let mut state = SupervisorState::new();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let stopped_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+
+        let starter = {
+            let started_kinds = started_kinds.clone();
+            let stopped_kinds = stopped_kinds.clone();
+            move |kind: BackendKind, _context: BackendContext| {
+                let started_kinds = started_kinds.clone();
+                let stopped_kinds = stopped_kinds.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    let shutdown_handle = ShutdownHandle::new();
+                    let mut receiver = shutdown_handle.subscribe();
+                    let (finished_tx, finished_rx) = watch::channel(false);
+                    let join_handle = tokio::spawn(async move {
+                        while !*receiver.borrow() {
+                            if receiver.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                        stopped_kinds.lock().unwrap().push(kind);
+                        let _ = finished_tx.send(true);
+                        Ok(BackendExit::Exit)
+                    });
+                    Ok(BackendHandle {
+                        kind,
+                        shutdown_handle,
+                        join_handle: Some(join_handle),
+                        finished_rx,
+                    })
+                }
+            }
+        };
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::X11),
+            &context,
+            "x11",
+            &starter,
+        )
+        .await
+        .expect("x11 transition should succeed");
+        assert_eq!(context.runtime_environment.current(), Environment::X11);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::Wayland),
+            &context,
+            "wayland",
+            &starter,
+        )
+        .await
+        .expect("wayland transition should succeed");
+        assert_eq!(context.runtime_environment.current(), Environment::Wayland);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::Kde),
+            &context,
+            "kde",
+            &starter,
+        )
+        .await
+        .expect("kde transition should succeed");
+        assert_eq!(context.runtime_environment.current(), Environment::Kde);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Idle,
+            &context,
+            "idle",
+            &starter,
+        )
+        .await
+        .expect("idle transition should succeed");
+        assert_eq!(context.runtime_environment.current(), Environment::Unknown);
+        assert!(state.backend.is_none());
+
+        assert_eq!(
+            started_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::X11, BackendKind::Wayland, BackendKind::Kde,]
+        );
+        assert_eq!(
+            stopped_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::X11, BackendKind::Wayland, BackendKind::Kde,]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_stop_current_backend_with_no_backend_is_noop() {
     with_test_timeout(async {
         let context = test_backend_context();
@@ -3166,6 +3306,81 @@ async fn test_run_lifecycle_supervisor_rechecks_wayland_capabilities_without_new
         assert!(
             resolver_calls.load(Ordering::SeqCst) >= 2,
             "resolver should be called again without new lifecycle snapshots"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_recovers_after_transient_wayland_resolver_error() {
+    with_test_timeout(async {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(LifecycleSnapshot {
+                active: true,
+                session_type: "wayland".to_string(),
+                session_kind: SessionKind::GraphicalWayland,
+            })
+            .expect("snapshot send should succeed");
+        drop(sender);
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls_clone = resolver_calls.clone();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| {
+                let resolver_calls = resolver_calls_clone.clone();
+                async move {
+                    let call_index = resolver_calls.fetch_add(1, Ordering::SeqCst);
+                    if call_index == 0 {
+                        Ok(RuntimeTarget::Backend(BackendKind::Wayland))
+                    } else if call_index == 1 {
+                        Err(std::io::Error::other("transient capability probe failure").into())
+                    } else {
+                        Ok(RuntimeTarget::Backend(BackendKind::Gnome))
+                    }
+                }
+            },
+            std::time::Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should remain alive after transient resolver error");
+        assert_eq!(outcome, RunOutcome::Exit);
+
+        let kinds = started_kinds.lock().unwrap().clone();
+        assert_eq!(kinds.first(), Some(&BackendKind::Wayland));
+        assert!(
+            kinds.contains(&BackendKind::Gnome),
+            "supervisor should recover and transition once resolver succeeds again"
+        );
+        assert!(
+            resolver_calls.load(Ordering::SeqCst) >= 3,
+            "resolver should continue running after transient failures"
         );
     })
     .await;

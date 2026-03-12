@@ -15,6 +15,8 @@
 11. **SNI runtime-environment coherence** - local SNI pause/unpause uses runtime backend environment published by supervisor transitions, not fixed startup environment
 12. **Wayland capability re-evaluation** - supervisor periodically re-resolves wayland backend flavor from last lifecycle snapshot to handle GNOME/KDE readiness races without waiting for new logind events
 13. **Runtime-driven SNI lifecycle** - SNI control mode (local/dbus/off) is selected from current runtime environment transitions, not only startup environment detection
+14. **Transient Wayland capability probe errors are non-fatal** - supervisor logs resolver failures, keeps the current backend alive, and retries on subsequent lifecycle/recheck ticks
+15. **DE transitions rebuild SNI resources restart-style** - runtime SNI transition planning now restarts indicator resources on every environment change (even same control mode), making DE switches equivalent to restart semantics for indicator state/resources
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 
