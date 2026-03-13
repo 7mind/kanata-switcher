@@ -2274,6 +2274,27 @@ fn test_session_type_to_session_kind_mappings() {
 }
 
 #[test]
+fn test_validate_active_logind_session_type_rejects_empty_for_active_session() {
+    let result = validate_active_logind_session_type(true, "");
+    assert_eq!(
+        result,
+        Err("[Lifecycle] logind Type property is empty for an active session")
+    );
+}
+
+#[test]
+fn test_validate_active_logind_session_type_allows_empty_for_inactive_session() {
+    let result = validate_active_logind_session_type(false, "");
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn test_validate_active_logind_session_type_allows_non_empty_for_active_session() {
+    let result = validate_active_logind_session_type(true, "wayland");
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
 fn test_active_unknown_session_type_resolves_to_idle_target() {
     let session_kind = session_type_to_session_kind(true, "mir");
     assert_eq!(session_kind, SessionKind::NoSession);

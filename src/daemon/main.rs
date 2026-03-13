@@ -2423,10 +2423,9 @@ impl LogindLifecycleProvider {
         )
         .await?;
         let active: bool = session_proxy.get_property("Active").await?;
-        let session_type: String = session_proxy
-            .get_property("Type")
-            .await
-            .unwrap_or_else(|_| String::new());
+        let session_type: String = session_proxy.get_property("Type").await?;
+        validate_active_logind_session_type(active, &session_type)
+            .map_err(std::io::Error::other)?;
 
         let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
             .destination(LOGIND_BUS_NAME)?
@@ -2481,6 +2480,16 @@ impl LogindLifecycleProvider {
     async fn next_snapshot(&mut self) -> Option<LifecycleSnapshot> {
         self.receiver.recv().await
     }
+}
+
+fn validate_active_logind_session_type(
+    active: bool,
+    session_type: &str,
+) -> Result<(), &'static str> {
+    if active && session_type.trim().is_empty() {
+        return Err("[Lifecycle] logind Type property is empty for an active session");
+    }
+    Ok(())
 }
 
 fn fail_fast_lifecycle_monitor<T>(message: String) -> T {

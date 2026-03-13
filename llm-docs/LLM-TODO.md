@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-13: Logind provider startup now requires successful non-empty `Type` for active sessions; initialization no longer defaults `Type` to empty on read errors (prevents silent idle `NoSession` startup).
 - 2026-03-13: Logind lifecycle listener now fails fast at process level on signal/decode errors (`exit(1)` from the detached monitor task) so lifecycle supervision cannot silently continue in a stale state.
 - 2026-03-12: Supervisor no longer exits on transient Wayland capability resolver failures; it logs probe errors, keeps current backend running, and retries on later recheck/snapshot events.
 - 2026-03-12: SNI guard is now created whenever indicator is enabled (independent of startup GNOME), so runtime transitions can still enable indicator/local controls after non-graphical or GNOME startup states.
