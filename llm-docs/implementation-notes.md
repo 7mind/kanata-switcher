@@ -17,6 +17,7 @@
 13. **Runtime-driven SNI lifecycle** - SNI control mode (local/dbus/off) is selected from current runtime environment transitions, not only startup environment detection
 14. **Transient Wayland capability probe errors are non-fatal** - supervisor logs resolver failures, keeps the current backend alive, and retries on subsequent lifecycle/recheck ticks
 15. **DE transitions rebuild SNI resources restart-style** - runtime SNI transition planning now restarts indicator resources on every environment change (even same control mode), making DE switches equivalent to restart semantics for indicator state/resources
+16. **Logind monitor decode is process-fatal** - signal/decode failures in the detached logind listener now trigger explicit process termination (`exit(1)`), preventing silent degradation to stale lifecycle state
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 

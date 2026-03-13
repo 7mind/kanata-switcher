@@ -2295,6 +2295,7 @@ fn test_decode_logind_change_emits_on_type_change_without_active_change() {
     let type_value = Value::from(Str::from("x11"));
     let snapshot =
         decode_logind_lifecycle_snapshot_change(true, "wayland", None, Some(&type_value))
+            .expect("logind decode should succeed")
             .expect("type change should emit snapshot");
     assert!(snapshot.active);
     assert_eq!(snapshot.session_type, "x11");
@@ -2314,27 +2315,45 @@ fn test_decode_logind_change_skips_duplicate_active_and_type_values() {
             Some(&active_value),
             Some(&type_value)
         )
+        .expect("logind decode should succeed")
         .is_none(),
         "duplicate values should not emit snapshots"
     );
 }
 
 #[test]
-#[should_panic(expected = "Failed to parse logind Active property")]
-fn test_decode_logind_change_panics_on_invalid_active_value() {
+fn test_decode_logind_change_errors_on_invalid_active_value() {
     use zbus::zvariant::{Str, Value};
 
     let active_value = Value::from(Str::from("true"));
-    let _ = decode_logind_lifecycle_snapshot_change(true, "wayland", Some(&active_value), None);
+    let result =
+        decode_logind_lifecycle_snapshot_change(true, "wayland", Some(&active_value), None);
+    assert_eq!(
+        result,
+        Err("[Lifecycle] Failed to parse logind Active property".to_string())
+    );
 }
 
 #[test]
-#[should_panic(expected = "Failed to parse logind Type property")]
-fn test_decode_logind_change_panics_on_invalid_type_value() {
+fn test_decode_logind_change_errors_on_invalid_type_value() {
     use zbus::zvariant::Value;
 
     let type_value = Value::from(7i32);
-    let _ = decode_logind_lifecycle_snapshot_change(true, "wayland", None, Some(&type_value));
+    let result = decode_logind_lifecycle_snapshot_change(true, "wayland", None, Some(&type_value));
+    assert_eq!(
+        result,
+        Err("[Lifecycle] Failed to parse logind Type property".to_string())
+    );
+}
+
+#[test]
+#[should_panic(expected = "mapped-boom")]
+fn test_expect_or_fail_fast_uses_fail_handler_for_error_results() {
+    let _: u8 = expect_or_fail_fast(
+        Err::<u8, _>("boom"),
+        |error| format!("mapped-{}", error),
+        |message| panic!("{}", message),
+    );
 }
 
 #[test]

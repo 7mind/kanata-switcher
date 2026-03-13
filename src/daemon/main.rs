@@ -2449,15 +2449,20 @@ impl LogindLifecycleProvider {
             let mut last_active = active;
             let mut last_type = session_type;
             while let Some(signal) = signals.next().await {
-                let args = match signal.args() {
-                    Ok(args) => args,
-                    Err(error) => panic!("[Lifecycle] Failed to decode logind signal: {}", error),
-                };
-                let snapshot = decode_logind_lifecycle_snapshot_change(
-                    last_active,
-                    &last_type,
-                    args.changed_properties.get("Active"),
-                    args.changed_properties.get("Type"),
+                let args = expect_or_fail_fast(
+                    signal.args(),
+                    |error| format!("[Lifecycle] Failed to decode logind signal: {}", error),
+                    fail_fast_lifecycle_monitor,
+                );
+                let snapshot = expect_or_fail_fast(
+                    decode_logind_lifecycle_snapshot_change(
+                        last_active,
+                        &last_type,
+                        args.changed_properties.get("Active"),
+                        args.changed_properties.get("Type"),
+                    ),
+                    |error| error,
+                    fail_fast_lifecycle_monitor,
                 );
                 let Some(snapshot) = snapshot else {
                     continue;
@@ -2478,21 +2483,36 @@ impl LogindLifecycleProvider {
     }
 }
 
+fn fail_fast_lifecycle_monitor<T>(message: String) -> T {
+    eprintln!("{}", message);
+    std::process::exit(1);
+}
+
+fn expect_or_fail_fast<T, E, MF, FF>(result: Result<T, E>, map_error: MF, fail_fast: FF) -> T
+where
+    MF: FnOnce(E) -> String,
+    FF: FnOnce(String) -> T,
+{
+    match result {
+        Ok(value) => value,
+        Err(error) => fail_fast(map_error(error)),
+    }
+}
+
 fn decode_logind_lifecycle_snapshot_change(
     last_active: bool,
     last_type: &str,
     active_value: Option<&Value<'_>>,
     type_value: Option<&Value<'_>>,
-) -> Option<LifecycleSnapshot> {
+) -> Result<Option<LifecycleSnapshot>, String> {
     let mut next_active = last_active;
     let mut next_type = last_type.to_string();
     let mut changed = false;
 
     if let Some(value) = active_value {
-        let parsed_active = match value.downcast_ref::<bool>() {
-            Ok(parsed) => parsed,
-            Err(_) => panic!("[Lifecycle] Failed to parse logind Active property"),
-        };
+        let parsed_active = value
+            .downcast_ref::<bool>()
+            .map_err(|_| "[Lifecycle] Failed to parse logind Active property".to_string())?;
         if parsed_active != last_active {
             next_active = parsed_active;
             changed = true;
@@ -2505,7 +2525,7 @@ fn decode_logind_lifecycle_snapshot_change(
         } else if let Ok(parsed) = value.downcast_ref::<Str<'_>>() {
             parsed.to_string()
         } else {
-            panic!("[Lifecycle] Failed to parse logind Type property");
+            return Err("[Lifecycle] Failed to parse logind Type property".to_string());
         };
         if parsed_type != last_type {
             next_type = parsed_type;
@@ -2514,14 +2534,14 @@ fn decode_logind_lifecycle_snapshot_change(
     }
 
     if !changed {
-        return None;
+        return Ok(None);
     }
 
-    Some(LifecycleSnapshot {
+    Ok(Some(LifecycleSnapshot {
         active: next_active,
         session_type: next_type.clone(),
         session_kind: session_type_to_session_kind(next_active, &next_type),
-    })
+    }))
 }
 
 #[derive(Debug)]
