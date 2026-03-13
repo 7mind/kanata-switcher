@@ -3030,6 +3030,7 @@ where
     RFut: std::future::Future<Output = Result<RuntimeTarget, DynError>>,
 {
     let mut state = SupervisorState::new();
+    let allow_wayland_capability_recheck = provider.is_continuous();
     context
         .runtime_environment
         .set_current(runtime_target_to_environment(state.current_target));
@@ -3062,6 +3063,7 @@ where
                 _ = restart_receiver.changed() => {}
                 _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
                 _ = wait_for_wayland_capability_recheck(
+                    allow_wayland_capability_recheck,
                     last_snapshot.as_ref(),
                     wayland_capability_recheck_interval,
                 ) => {
@@ -3128,6 +3130,7 @@ where
                 _ = restart_receiver.changed() => {}
                 _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
                 _ = wait_for_wayland_capability_recheck(
+                    allow_wayland_capability_recheck,
                     last_snapshot.as_ref(),
                     wayland_capability_recheck_interval,
                 ) => {
@@ -3159,9 +3162,14 @@ where
 }
 
 async fn wait_for_wayland_capability_recheck(
+    enabled: bool,
     last_snapshot: Option<&LifecycleSnapshot>,
     interval: Duration,
 ) {
+    if !enabled {
+        std::future::pending::<()>().await;
+        return;
+    }
     let Some(snapshot) = last_snapshot else {
         std::future::pending::<()>().await;
         return;

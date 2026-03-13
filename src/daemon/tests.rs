@@ -3352,6 +3352,65 @@ async fn test_run_lifecycle_supervisor_rechecks_wayland_capabilities_without_new
 }
 
 #[tokio::test]
+async fn test_run_lifecycle_supervisor_startup_mode_skips_wayland_capability_rechecks() {
+    with_test_timeout(async {
+        let provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Wayland));
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls_clone = resolver_calls.clone();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| {
+                let resolver_calls = resolver_calls_clone.clone();
+                async move {
+                    let call_index = resolver_calls.fetch_add(1, Ordering::SeqCst);
+                    if call_index == 0 {
+                        Ok(RuntimeTarget::Backend(BackendKind::Wayland))
+                    } else {
+                        Ok(RuntimeTarget::Backend(BackendKind::Gnome))
+                    }
+                }
+            },
+            std::time::Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(90)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Exit);
+        assert_eq!(resolver_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            started_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::Wayland]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_run_lifecycle_supervisor_recovers_after_transient_wayland_resolver_error() {
     with_test_timeout(async {
         let (sender, receiver) = mpsc::unbounded_channel();

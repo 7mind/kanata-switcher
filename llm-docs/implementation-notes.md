@@ -19,6 +19,7 @@
 15. **DE transitions rebuild SNI resources restart-style** - runtime SNI transition planning now restarts indicator resources on every environment change (even same control mode), making DE switches equivalent to restart semantics for indicator state/resources
 16. **Logind monitor decode is process-fatal** - signal/decode failures in the detached logind listener now trigger explicit process termination (`exit(1)`), preventing silent degradation to stale lifecycle state
 17. **Logind Type is required at provider startup** - initial logind session `Type` read now errors instead of defaulting to empty, and active-session empty `Type` is rejected to avoid silent `NoSession` idle startup
+18. **Wayland capability polling is continuous-mode only** - periodic Wayland backend flavor rechecks now run only when lifecycle provider is continuous (login1); startup-snapshot mode remains strictly startup-only after its single snapshot
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 
