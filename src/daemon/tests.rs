@@ -2368,6 +2368,18 @@ fn test_decode_logind_change_errors_on_invalid_type_value() {
 }
 
 #[test]
+fn test_decode_logind_change_errors_when_active_snapshot_has_empty_type() {
+    use zbus::zvariant::Value;
+
+    let active_value = Value::from(true);
+    let result = decode_logind_lifecycle_snapshot_change(false, "", Some(&active_value), None);
+    assert_eq!(
+        result,
+        Err("[Lifecycle] logind Type property is empty for an active session".to_string())
+    );
+}
+
+#[test]
 #[should_panic(expected = "mapped-boom")]
 fn test_expect_or_fail_fast_uses_fail_handler_for_error_results() {
     let _: u8 = expect_or_fail_fast(
@@ -2375,6 +2387,14 @@ fn test_expect_or_fail_fast_uses_fail_handler_for_error_results() {
         |error| format!("mapped-{}", error),
         |message| panic!("{}", message),
     );
+}
+
+#[test]
+#[should_panic(expected = "stream-ended")]
+fn test_expect_some_or_fail_fast_uses_fail_handler_for_none() {
+    let _: u8 = expect_some_or_fail_fast(None, "stream-ended".to_string(), |message| {
+        panic!("{}", message)
+    });
 }
 
 #[test]

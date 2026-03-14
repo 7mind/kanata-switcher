@@ -2447,7 +2447,12 @@ impl LogindLifecycleProvider {
         tokio::spawn(async move {
             let mut last_active = active;
             let mut last_type = session_type;
-            while let Some(signal) = signals.next().await {
+            loop {
+                let signal = expect_some_or_fail_fast(
+                    signals.next().await,
+                    "[Lifecycle] logind properties-changed stream terminated".to_string(),
+                    fail_fast_lifecycle_monitor,
+                );
                 let args = expect_or_fail_fast(
                     signal.args(),
                     |error| format!("[Lifecycle] Failed to decode logind signal: {}", error),
@@ -2469,7 +2474,7 @@ impl LogindLifecycleProvider {
                 last_active = snapshot.active;
                 last_type = snapshot.session_type.clone();
                 if sender.send(snapshot).is_err() {
-                    break;
+                    return;
                 }
             }
         });
@@ -2495,6 +2500,16 @@ fn validate_active_logind_session_type(
 fn fail_fast_lifecycle_monitor<T>(message: String) -> T {
     eprintln!("{}", message);
     std::process::exit(1);
+}
+
+fn expect_some_or_fail_fast<T, FF>(value: Option<T>, message: String, fail_fast: FF) -> T
+where
+    FF: FnOnce(String) -> T,
+{
+    match value {
+        Some(value) => value,
+        None => fail_fast(message),
+    }
 }
 
 fn expect_or_fail_fast<T, E, MF, FF>(result: Result<T, E>, map_error: MF, fail_fast: FF) -> T
@@ -2545,6 +2560,8 @@ fn decode_logind_lifecycle_snapshot_change(
     if !changed {
         return Ok(None);
     }
+    validate_active_logind_session_type(next_active, &next_type)
+        .map_err(std::string::ToString::to_string)?;
 
     Ok(Some(LifecycleSnapshot {
         active: next_active,
