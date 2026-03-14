@@ -2216,7 +2216,7 @@ fn is_logind_no_session_error(error: &zbus::Error) -> bool {
 }
 
 enum LogindSessionPathResolutionError {
-    DisplayNotReady,
+    DisplayNotReady { user_path: OwnedObjectPath },
     Fatal(Box<dyn std::error::Error + Send + Sync>),
 }
 
@@ -2337,7 +2337,7 @@ async fn resolve_logind_display_session_path(
     let user_proxy = zbus::Proxy::new(
         connection,
         LOGIND_BUS_NAME,
-        user_path,
+        user_path.clone(),
         LOGIND_USER_INTERFACE,
     )
     .await
@@ -2351,38 +2351,71 @@ async fn resolve_logind_display_session_path(
     )
     .map_err(LogindSessionPathResolutionError::fatal)?;
     if is_logind_empty_object_path(&display) {
-        return Err(LogindSessionPathResolutionError::DisplayNotReady);
+        return Err(LogindSessionPathResolutionError::DisplayNotReady { user_path });
     }
     println!("[Logind] Using display session path: {}", display.as_str());
     Ok(display)
 }
 
-const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
+fn decode_logind_display_path_change(
+    value: Option<&Value<'_>>,
+) -> Result<Option<OwnedObjectPath>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let path = logind_object_path_from_value(value).ok_or_else(|| {
+        "[Lifecycle] Failed to parse logind User.Display property change".to_string()
+    })?;
+    if is_logind_empty_object_path(&path) {
+        return Ok(None);
+    }
+    Ok(Some(path))
+}
 
-async fn resolve_logind_session_path_for_env(
-    env: Environment,
+async fn wait_for_logind_display_session_path(
     connection: &Connection,
-) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
-    let mut attempt = 0usize;
+    user_path: OwnedObjectPath,
+) -> Result<OwnedObjectPath, DynError> {
+    let user_proxy = zbus::Proxy::new(
+        connection,
+        LOGIND_BUS_NAME,
+        user_path.clone(),
+        LOGIND_USER_INTERFACE,
+    )
+    .await?;
+    let properties_proxy = zbus::fdo::PropertiesProxy::builder(connection)
+        .destination(LOGIND_BUS_NAME)?
+        .path(user_path)?
+        .build()
+        .await?;
+    let mut signals = properties_proxy.receive_properties_changed().await?;
+
+    println!("[Logind] Waiting for display session to become ready");
     loop {
-        match resolve_logind_session_path(connection).await {
-            Ok(path) => return Ok(path),
-            Err(LogindSessionPathResolutionError::DisplayNotReady)
-                if env == Environment::Unknown =>
-            {
-                let delay_ms = LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS
-                    [attempt.min(LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS.len() - 1)];
-                println!(
-                    "[Logind] Display session not ready yet; retrying in {}ms",
-                    delay_ms
-                );
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                attempt += 1;
-            }
-            Err(LogindSessionPathResolutionError::DisplayNotReady) => {
-                return Err("logind user has no display session".into());
-            }
-            Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
+        let display =
+            parse_logind_object_path(user_proxy.get_property("Display").await?, "User.Display")?;
+        if !is_logind_empty_object_path(&display) {
+            println!("[Logind] Using display session path: {}", display.as_str());
+            return Ok(display);
+        }
+
+        let signal = expect_some_or_fail_fast(
+            signals.next().await,
+            "[Lifecycle] logind user properties-changed stream terminated".to_string(),
+            fail_fast_lifecycle_monitor,
+        );
+        let args = expect_or_fail_fast(
+            signal.args(),
+            |error| format!("[Lifecycle] Failed to decode logind user signal: {}", error),
+            fail_fast_lifecycle_monitor,
+        );
+        if let Some(display) = expect_or_fail_fast(
+            decode_logind_display_path_change(args.changed_properties.get("Display")),
+            |error| error,
+            fail_fast_lifecycle_monitor,
+        ) {
+            println!("[Logind] Using display session path: {}", display.as_str());
+            return Ok(display);
         }
     }
 }
@@ -2412,70 +2445,15 @@ struct LogindLifecycleProvider {
 }
 
 impl LogindLifecycleProvider {
-    async fn new(env: Environment) -> Result<Self, DynError> {
+    async fn new() -> Result<Self, DynError> {
         let connection = Connection::system().await?;
-        let session_path = resolve_logind_session_path_for_env(env, &connection).await?;
-        let session_proxy = zbus::Proxy::new(
-            &connection,
-            LOGIND_BUS_NAME,
-            session_path.clone(),
-            LOGIND_SESSION_INTERFACE,
-        )
-        .await?;
-        let active: bool = session_proxy.get_property("Active").await?;
-        let session_type: String = session_proxy.get_property("Type").await?;
-        validate_active_logind_session_type(active, &session_type)
-            .map_err(std::io::Error::other)?;
-
-        let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
-            .destination(LOGIND_BUS_NAME)?
-            .path(session_path)?
-            .build()
-            .await?;
-        let mut signals = properties_proxy.receive_properties_changed().await?;
-
         let (sender, receiver) = mpsc::unbounded_channel();
-        let initial = LifecycleSnapshot {
-            active,
-            session_type: session_type.clone(),
-            session_kind: session_type_to_session_kind(active, &session_type),
-        };
-        sender
-            .send(initial)
-            .expect("lifecycle receiver dropped during provider init");
-
         tokio::spawn(async move {
-            let mut last_active = active;
-            let mut last_type = session_type;
-            loop {
-                let signal = expect_some_or_fail_fast(
-                    signals.next().await,
-                    "[Lifecycle] logind properties-changed stream terminated".to_string(),
-                    fail_fast_lifecycle_monitor,
-                );
-                let args = expect_or_fail_fast(
-                    signal.args(),
-                    |error| format!("[Lifecycle] Failed to decode logind signal: {}", error),
-                    fail_fast_lifecycle_monitor,
-                );
-                let snapshot = expect_or_fail_fast(
-                    decode_logind_lifecycle_snapshot_change(
-                        last_active,
-                        &last_type,
-                        args.changed_properties.get("Active"),
-                        args.changed_properties.get("Type"),
-                    ),
-                    |error| error,
-                    fail_fast_lifecycle_monitor,
-                );
-                let Some(snapshot) = snapshot else {
-                    continue;
-                };
-                last_active = snapshot.active;
-                last_type = snapshot.session_type.clone();
-                if sender.send(snapshot).is_err() {
-                    return;
-                }
+            if let Err(error) = monitor_logind_lifecycle(connection, sender).await {
+                fail_fast_lifecycle_monitor::<()>(format!(
+                    "[Lifecycle] Failed to initialize logind lifecycle monitor: {}",
+                    error
+                ));
             }
         });
 
@@ -2520,6 +2498,79 @@ where
     match result {
         Ok(value) => value,
         Err(error) => fail_fast(map_error(error)),
+    }
+}
+
+async fn monitor_logind_lifecycle(
+    connection: Connection,
+    sender: mpsc::UnboundedSender<LifecycleSnapshot>,
+) -> Result<(), DynError> {
+    let session_path = match resolve_logind_session_path(&connection).await {
+        Ok(path) => path,
+        Err(LogindSessionPathResolutionError::DisplayNotReady { user_path }) => {
+            wait_for_logind_display_session_path(&connection, user_path).await?
+        }
+        Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
+    };
+
+    let session_proxy = zbus::Proxy::new(
+        &connection,
+        LOGIND_BUS_NAME,
+        session_path.clone(),
+        LOGIND_SESSION_INTERFACE,
+    )
+    .await?;
+    let active: bool = session_proxy.get_property("Active").await?;
+    let session_type: String = session_proxy.get_property("Type").await?;
+    validate_active_logind_session_type(active, &session_type).map_err(std::io::Error::other)?;
+
+    let properties_proxy = zbus::fdo::PropertiesProxy::builder(&connection)
+        .destination(LOGIND_BUS_NAME)?
+        .path(session_path)?
+        .build()
+        .await?;
+    let mut signals = properties_proxy.receive_properties_changed().await?;
+
+    let initial = LifecycleSnapshot {
+        active,
+        session_type: session_type.clone(),
+        session_kind: session_type_to_session_kind(active, &session_type),
+    };
+    sender
+        .send(initial)
+        .expect("lifecycle receiver dropped during provider init");
+
+    let mut last_active = active;
+    let mut last_type = session_type;
+    loop {
+        let signal = expect_some_or_fail_fast(
+            signals.next().await,
+            "[Lifecycle] logind properties-changed stream terminated".to_string(),
+            fail_fast_lifecycle_monitor,
+        );
+        let args = expect_or_fail_fast(
+            signal.args(),
+            |error| format!("[Lifecycle] Failed to decode logind signal: {}", error),
+            fail_fast_lifecycle_monitor,
+        );
+        let snapshot = expect_or_fail_fast(
+            decode_logind_lifecycle_snapshot_change(
+                last_active,
+                &last_type,
+                args.changed_properties.get("Active"),
+                args.changed_properties.get("Type"),
+            ),
+            |error| error,
+            fail_fast_lifecycle_monitor,
+        );
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        last_active = snapshot.active;
+        last_type = snapshot.session_type.clone();
+        if sender.send(snapshot).is_err() {
+            return Ok(());
+        }
     }
 }
 
@@ -2578,7 +2629,7 @@ enum LifecycleProvider {
 
 impl LifecycleProvider {
     async fn build(env: Environment) -> Self {
-        match LogindLifecycleProvider::new(env).await {
+        match LogindLifecycleProvider::new().await {
             Ok(provider) => {
                 println!("[Lifecycle] Provider=logind (continuous)");
                 Self::Logind(provider)

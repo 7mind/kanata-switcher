@@ -2380,6 +2380,50 @@ fn test_decode_logind_change_errors_when_active_snapshot_has_empty_type() {
 }
 
 #[test]
+fn test_decode_logind_display_path_change_returns_none_without_display_update() {
+    assert_eq!(
+        decode_logind_display_path_change(None).expect("decode should succeed"),
+        None
+    );
+}
+
+#[test]
+fn test_decode_logind_display_path_change_parses_object_path() {
+    use zbus::zvariant::{ObjectPath, Value};
+
+    let display =
+        ObjectPath::try_from("/org/freedesktop/login1/session/_42").expect("valid object path");
+    let value = Value::from(display);
+    let parsed = decode_logind_display_path_change(Some(&value))
+        .expect("decode should succeed")
+        .expect("display path should be present");
+    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_42");
+}
+
+#[test]
+fn test_decode_logind_display_path_change_ignores_empty_path() {
+    use zbus::zvariant::{ObjectPath, Value};
+
+    let display = ObjectPath::try_from("/").expect("valid object path");
+    let value = Value::from(display);
+    assert_eq!(
+        decode_logind_display_path_change(Some(&value)).expect("decode should succeed"),
+        None
+    );
+}
+
+#[test]
+fn test_decode_logind_display_path_change_errors_on_invalid_value() {
+    use zbus::zvariant::Value;
+
+    let value = Value::from(42u32);
+    assert_eq!(
+        decode_logind_display_path_change(Some(&value)),
+        Err("[Lifecycle] Failed to parse logind User.Display property change".to_string())
+    );
+}
+
+#[test]
 #[should_panic(expected = "mapped-boom")]
 fn test_expect_or_fail_fast_uses_fail_handler_for_error_results() {
     let _: u8 = expect_or_fail_fast(
@@ -3142,6 +3186,23 @@ async fn test_run_lifecycle_supervisor_shutdown_after_startup_provider_exhausted
             .expect("supervisor task join")
             .expect("supervisor should return outcome");
         assert_eq!(outcome, RunOutcome::Exit);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_handles_shutdown_before_first_logind_snapshot() {
+    with_test_timeout(async {
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+
+        shutdown_handle.request();
+        let outcome =
+            run_lifecycle_supervisor(provider, context, restart_handle, shutdown_handle).await;
+        assert_eq!(outcome.unwrap(), RunOutcome::Exit);
     })
     .await;
 }
