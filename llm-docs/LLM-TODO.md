@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-14: DBus service registration is now daemon-persistent and lifecycle-independent. A dedicated manager keeps `com.github.kanata.Switcher` owned whenever session bus exists, handles `NameLost` push events, and reconnects/re-registers after bus loss. This prevents `--restart`/control API loss during idle logout/login transitions.
 - 2026-03-14: Logind lifecycle monitor now detaches stale session properties monitoring when `User.Display` becomes `/`, so normal logout session teardown cannot kill the daemon; monitor waits for next display session path and reattaches.
 - 2026-03-14: Logind lifecycle monitor now tracks `User.Display` transitions during runtime and reattaches to new display session paths after logout/login, preventing post-login stale idle supervision.
 - 2026-03-14: Logind lifecycle provider initialization is now non-blocking. When pre-login display session is unavailable, the detached lifecycle monitor waits on login1 `User.Display` properties-changed signals (push-based) and attaches once ready, so daemon startup does not block and does not require external restart supervision.

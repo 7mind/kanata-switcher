@@ -2945,21 +2945,6 @@ async fn run_wayland_backend_task(
     context: BackendContext,
     shutdown_handle: ShutdownHandle,
 ) -> Result<BackendExit, DynError> {
-    let connection = Connection::session().await?;
-    let focus_query_connection = Connection::session().await?;
-    register_dbus_service(
-        &connection,
-        focus_query_connection,
-        Environment::Wayland,
-        false,
-        context.kanata.clone(),
-        context.handler.clone(),
-        context.status_broadcaster.clone(),
-        context.restart_handle.clone(),
-        context.pause_broadcaster.clone(),
-    )
-    .await?;
-    let _dbus_control_guard = DbusControlGuard::new(connection);
     run_wayland(
         context.kanata,
         context.handler,
@@ -2975,21 +2960,6 @@ async fn run_x11_backend_task(
     context: BackendContext,
     shutdown_handle: ShutdownHandle,
 ) -> Result<BackendExit, DynError> {
-    let connection = Connection::session().await?;
-    let focus_query_connection = Connection::session().await?;
-    register_dbus_service(
-        &connection,
-        focus_query_connection,
-        Environment::X11,
-        false,
-        context.kanata.clone(),
-        context.handler.clone(),
-        context.status_broadcaster.clone(),
-        context.restart_handle.clone(),
-        context.pause_broadcaster.clone(),
-    )
-    .await?;
-    let _dbus_control_guard = DbusControlGuard::new(connection);
     run_x11(
         context.kanata,
         context.handler,
@@ -5098,18 +5068,6 @@ impl Drop for SniGuard {
     }
 }
 
-struct DbusControlGuard {
-    _connection: Connection,
-}
-
-impl DbusControlGuard {
-    fn new(connection: Connection) -> Self {
-        Self {
-            _connection: connection,
-        }
-    }
-}
-
 fn dconf_get_bool(key: &str) -> Result<bool, String> {
     let output = Command::new("dconf")
         .args(["read", key])
@@ -5879,6 +5837,7 @@ struct DbusWindowFocusService {
     env: Environment,
     focus_query_connection: Connection,
     is_kde6: bool,
+    runtime_environment: Option<RuntimeEnvironmentBroadcaster>,
 }
 
 #[zbus::interface(name = "com.github.kanata.Switcher")]
@@ -5958,10 +5917,18 @@ impl DbusWindowFocusService {
     }
 
     async fn unpause(&self) {
+        let (env, connection, is_kde6) = match &self.runtime_environment {
+            Some(runtime_environment) => resolve_runtime_unpause_context(runtime_environment).await,
+            None => (
+                self.env,
+                Some(self.focus_query_connection.clone()),
+                self.is_kde6,
+            ),
+        };
         unpause_daemon(
-            self.env,
-            Some(self.focus_query_connection.clone()),
-            self.is_kde6,
+            env,
+            connection,
+            is_kde6,
             &self.pause_broadcaster,
             &self.handler,
             &self.status_broadcaster,
@@ -5972,6 +5939,48 @@ impl DbusWindowFocusService {
     }
 }
 
+async fn resolve_runtime_unpause_context(
+    runtime_environment: &RuntimeEnvironmentBroadcaster,
+) -> (Environment, Option<Connection>, bool) {
+    let env = runtime_environment.current();
+    let connection = if environment_requires_focus_query_connection(env) {
+        Some(Connection::session().await.unwrap_or_else(|error| {
+            panic!(
+                "[DBus] Failed to connect to session bus for unpause focus query: {}",
+                error
+            )
+        }))
+    } else {
+        None
+    };
+    let is_kde6 = env == Environment::Kde
+        && env::var("KDE_SESSION_VERSION")
+            .map(|value| value == "6")
+            .unwrap_or(false);
+    (env, connection, is_kde6)
+}
+
+fn environment_requires_focus_query_connection(env: Environment) -> bool {
+    matches!(
+        env,
+        Environment::Gnome | Environment::Kde | Environment::Wayland | Environment::X11
+    )
+}
+
+struct DbusServiceRegistration {
+    _connection: Connection,
+    status_signal_task: tokio::task::JoinHandle<()>,
+    pause_signal_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for DbusServiceRegistration {
+    fn drop(&mut self) {
+        self.status_signal_task.abort();
+        self.pause_signal_task.abort();
+    }
+}
+
+#[cfg(test)]
 async fn register_dbus_service(
     connection: &Connection,
     focus_query_connection: Connection,
@@ -5982,7 +5991,34 @@ async fn register_dbus_service(
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<DbusServiceRegistration, DynError> {
+    register_dbus_service_with_runtime_environment(
+        connection,
+        focus_query_connection,
+        env,
+        is_kde6,
+        kanata,
+        handler,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+        None,
+    )
+    .await
+}
+
+async fn register_dbus_service_with_runtime_environment(
+    connection: &Connection,
+    focus_query_connection: Connection,
+    env: Environment,
+    is_kde6: bool,
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+    runtime_environment: Option<RuntimeEnvironmentBroadcaster>,
+) -> Result<DbusServiceRegistration, DynError> {
     let service = DbusWindowFocusService {
         kanata,
         handler,
@@ -5993,20 +6029,15 @@ async fn register_dbus_service(
         env,
         focus_query_connection,
         is_kde6,
+        runtime_environment,
     };
 
-    connection
-        .object_server()
-        .at("/com/github/kanata/Switcher", service)
-        .await?;
+    connection.object_server().at(DBUS_PATH, service).await?;
 
-    connection
-        .request_name("com.github.kanata.Switcher")
-        .await?;
+    connection.request_name(DBUS_NAME).await?;
 
     let mut receiver = status_broadcaster.subscribe();
-    let signal_emitter =
-        SignalEmitter::new(connection, "/com/github/kanata/Switcher")?.into_owned();
+    let signal_emitter = SignalEmitter::new(connection, DBUS_PATH)?.into_owned();
     let initial_status = status_broadcaster.snapshot();
     let initial_virtual_keys: Vec<&str> = initial_status
         .virtual_keys
@@ -6021,7 +6052,7 @@ async fn register_dbus_service(
     )
     .await?;
     let signal_emitter_task = signal_emitter.clone();
-    tokio::spawn(async move {
+    let status_signal_task = tokio::spawn(async move {
         let mut last = receiver.borrow().clone();
         loop {
             if receiver.changed().await.is_err() {
@@ -6046,7 +6077,7 @@ async fn register_dbus_service(
     let mut pause_receiver = pause_broadcaster.subscribe();
     let pause_emitter = signal_emitter.clone();
     DbusWindowFocusService::paused_changed(&pause_emitter, pause_broadcaster.is_paused()).await?;
-    tokio::spawn(async move {
+    let pause_signal_task = tokio::spawn(async move {
         let mut last = *pause_receiver.borrow();
         loop {
             if pause_receiver.changed().await.is_err() {
@@ -6060,7 +6091,11 @@ async fn register_dbus_service(
         }
     });
 
-    Ok(())
+    Ok(DbusServiceRegistration {
+        _connection: connection.clone(),
+        status_signal_task,
+        pause_signal_task,
+    })
 }
 
 // === GNOME Backend ===
@@ -6073,21 +6108,7 @@ async fn run_gnome(
     pause_broadcaster: PauseBroadcaster,
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
-    let connection = Connection::session().await?;
     let focus_query_connection = Connection::session().await?;
-    register_dbus_service(
-        &connection,
-        focus_query_connection.clone(),
-        Environment::Gnome,
-        false,
-        kanata.clone(),
-        handler.clone(),
-        status_broadcaster.clone(),
-        restart_handle.clone(),
-        pause_broadcaster.clone(),
-    )
-    .await?;
-
     apply_focus_for_env(
         Environment::Gnome,
         Some(&focus_query_connection),
@@ -6199,18 +6220,6 @@ async fn run_kde(
     let is_kde6 = env::var("KDE_SESSION_VERSION")
         .map(|v| v == "6")
         .unwrap_or(false);
-    register_dbus_service(
-        &connection,
-        focus_query_connection.clone(),
-        Environment::Kde,
-        is_kde6,
-        kanata.clone(),
-        handler.clone(),
-        status_broadcaster.clone(),
-        restart_handle.clone(),
-        pause_broadcaster.clone(),
-    )
-    .await?;
 
     apply_focus_for_env(
         Environment::Kde,
@@ -6333,6 +6342,216 @@ notifyFocus(workspace.{active});
     Ok(outcome)
 }
 
+const DBUS_RECONNECT_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
+
+fn dbus_reconnect_delay(attempt: usize) -> Duration {
+    let index = attempt.min(DBUS_RECONNECT_DELAYS_MS.len() - 1);
+    Duration::from_millis(DBUS_RECONNECT_DELAYS_MS[index])
+}
+
+struct PersistentDbusServiceGuard {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PersistentDbusServiceGuard {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn start_persistent_dbus_service(
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+    runtime_environment: RuntimeEnvironmentBroadcaster,
+    shutdown_handle: ShutdownHandle,
+) -> PersistentDbusServiceGuard {
+    start_persistent_dbus_service_with_connector(
+        || async {
+            Connection::session()
+                .await
+                .map_err(|error| -> DynError { Box::new(error) })
+        },
+        kanata,
+        handler,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+        runtime_environment,
+        shutdown_handle,
+    )
+}
+
+fn start_persistent_dbus_service_with_connector<C, CFut>(
+    connector: C,
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+    runtime_environment: RuntimeEnvironmentBroadcaster,
+    shutdown_handle: ShutdownHandle,
+) -> PersistentDbusServiceGuard
+where
+    C: Fn() -> CFut + Send + Sync + 'static,
+    CFut: std::future::Future<Output = Result<Connection, DynError>> + Send + 'static,
+{
+    let task = tokio::spawn(async move {
+        run_persistent_dbus_service_with_connector(
+            connector,
+            kanata,
+            handler,
+            status_broadcaster,
+            restart_handle,
+            pause_broadcaster,
+            runtime_environment,
+            shutdown_handle,
+        )
+        .await;
+    });
+    PersistentDbusServiceGuard { task }
+}
+
+async fn run_persistent_dbus_service_with_connector<C, CFut>(
+    connector: C,
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+    pause_broadcaster: PauseBroadcaster,
+    runtime_environment: RuntimeEnvironmentBroadcaster,
+    shutdown_handle: ShutdownHandle,
+) where
+    C: Fn() -> CFut + Send + Sync + 'static,
+    CFut: std::future::Future<Output = Result<Connection, DynError>> + Send + 'static,
+{
+    let mut restart_receiver = restart_handle.subscribe();
+    let mut shutdown_receiver = shutdown_handle.subscribe();
+    let mut reconnect_attempt = 0usize;
+
+    loop {
+        if *shutdown_receiver.borrow() || *restart_receiver.borrow() {
+            return;
+        }
+
+        let connection = match connector().await {
+            Ok(connection) => {
+                reconnect_attempt = 0;
+                connection
+            }
+            Err(error) => {
+                let delay = dbus_reconnect_delay(reconnect_attempt);
+                eprintln!(
+                    "[DBus] Session bus unavailable; retrying in {}ms: {}",
+                    delay.as_millis(),
+                    error
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = shutdown_receiver.changed() => {}
+                    _ = restart_receiver.changed() => {}
+                }
+                reconnect_attempt += 1;
+                continue;
+            }
+        };
+
+        let registration = match register_dbus_service_with_runtime_environment(
+            &connection,
+            connection.clone(),
+            Environment::Unknown,
+            false,
+            kanata.clone(),
+            handler.clone(),
+            status_broadcaster.clone(),
+            restart_handle.clone(),
+            pause_broadcaster.clone(),
+            Some(runtime_environment.clone()),
+        )
+        .await
+        {
+            Ok(registration) => {
+                println!("[DBus] Control service registered");
+                reconnect_attempt = 0;
+                registration
+            }
+            Err(error) => {
+                let delay = dbus_reconnect_delay(reconnect_attempt);
+                eprintln!(
+                    "[DBus] Failed to register control service; retrying in {}ms: {}",
+                    delay.as_millis(),
+                    error
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = shutdown_receiver.changed() => {}
+                    _ = restart_receiver.changed() => {}
+                }
+                reconnect_attempt += 1;
+                continue;
+            }
+        };
+
+        let proxy = match zbus::fdo::DBusProxy::new(&connection).await {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                eprintln!(
+                    "[DBus] Failed to create DBus proxy for name-loss monitoring: {}",
+                    error
+                );
+                drop(registration);
+                continue;
+            }
+        };
+        let mut name_lost = match proxy.receive_name_lost_with_args(&[(0, DBUS_NAME)]).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!(
+                    "[DBus] Failed to subscribe to NameLost; reconnecting: {}",
+                    error
+                );
+                drop(registration);
+                continue;
+            }
+        };
+
+        tokio::select! {
+            _ = shutdown_receiver.changed() => {
+                drop(registration);
+            }
+            _ = restart_receiver.changed() => {
+                drop(registration);
+            }
+            signal = name_lost.next() => {
+                match signal {
+                    Some(signal) => {
+                        match signal.args() {
+                            Ok(args) => {
+                                eprintln!(
+                                    "[DBus] Lost well-known name {}; re-registering",
+                                    args.name()
+                                );
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "[DBus] Failed to decode NameLost signal; re-registering: {}",
+                                    error
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!("[DBus] NameLost stream terminated; re-registering");
+                    }
+                }
+                drop(registration);
+            }
+        }
+    }
+}
+
 // === Main ===
 
 #[tokio::main]
@@ -6423,6 +6642,15 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     // Create shutdown guard - will switch to default layer when dropped
     let _shutdown_guard = ShutdownGuard::new(kanata.clone());
     let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Unknown);
+    let _persistent_dbus_service_guard = start_persistent_dbus_service(
+        kanata.clone(),
+        focus_handler.clone(),
+        status_broadcaster.clone(),
+        restart_handle.clone(),
+        pause_broadcaster.clone(),
+        runtime_environment.clone(),
+        shutdown_handle.clone(),
+    );
 
     // Set up signal handlers
     let shutdown_handle_for_signal = shutdown_handle.clone();

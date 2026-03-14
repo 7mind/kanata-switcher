@@ -53,6 +53,11 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - KDE: daemon injects a one-shot KWin script and receives a DBus callback
 - Wayland/X11: daemon queries the active window directly
 
+DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
+- remains registered while session bus is available, including lifecycle `Idle`
+- receives `NameLost` push signals and re-registers on bus/name loss
+- retries session-bus connect/register with bounded backoff when bus is unavailable
+
 ## Wayland Toplevel Protocol
 
 The Wayland backend tries protocols in order:
