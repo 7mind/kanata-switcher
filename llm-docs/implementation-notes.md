@@ -23,6 +23,19 @@
 19. **Logind monitor stream health is fail-fast** - if the properties-changed stream terminates unexpectedly, the monitor now fails the process instead of silently degrading to stale lifecycle state
 20. **Startup-snapshot resolver failures are fatal** - in startup-only lifecycle mode, initial target resolution errors now fail supervisor startup instead of logging-and-idling with no backend
 
+## Lifecycle Design Note
+
+Problem observed in the field:
+- If the daemon starts before any graphical login (common with lingering user services), startup can stall indefinitely while waiting for logind display-session readiness.
+- Timeout-based startup failover avoids hanging but makes persistence depend on an external restart supervisor.
+
+Target behavior (best design):
+1. Lifecycle provider initialization must be non-blocking.
+2. Supervisor should start immediately in Idle and remain process-persistent.
+3. Logind integration should use push-based subscriptions (manager/user/session signal path), not startup polling loops.
+4. Session monitoring should attach when display session appears and emit snapshots then.
+5. Daemon should self-recover after arbitrarily long pre-login idle periods without requiring systemd restarts.
+
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 
 ## Rust Dependencies

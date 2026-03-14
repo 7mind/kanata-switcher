@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-14: Design direction documented for pre-login persistence: non-blocking lifecycle init, immediate Idle supervision, push-based logind session readiness/events, and no dependence on external restart supervisors.
 - 2026-03-14: Startup-snapshot lifecycle now fails hard when initial runtime target resolution errors (instead of skipping and staying idle with no backend).
 - 2026-03-13: Logind properties-changed stream termination now fails fast (process exit) instead of silently exhausting the provider channel and freezing lifecycle transitions.
 - 2026-03-13: Signal decode path now enforces the same active-session non-empty `Type` invariant as startup init; active snapshots with empty `Type` are rejected/fail-fast.
