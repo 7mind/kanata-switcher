@@ -4872,7 +4872,7 @@ fn start_sni_indicator(
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     indicator_focus_only: Option<TrayFocusOnly>,
-) -> Option<ksni::Handle<SniIndicator>> {
+) -> Option<SniIndicatorRuntimeHandle> {
     println!("[SNI] Starting StatusNotifier indicator");
     let initial_status = status_broadcaster.snapshot();
     let mut settings = SniSettingsStore::new();
@@ -4893,7 +4893,9 @@ fn start_sni_indicator(
 
     let status_handle = handle.clone();
     let mut status_receiver = status_broadcaster.subscribe();
-    tokio::spawn(async move {
+    let status_watch_task = tokio::spawn(async move {
+        #[cfg(test)]
+        let _watcher_guard = SniWatcherTaskGuard::new();
         loop {
             if status_receiver.changed().await.is_err() {
                 break;
@@ -4905,7 +4907,9 @@ fn start_sni_indicator(
 
     let pause_handle = handle.clone();
     let mut pause_receiver = pause_broadcaster.subscribe();
-    tokio::spawn(async move {
+    let pause_watch_task = tokio::spawn(async move {
+        #[cfg(test)]
+        let _watcher_guard = SniWatcherTaskGuard::new();
         loop {
             if pause_receiver.changed().await.is_err() {
                 break;
@@ -4916,7 +4920,9 @@ fn start_sni_indicator(
     });
 
     let menu_handle = handle.clone();
-    tokio::spawn(async move {
+    let menu_watch_task = tokio::spawn(async move {
+        #[cfg(test)]
+        let _watcher_guard = SniWatcherTaskGuard::new();
         loop {
             if menu_refresh_receiver.changed().await.is_err() {
                 break;
@@ -4930,7 +4936,12 @@ fn start_sni_indicator(
         Err(error) => eprintln!("[SNI] Failed to run indicator: {}", error),
     });
 
-    Some(handle)
+    Some(SniIndicatorRuntimeHandle {
+        handle,
+        status_watch_task,
+        pause_watch_task,
+        menu_watch_task,
+    })
 }
 
 async fn build_sni_control_for_mode(
@@ -4969,8 +4980,56 @@ async fn build_sni_control_for_mode(
     }
 }
 
+struct SniIndicatorRuntimeHandle {
+    handle: ksni::Handle<SniIndicator>,
+    status_watch_task: tokio::task::JoinHandle<()>,
+    pause_watch_task: tokio::task::JoinHandle<()>,
+    menu_watch_task: tokio::task::JoinHandle<()>,
+}
+
+impl SniIndicatorRuntimeHandle {
+    fn shutdown(&self) {
+        self.status_watch_task.abort();
+        self.pause_watch_task.abort();
+        self.menu_watch_task.abort();
+        self.handle.shutdown();
+    }
+}
+
+impl Drop for SniIndicatorRuntimeHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(test)]
+static ACTIVE_SNI_WATCHER_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+struct SniWatcherTaskGuard;
+
+#[cfg(test)]
+impl SniWatcherTaskGuard {
+    fn new() -> Self {
+        ACTIVE_SNI_WATCHER_TASKS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for SniWatcherTaskGuard {
+    fn drop(&mut self) {
+        ACTIVE_SNI_WATCHER_TASKS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+fn sni_watcher_task_count() -> usize {
+    ACTIVE_SNI_WATCHER_TASKS.load(Ordering::SeqCst)
+}
+
 struct SniGuard {
-    handle: Arc<Mutex<Option<ksni::Handle<SniIndicator>>>>,
+    handle: Arc<Mutex<Option<SniIndicatorRuntimeHandle>>>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -4992,7 +5051,7 @@ impl SniGuard {
         restart_handle: RestartHandle,
         indicator_focus_only: Option<TrayFocusOnly>,
     ) -> Self {
-        let shared_handle: Arc<Mutex<Option<ksni::Handle<SniIndicator>>>> =
+        let shared_handle: Arc<Mutex<Option<SniIndicatorRuntimeHandle>>> =
             Arc::new(Mutex::new(None));
         let task_handle_store = shared_handle.clone();
         let mut env_receiver = runtime_environment.subscribe();
@@ -5006,7 +5065,7 @@ impl SniGuard {
                     SniRuntimeTransitionPlan::Stop => {
                         if let Some(handle) = task_handle_store.lock().unwrap().take() {
                             println!("[SNI] Shutting down indicator");
-                            handle.shutdown();
+                            drop(handle);
                         }
                         active_mode = None;
                         active_env = None;
@@ -5015,7 +5074,7 @@ impl SniGuard {
                     | SniRuntimeTransitionPlan::Restart(mode) => {
                         if let Some(handle) = task_handle_store.lock().unwrap().take() {
                             println!("[SNI] Shutting down indicator");
-                            handle.shutdown();
+                            drop(handle);
                         }
                         active_mode = None;
                         active_env = None;
@@ -5063,7 +5122,7 @@ impl Drop for SniGuard {
         }
         if let Some(handle) = self.handle.lock().unwrap().take() {
             println!("[SNI] Shutting down indicator");
-            handle.shutdown();
+            drop(handle);
         }
     }
 }

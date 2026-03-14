@@ -27,6 +27,7 @@
 23. **Display-clear detaches stale session stream** - when `User.Display` becomes `/`, lifecycle emits `NoSession` (if needed) and drops the old session properties stream so normal session-object teardown cannot trigger fail-fast; monitoring resumes on next `User.Display` session path.
 24. **DBus control service is lifecycle-independent and persistent** - DBus service registration moved out of per-backend tasks into a dedicated runtime manager task. It stays registered through idle/backend transitions, monitors `NameLost` push signals, and reconnects/re-registers after bus loss.
 25. **KDE unpause query mode is runtime-probed** - DBus unpause no longer uses startup `KDE_SESSION_VERSION` to choose KDE5 vs KDE6 focus-query mode. It probes KWin script object-path layout (`/Scripting/ScriptN` vs `/N`) on the current runtime bus and selects query mode from that.
+26. **Runtime SNI restarts do not leak watcher tasks** - indicator status/pause/menu watcher tasks are now owned by the active indicator runtime handle and aborted on indicator shutdown/drop, so repeated runtime Start/Restart transitions cannot accumulate orphaned watcher tasks.
 
 ## Lifecycle Design Note
 

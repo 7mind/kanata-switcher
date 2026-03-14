@@ -53,6 +53,8 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - KDE: daemon injects a one-shot KWin script and receives a DBus callback; unpause runtime mode selection probes KWin script object path layout at runtime (`/Scripting/ScriptN` for KDE6, `/N` for KDE5) instead of relying on startup env vars
 - Wayland/X11: daemon queries the active window directly
 
+Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions.
+
 DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
 - remains registered while session bus is available, including lifecycle `Idle`
 - receives `NameLost` push signals and re-registers on bus/name loss

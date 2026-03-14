@@ -2796,6 +2796,69 @@ async fn test_sni_local_control_tracks_runtime_environment_switches() {
     .await;
 }
 
+#[tokio::test]
+async fn test_sni_runtime_managed_transitions_do_not_leak_watcher_tasks() {
+    with_test_timeout(async {
+        async fn assert_sni_watcher_count_eventually(expected: usize, label: &str) {
+            for _ in 0..100 {
+                if sni_watcher_task_count() == expected {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            panic!(
+                "expected {} watcher tasks after {}, got {}",
+                expected,
+                label,
+                sni_watcher_task_count()
+            );
+        }
+
+        let baseline = sni_watcher_task_count();
+        let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Unknown);
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let restart_handle = RestartHandle::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            10000,
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+
+        let guard = SniGuard::runtime_managed(
+            runtime_environment.clone(),
+            tokio::runtime::Handle::current(),
+            kanata,
+            handler,
+            status_broadcaster,
+            pause_broadcaster,
+            restart_handle,
+            None,
+        );
+
+        assert_sni_watcher_count_eventually(baseline, "initial unknown state").await;
+
+        runtime_environment.set_current(Environment::Wayland);
+        assert_sni_watcher_count_eventually(baseline + 3, "first indicator start").await;
+
+        runtime_environment.set_current(Environment::X11);
+        assert_sni_watcher_count_eventually(baseline + 3, "same-mode restart").await;
+
+        runtime_environment.set_current(Environment::Unknown);
+        assert_sni_watcher_count_eventually(baseline, "indicator stop").await;
+
+        runtime_environment.set_current(Environment::Wayland);
+        assert_sni_watcher_count_eventually(baseline + 3, "second indicator start").await;
+
+        drop(guard);
+        assert_sni_watcher_count_eventually(baseline, "guard drop").await;
+    })
+    .await;
+}
+
 #[test]
 fn test_map_run_outcome_to_backend_exit() {
     assert_eq!(
