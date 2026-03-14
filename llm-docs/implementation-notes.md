@@ -23,6 +23,7 @@
 19. **Logind monitor stream health is fail-fast** - if the properties-changed stream terminates unexpectedly, the monitor now fails the process instead of silently degrading to stale lifecycle state
 20. **Startup-snapshot resolver failures are fatal** - in startup-only lifecycle mode, initial target resolution errors now fail supervisor startup instead of logging-and-idling with no backend
 21. **Logind provider init is non-blocking and push-waited** - provider construction now returns immediately; when no display session exists yet, lifecycle monitor waits on login1 `User.Display` property changes (no retry polling), then starts session monitoring and emits initial snapshot
+22. **Logind monitor reattaches after logout/login** - lifecycle monitor now watches `User.Display` while attached; when display session path changes, it rebinds to the new `Session` object and emits a fresh snapshot. This prevents stale idle state after GNOME logout/login cycles.
 
 ## Lifecycle Design Note
 

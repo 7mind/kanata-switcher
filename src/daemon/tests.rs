@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 use zbus::Message;
+use zbus::zvariant::OwnedObjectPath;
 
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -2380,10 +2381,10 @@ fn test_decode_logind_change_errors_when_active_snapshot_has_empty_type() {
 }
 
 #[test]
-fn test_decode_logind_display_path_change_returns_none_without_display_update() {
+fn test_decode_logind_display_path_change_returns_unchanged_without_display_update() {
     assert_eq!(
         decode_logind_display_path_change(None).expect("decode should succeed"),
-        None
+        LogindDisplayPathChange::Unchanged
     );
 }
 
@@ -2394,21 +2395,24 @@ fn test_decode_logind_display_path_change_parses_object_path() {
     let display =
         ObjectPath::try_from("/org/freedesktop/login1/session/_42").expect("valid object path");
     let value = Value::from(display);
-    let parsed = decode_logind_display_path_change(Some(&value))
-        .expect("decode should succeed")
-        .expect("display path should be present");
-    assert_eq!(parsed.as_str(), "/org/freedesktop/login1/session/_42");
+    assert_eq!(
+        decode_logind_display_path_change(Some(&value)).expect("decode should succeed"),
+        LogindDisplayPathChange::Path(
+            OwnedObjectPath::try_from("/org/freedesktop/login1/session/_42")
+                .expect("valid object path")
+        )
+    );
 }
 
 #[test]
-fn test_decode_logind_display_path_change_ignores_empty_path() {
+fn test_decode_logind_display_path_change_reports_empty_path() {
     use zbus::zvariant::{ObjectPath, Value};
 
     let display = ObjectPath::try_from("/").expect("valid object path");
     let value = Value::from(display);
     assert_eq!(
         decode_logind_display_path_change(Some(&value)).expect("decode should succeed"),
-        None
+        LogindDisplayPathChange::Empty
     );
 }
 
@@ -2420,6 +2424,52 @@ fn test_decode_logind_display_path_change_errors_on_invalid_value() {
     assert_eq!(
         decode_logind_display_path_change(Some(&value)),
         Err("[Lifecycle] Failed to parse logind User.Display property change".to_string())
+    );
+}
+
+#[test]
+fn test_apply_logind_display_change_reattaches_for_new_display_session_path() {
+    let current =
+        OwnedObjectPath::try_from("/org/freedesktop/login1/session/_1").expect("valid object path");
+    let next =
+        OwnedObjectPath::try_from("/org/freedesktop/login1/session/_2").expect("valid object path");
+    assert_eq!(
+        apply_logind_display_change(
+            &current,
+            false,
+            "",
+            LogindDisplayPathChange::Path(next.clone())
+        ),
+        LogindDisplayChangeAction::Reattach(next)
+    );
+}
+
+#[test]
+fn test_apply_logind_display_change_ignores_same_display_session_path() {
+    let current =
+        OwnedObjectPath::try_from("/org/freedesktop/login1/session/_1").expect("valid object path");
+    assert_eq!(
+        apply_logind_display_change(
+            &current,
+            false,
+            "",
+            LogindDisplayPathChange::Path(current.clone())
+        ),
+        LogindDisplayChangeAction::Ignore
+    );
+}
+
+#[test]
+fn test_apply_logind_display_change_emits_no_session_when_display_disappears() {
+    let current =
+        OwnedObjectPath::try_from("/org/freedesktop/login1/session/_1").expect("valid object path");
+    assert_eq!(
+        apply_logind_display_change(&current, true, "wayland", LogindDisplayPathChange::Empty),
+        LogindDisplayChangeAction::EmitNoSession(LifecycleSnapshot {
+            active: false,
+            session_type: String::new(),
+            session_kind: SessionKind::NoSession,
+        })
     );
 }
 
