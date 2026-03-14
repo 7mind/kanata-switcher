@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-14: KDE unpause runtime mode resolution no longer depends on startup `KDE_SESSION_VERSION`. DBus unpause now probes KWin script object-path layout at runtime (`/Scripting/ScriptN` vs `/N`) and selects KDE6/KDE5 query mode accordingly; added regression test for mismatched startup env (`KDE_SESSION_VERSION=5`) with KDE6 runtime.
 - 2026-03-14: DBus service registration is now daemon-persistent and lifecycle-independent. A dedicated manager keeps `com.github.kanata.Switcher` owned whenever session bus exists, handles `NameLost` push events, and reconnects/re-registers after bus loss. This prevents `--restart`/control API loss during idle logout/login transitions.
 - 2026-03-14: Logind lifecycle monitor now detaches stale session properties monitoring when `User.Display` becomes `/`, so normal logout session teardown cannot kill the daemon; monitor waits for next display session path and reattaches.
 - 2026-03-14: Logind lifecycle monitor now tracks `User.Display` transitions during runtime and reattaches to new display session paths after logout/login, preventing post-login stale idle supervision.

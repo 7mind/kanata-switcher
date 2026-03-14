@@ -50,7 +50,7 @@ No polling fallback is used when login1 is unavailable.
 
 Backends are event-driven but the daemon performs one-shot focus queries on startup and unpause:
 - GNOME: extension provides GetFocus over DBus
-- KDE: daemon injects a one-shot KWin script and receives a DBus callback
+- KDE: daemon injects a one-shot KWin script and receives a DBus callback; unpause runtime mode selection probes KWin script object path layout at runtime (`/Scripting/ScriptN` for KDE6, `/N` for KDE5) instead of relying on startup env vars
 - Wayland/X11: daemon queries the active window directly
 
 DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):

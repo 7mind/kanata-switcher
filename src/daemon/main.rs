@@ -5953,11 +5953,120 @@ async fn resolve_runtime_unpause_context(
     } else {
         None
     };
-    let is_kde6 = env == Environment::Kde
-        && env::var("KDE_SESSION_VERSION")
-            .map(|value| value == "6")
-            .unwrap_or(false);
+    let is_kde6 = if env == Environment::Kde {
+        let connection_ref = connection
+            .as_ref()
+            .expect("KDE runtime unpause context requires session connection");
+        resolve_kde_runtime_query_mode(connection_ref)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "[KDE] Failed to resolve runtime query mode for unpause: {}",
+                    error
+                )
+            })
+    } else {
+        false
+    };
     (env, connection, is_kde6)
+}
+
+async fn resolve_kde_runtime_query_mode(
+    connection: &Connection,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let probe_id = KDE_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let uid = unsafe { libc::getuid() };
+    let script_path = format!(
+        "/tmp/kanata-switcher-kwin-query-probe-{}-{}.js",
+        uid, probe_id
+    );
+    fs::write(&script_path, "function kanataSwitcherProbe() {}\n")?;
+
+    let load_result = connection
+        .call_method(
+            Some(KDE_KWIN_BUS_NAME),
+            "/Scripting",
+            Some("org.kde.kwin.Scripting"),
+            "loadScript",
+            &(&script_path,),
+        )
+        .await;
+    let load_reply = match load_result {
+        Ok(reply) => reply,
+        Err(error) => {
+            let _ = remove_kwin_probe_script_file(&script_path);
+            return Err(Box::new(error));
+        }
+    };
+
+    let script_num: i32 = match load_reply.body().deserialize() {
+        Ok(script_num) => script_num,
+        Err(error) => {
+            let _ = unload_kwin_script_by_path(connection, &script_path).await;
+            let _ = remove_kwin_probe_script_file(&script_path);
+            return Err(Box::new(error));
+        }
+    };
+
+    let kde6_path = format!("/Scripting/Script{}", script_num);
+    let kde5_path = format!("/{}", script_num);
+    let kde6_path_exists = kwin_object_path_exists(connection, kde6_path.as_str()).await;
+    let kde5_path_exists = kwin_object_path_exists(connection, kde5_path.as_str()).await;
+
+    unload_kwin_script_by_path(connection, &script_path).await?;
+    remove_kwin_probe_script_file(&script_path)?;
+
+    match (kde6_path_exists, kde5_path_exists) {
+        (true, false) => Ok(true),
+        (false, true) => Ok(false),
+        (true, true) => Err(std::io::Error::other(
+            "[KDE] Runtime query mode probe found both KDE5 and KDE6 script paths",
+        )
+        .into()),
+        (false, false) => Err(std::io::Error::other(
+            "[KDE] Runtime query mode probe found no known KWin script path",
+        )
+        .into()),
+    }
+}
+
+async fn kwin_object_path_exists(connection: &Connection, object_path: &str) -> bool {
+    connection
+        .call_method(
+            Some(KDE_KWIN_BUS_NAME),
+            object_path,
+            Some("org.freedesktop.DBus.Introspectable"),
+            "Introspect",
+            &(),
+        )
+        .await
+        .is_ok()
+}
+
+async fn unload_kwin_script_by_path(
+    connection: &Connection,
+    script_path: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    connection
+        .call_method(
+            Some(KDE_KWIN_BUS_NAME),
+            "/Scripting",
+            Some("org.kde.kwin.Scripting"),
+            "unloadScript",
+            &(&script_path,),
+        )
+        .await?;
+    Ok(())
+}
+
+fn remove_kwin_probe_script_file(
+    script_path: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match fs::remove_file(script_path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Box::new(error)),
+    }
 }
 
 fn environment_requires_focus_query_connection(env: Environment) -> bool {

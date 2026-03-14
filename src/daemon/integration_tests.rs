@@ -23,6 +23,35 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 static WAYLAND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static DBUS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => unsafe {
+                std::env::set_var(self.key, value);
+            },
+            None => unsafe {
+                std::env::remove_var(self.key);
+            },
+        }
+    }
+}
 
 /// Wait for a condition to become true, polling at 50ms intervals.
 /// Returns Ok(T) when the condition returns Some(T), or Err after 1 minute timeout.
@@ -492,6 +521,7 @@ struct MockKwinScripting {
     next_id: Arc<Mutex<i32>>,
     object_server: zbus::ObjectServer,
     is_kde6: bool,
+    enforce_kde6_query_api: bool,
 }
 
 #[zbus::interface(name = "org.kde.kwin.Scripting")]
@@ -513,6 +543,7 @@ impl MockKwinScripting {
         };
         let script = MockKwinScript {
             path: path.to_string(),
+            enforce_kde6_query_api: self.enforce_kde6_query_api,
         };
         self.object_server
             .at(obj_path.as_str(), script)
@@ -530,13 +561,26 @@ impl MockKwinScripting {
 
 struct MockKwinScript {
     path: String,
+    enforce_kde6_query_api: bool,
 }
 
 #[zbus::interface(name = "org.kde.kwin.Script")]
 impl MockKwinScript {
     #[zbus(name = "run")]
-    async fn run(&self) {
+    async fn run(&self) -> zbus::fdo::Result<()> {
         let script_contents = std::fs::read_to_string(&self.path).expect("Failed to read script");
+        if self.enforce_kde6_query_api {
+            if script_contents.contains("workspace.activeClient") {
+                return Err(zbus::fdo::Error::Failed(
+                    "KDE6 mock rejected KDE5 activeClient query API".to_string(),
+                ));
+            }
+            if !script_contents.contains("workspace.activeWindow") {
+                return Err(zbus::fdo::Error::Failed(
+                    "KDE6 mock expected activeWindow query API".to_string(),
+                ));
+            }
+        }
         let parts = extract_call_dbus_parts(&script_contents);
         let bus_name = parts.get(0).expect("Missing bus name");
         let object_path = parts.get(1).expect("Missing object path");
@@ -558,7 +602,8 @@ impl MockKwinScript {
                 &("kde-app", "KDE Window"),
             )
             .await
-            .expect("Failed to call KDE query callback");
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(())
     }
 
     #[zbus(name = "stop")]
@@ -595,6 +640,7 @@ fn extract_call_dbus_parts(contents: &str) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_kde_focus_query_on_start_and_unpause() {
+    let _dbus_env_lock = DBUS_ENV_LOCK.lock().unwrap();
     with_test_timeout(async {
         use zbus::connection::Builder;
 
@@ -603,9 +649,7 @@ async fn test_kde_focus_query_on_start_and_unpause() {
         let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
 
         let scripts = Arc::new(Mutex::new(HashMap::new()));
-        unsafe {
-            std::env::set_var("DBUS_SESSION_BUS_ADDRESS", dbus.address());
-        }
+        let _dbus_address_env = EnvVarGuard::set("DBUS_SESSION_BUS_ADDRESS", dbus.address());
 
         let service_connection = Builder::address(address.clone())
             .expect("Failed to create connection builder")
@@ -623,6 +667,7 @@ async fn test_kde_focus_query_on_start_and_unpause() {
                     next_id: Arc::new(Mutex::new(1)),
                     object_server: service_connection.object_server().clone(),
                     is_kde6: true,
+                    enforce_kde6_query_api: true,
                 },
             )
             .await
@@ -716,6 +761,158 @@ async fn test_kde_focus_query_on_start_and_unpause() {
             "test",
         )
         .await;
+
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "terminal".to_string(),
+            },
+            Duration::from_secs(2),
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
+    let _dbus_env_lock = DBUS_ENV_LOCK.lock().unwrap();
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let _dbus_address_env = EnvVarGuard::set("DBUS_SESSION_BUS_ADDRESS", dbus.address());
+        let _kde_session_version_env = EnvVarGuard::set("KDE_SESSION_VERSION", "5");
+
+        let scripts = Arc::new(Mutex::new(HashMap::new()));
+        let service_connection = Builder::address(address.clone())
+            .expect("Failed to create connection builder")
+            .name("org.kde.KWin")
+            .expect("Failed to set bus name")
+            .build()
+            .await
+            .expect("Failed to build KDE scripting service");
+        service_connection
+            .object_server()
+            .at(
+                "/Scripting",
+                MockKwinScripting {
+                    scripts: scripts.clone(),
+                    next_id: Arc::new(Mutex::new(1)),
+                    object_server: service_connection.object_server().clone(),
+                    is_kde6: true,
+                    enforce_kde6_query_api: true,
+                },
+            )
+            .await
+            .expect("Failed to register mock scripting interface");
+
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection)
+            .await
+            .expect("Failed to create DBus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner("org.kde.KWin".try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&has_owner| has_owner)
+            }
+        })
+        .await
+        .expect("Timeout waiting for KDE mock service registration");
+
+        let mock_server = MockKanataServer::start();
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let restart_handle = RestartHandle::new();
+        let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Kde);
+        let rules = vec![Rule {
+            class: Some("kde-app".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("terminal".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let daemon_connection = Builder::address(address.clone())
+            .expect("Failed to create daemon connection builder")
+            .build()
+            .await
+            .expect("Failed to connect daemon connection");
+        let focus_query_connection = Builder::address(address.clone())
+            .expect("Failed to create focus query connection builder")
+            .build()
+            .await
+            .expect("Failed to connect focus query connection");
+        let _dbus_service_guard = register_dbus_service_with_runtime_environment(
+            &daemon_connection,
+            focus_query_connection,
+            Environment::Unknown,
+            false,
+            kanata,
+            handler,
+            status_broadcaster,
+            restart_handle,
+            pause_broadcaster.clone(),
+            Some(runtime_environment),
+        )
+        .await
+        .expect("Failed to register DBus service with runtime environment");
+
+        let client = Builder::address(address.clone())
+            .expect("Failed to create client builder")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create DBus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(DBUS_NAME.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&has_owner| has_owner)
+            }
+        })
+        .await
+        .expect("Timeout waiting for service registration");
+
+        let pause_result =
+            send_control_command_with_connection(&client, ControlCommand::Pause).await;
+        assert!(
+            pause_result.is_ok(),
+            "Pause control command failed: {:?}",
+            pause_result.err()
+        );
+        drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+        let unpause_result =
+            send_control_command_with_connection(&client, ControlCommand::Unpause).await;
+        assert!(
+            unpause_result.is_ok(),
+            "Unpause control command failed: {:?}",
+            unpause_result.err()
+        );
 
         wait_for_kanata_message(
             &mock_server,
