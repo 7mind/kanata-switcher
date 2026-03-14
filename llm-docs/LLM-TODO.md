@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-14: Unknown-environment logind session-path initialization now has a finite retry deadline; if display session is still not ready, initialization errors out instead of blocking startup indefinitely.
 - 2026-03-14: Startup-snapshot lifecycle now fails hard when initial runtime target resolution errors (instead of skipping and staying idle with no backend).
 - 2026-03-13: Logind properties-changed stream termination now fails fast (process exit) instead of silently exhausting the provider channel and freezing lifecycle transitions.
 - 2026-03-13: Signal decode path now enforces the same active-session non-empty `Type` invariant as startup init; active snapshots with empty `Type` are rejected/fail-fast.

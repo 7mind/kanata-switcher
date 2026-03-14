@@ -2359,19 +2359,29 @@ async fn resolve_logind_display_session_path(
 
 const LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
 
-async fn resolve_logind_session_path_for_env(
+async fn resolve_logind_session_path_for_env_with_resolver<F, Fut>(
     env: Environment,
-    connection: &Connection,
-) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    unknown_env_retry_delays_ms: &[u64],
+    mut resolver: F,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<OwnedObjectPath, LogindSessionPathResolutionError>>,
+{
     let mut attempt = 0usize;
     loop {
-        match resolve_logind_session_path(connection).await {
+        match resolver().await {
             Ok(path) => return Ok(path),
             Err(LogindSessionPathResolutionError::DisplayNotReady)
                 if env == Environment::Unknown =>
             {
-                let delay_ms = LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS
-                    [attempt.min(LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS.len() - 1)];
+                let Some(delay_ms) = unknown_env_retry_delays_ms.get(attempt).copied() else {
+                    return Err(
+                        "logind display session not ready before startup retry deadline"
+                            .to_string()
+                            .into(),
+                    );
+                };
                 println!(
                     "[Logind] Display session not ready yet; retrying in {}ms",
                     delay_ms
@@ -2385,6 +2395,18 @@ async fn resolve_logind_session_path_for_env(
             Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
         }
     }
+}
+
+async fn resolve_logind_session_path_for_env(
+    env: Environment,
+    connection: &Connection,
+) -> Result<OwnedObjectPath, Box<dyn std::error::Error + Send + Sync>> {
+    resolve_logind_session_path_for_env_with_resolver(
+        env,
+        LOGIND_UNKNOWN_ENV_RETRY_DELAYS_MS,
+        || async { resolve_logind_session_path(connection).await },
+    )
+    .await
 }
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
