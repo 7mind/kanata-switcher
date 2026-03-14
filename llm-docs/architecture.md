@@ -43,6 +43,7 @@ Startup env detection is now a fallback path. Runtime backend ownership is super
 - Provider `logind` (continuous): when `org.freedesktop.login1` is available, session `Active`/`Type` events drive backend transitions (`tty`/`wayland`/`x11` + idle).
 - In pre-login startup (no display session yet), logind lifecycle monitor waits on login1 `User.Display` property changes and attaches when the session appears; daemon startup remains non-blocking.
 - During runtime, logind lifecycle monitor also tracks `User.Display` path changes and reattaches to the new display session object after logout/login cycles.
+- When `User.Display` clears to `/`, session monitoring is detached until a non-empty display session path appears again.
 - Provider `startup-snapshot` (single event): when login1 is unavailable, the daemon runs startup-only backend selection.
 
 No polling fallback is used when login1 is unavailable.

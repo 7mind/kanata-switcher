@@ -24,6 +24,7 @@
 20. **Startup-snapshot resolver failures are fatal** - in startup-only lifecycle mode, initial target resolution errors now fail supervisor startup instead of logging-and-idling with no backend
 21. **Logind provider init is non-blocking and push-waited** - provider construction now returns immediately; when no display session exists yet, lifecycle monitor waits on login1 `User.Display` property changes (no retry polling), then starts session monitoring and emits initial snapshot
 22. **Logind monitor reattaches after logout/login** - lifecycle monitor now watches `User.Display` while attached; when display session path changes, it rebinds to the new `Session` object and emits a fresh snapshot. This prevents stale idle state after GNOME logout/login cycles.
+23. **Display-clear detaches stale session stream** - when `User.Display` becomes `/`, lifecycle emits `NoSession` (if needed) and drops the old session properties stream so normal session-object teardown cannot trigger fail-fast; monitoring resumes on next `User.Display` session path.
 
 ## Lifecycle Design Note
 

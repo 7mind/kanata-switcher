@@ -2390,12 +2390,14 @@ fn snapshot_no_session() -> LifecycleSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LogindDisplayChangeAction {
     Ignore,
-    EmitNoSession(LifecycleSnapshot),
+    DetachSessionMonitor,
+    EmitNoSessionAndDetach(LifecycleSnapshot),
     Reattach(OwnedObjectPath),
 }
 
 fn apply_logind_display_change(
     current_session_path: &OwnedObjectPath,
+    session_monitor_attached: bool,
     last_active: bool,
     last_type: &str,
     change: LogindDisplayPathChange,
@@ -2404,13 +2406,15 @@ fn apply_logind_display_change(
         LogindDisplayPathChange::Unchanged => LogindDisplayChangeAction::Ignore,
         LogindDisplayPathChange::Empty => {
             if last_active || !last_type.is_empty() {
-                LogindDisplayChangeAction::EmitNoSession(snapshot_no_session())
+                LogindDisplayChangeAction::EmitNoSessionAndDetach(snapshot_no_session())
+            } else if session_monitor_attached {
+                LogindDisplayChangeAction::DetachSessionMonitor
             } else {
                 LogindDisplayChangeAction::Ignore
             }
         }
         LogindDisplayPathChange::Path(path) => {
-            if path == *current_session_path {
+            if path == *current_session_path && session_monitor_attached {
                 LogindDisplayChangeAction::Ignore
             } else {
                 LogindDisplayChangeAction::Reattach(path)
@@ -2573,8 +2577,9 @@ async fn monitor_logind_lifecycle(
         Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
     };
 
-    let (initial, mut session_signals) =
+    let (initial, session_signals) =
         open_logind_session_monitor(&connection, &session_path).await?;
+    let mut session_signals = Some(session_signals);
     let mut last_active = initial.active;
     let mut last_type = initial.session_type.clone();
     sender
@@ -2599,9 +2604,19 @@ async fn monitor_logind_lifecycle(
                     |error| error,
                     fail_fast_lifecycle_monitor,
                 );
-                match apply_logind_display_change(&session_path, last_active, &last_type, change) {
+                match apply_logind_display_change(
+                    &session_path,
+                    session_signals.is_some(),
+                    last_active,
+                    &last_type,
+                    change,
+                ) {
                     LogindDisplayChangeAction::Ignore => {}
-                    LogindDisplayChangeAction::EmitNoSession(snapshot) => {
+                    LogindDisplayChangeAction::DetachSessionMonitor => {
+                        session_signals = None;
+                    }
+                    LogindDisplayChangeAction::EmitNoSessionAndDetach(snapshot) => {
+                        session_signals = None;
                         last_active = snapshot.active;
                         last_type = snapshot.session_type.clone();
                         if sender.send(snapshot).is_err() {
@@ -2616,7 +2631,7 @@ async fn monitor_logind_lifecycle(
                         let (snapshot, next_signals) =
                             open_logind_session_monitor(&connection, &next_session_path).await?;
                         session_path = next_session_path;
-                        session_signals = next_signals;
+                        session_signals = Some(next_signals);
                         last_active = snapshot.active;
                         last_type = snapshot.session_type.clone();
                         if sender.send(snapshot).is_err() {
@@ -2625,7 +2640,12 @@ async fn monitor_logind_lifecycle(
                     }
                 }
             }
-            session_signal = session_signals.next() => {
+            session_signal = async {
+                match session_signals.as_mut() {
+                    Some(signals) => signals.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 let signal = expect_some_or_fail_fast(
                     session_signal,
                     "[Lifecycle] logind properties-changed stream terminated".to_string(),
