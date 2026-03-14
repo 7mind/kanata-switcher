@@ -3431,6 +3431,56 @@ async fn test_run_lifecycle_supervisor_startup_mode_skips_wayland_capability_rec
 }
 
 #[tokio::test]
+async fn test_run_lifecycle_supervisor_startup_mode_fails_on_initial_resolver_error() {
+    with_test_timeout(async {
+        let provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Wayland));
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let result = run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle,
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| async move {
+                Err(std::io::Error::other("startup resolver failure").into())
+            },
+            std::time::Duration::from_millis(20),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "startup provider must fail when initial resolver call errors"
+        );
+        let error = result.err().expect("error expected").to_string();
+        assert!(
+            error.contains("Startup lifecycle target resolution failed"),
+            "error should explain startup-only resolution failure"
+        );
+        assert!(
+            started_kinds.lock().unwrap().is_empty(),
+            "no backend should start when startup resolver fails"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_run_lifecycle_supervisor_recovers_after_transient_wayland_resolver_error() {
     with_test_timeout(async {
         let (sender, receiver) = mpsc::unbounded_channel();

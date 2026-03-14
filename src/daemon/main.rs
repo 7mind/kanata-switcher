@@ -3128,10 +3128,18 @@ where
                                     .await?;
                                 }
                                 Err(error) => {
-                                    eprintln!(
-                                        "[Lifecycle] Skipping transition after resolver error: {}",
-                                        error
-                                    );
+                                    if allow_wayland_capability_recheck {
+                                        eprintln!(
+                                            "[Lifecycle] Skipping transition after resolver error: {}",
+                                            error
+                                        );
+                                    } else {
+                                        return Err(format!(
+                                            "[Lifecycle] Startup lifecycle target resolution failed: {}",
+                                            error
+                                        )
+                                        .into());
+                                    }
                                 }
                             }
                         }
