@@ -37,6 +37,8 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-15: GNOME extension setup is now bound to runtime backend transitions into GNOME (not startup env detection only). This covers persistent-daemon flows like `Unknown -> GNOME` after login; added lifecycle regression test for non-GNOME startup transitioning into GNOME.
+- 2026-03-15: Runtime-managed SNI now retries control initialization on transient start failures (timer + env-change wake) instead of waiting only on environment changes; added whitebox regression test that fails first start then verifies retry-based recovery.
 - 2026-03-15: KDE backend startup (`run_kde`) now resolves KDE5/KDE6 API mode from the current runtime KWin session (DBus probe) instead of startup `KDE_SESSION_VERSION`; added integration regression test covering stale startup env with KDE6 runtime.
 - 2026-03-14: Runtime-managed SNI transitions now bind status/pause/menu watcher task lifetimes to the active indicator handle. On Stop/Restart/drop, old watcher tasks are aborted with indicator shutdown, preventing unbounded task accumulation across `idle <-> x11/wayland/kde` transitions; added whitebox regression test.
 - 2026-03-14: KDE unpause runtime mode resolution no longer depends on startup `KDE_SESSION_VERSION`. DBus unpause now probes KWin script object-path layout at runtime (`/Scripting/ScriptN` vs `/N`) and selects KDE6/KDE5 query mode accordingly; added regression test for mismatched startup env (`KDE_SESSION_VERSION=5`) with KDE6 runtime.

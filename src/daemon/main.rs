@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -1431,6 +1431,38 @@ fn plan_sni_runtime_transition(
     }
 }
 
+const SNI_RUNTIME_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SniRuntimeWakeReason {
+    EnvironmentChanged,
+    Retry,
+    ChannelClosed,
+}
+
+async fn wait_for_sni_runtime_wake_with_delay(
+    env_receiver: &mut watch::Receiver<Environment>,
+    should_retry_start: bool,
+    retry_delay: Duration,
+) -> SniRuntimeWakeReason {
+    if !should_retry_start {
+        return match env_receiver.changed().await {
+            Ok(_) => SniRuntimeWakeReason::EnvironmentChanged,
+            Err(_) => SniRuntimeWakeReason::ChannelClosed,
+        };
+    }
+
+    tokio::select! {
+        changed = env_receiver.changed() => {
+            match changed {
+                Ok(_) => SniRuntimeWakeReason::EnvironmentChanged,
+                Err(_) => SniRuntimeWakeReason::ChannelClosed,
+            }
+        }
+        _ = tokio::time::sleep(retry_delay) => SniRuntimeWakeReason::Retry,
+    }
+}
+
 trait SniControlOps: Send + Sync {
     fn restart(&self);
     fn pause(&self);
@@ -2811,6 +2843,9 @@ struct BackendContext {
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
     runtime_environment: RuntimeEnvironmentBroadcaster,
+    install_gnome_extension: bool,
+    gnome_setup_completed: Arc<AtomicBool>,
+    gnome_setup_hook: Arc<dyn Fn(bool) + Send + Sync>,
 }
 
 struct BackendHandle {
@@ -2989,6 +3024,23 @@ async fn run_linux_console_backend_task(
     Ok(map_run_outcome_to_backend_exit(outcome))
 }
 
+async fn ensure_runtime_gnome_extension_setup(context: &BackendContext) -> Result<(), DynError> {
+    if context.gnome_setup_completed.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let setup_hook = context.gnome_setup_hook.clone();
+    let install_gnome_extension = context.install_gnome_extension;
+    tokio::task::spawn_blocking(move || (setup_hook)(install_gnome_extension))
+        .await
+        .map_err(|error| -> DynError {
+            format!("[GNOME] Extension setup task failed: {}", error).into()
+        })?;
+
+    context.gnome_setup_completed.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
 async fn start_backend(
     kind: BackendKind,
     context: &BackendContext,
@@ -3116,6 +3168,10 @@ where
         if exit == BackendExit::Restart {
             context.restart_handle.request();
         }
+    }
+
+    if desired_target == RuntimeTarget::Backend(BackendKind::Gnome) {
+        ensure_runtime_gnome_extension_setup(context).await?;
     }
 
     if let RuntimeTarget::Backend(kind) = desired_target {
@@ -5051,6 +5107,48 @@ impl SniGuard {
         restart_handle: RestartHandle,
         indicator_focus_only: Option<TrayFocusOnly>,
     ) -> Self {
+        Self::runtime_managed_with_builder(
+            runtime_environment,
+            runtime_handle,
+            kanata,
+            handler,
+            status_broadcaster,
+            pause_broadcaster,
+            restart_handle,
+            indicator_focus_only,
+            SNI_RUNTIME_RETRY_INTERVAL,
+            build_sni_control_for_mode,
+        )
+    }
+
+    fn runtime_managed_with_builder<B, BFut>(
+        runtime_environment: RuntimeEnvironmentBroadcaster,
+        runtime_handle: tokio::runtime::Handle,
+        kanata: KanataClient,
+        handler: Arc<Mutex<FocusHandler>>,
+        status_broadcaster: StatusBroadcaster,
+        pause_broadcaster: PauseBroadcaster,
+        restart_handle: RestartHandle,
+        indicator_focus_only: Option<TrayFocusOnly>,
+        retry_delay: Duration,
+        control_builder: B,
+    ) -> Self
+    where
+        B: Fn(
+                SniControlMode,
+                tokio::runtime::Handle,
+                KanataClient,
+                Arc<Mutex<FocusHandler>>,
+                StatusBroadcaster,
+                PauseBroadcaster,
+                RestartHandle,
+                RuntimeEnvironmentBroadcaster,
+            ) -> BFut
+            + Send
+            + Sync
+            + 'static,
+        BFut: std::future::Future<Output = Option<SniControl>> + Send + 'static,
+    {
         let shared_handle: Arc<Mutex<Option<SniIndicatorRuntimeHandle>>> =
             Arc::new(Mutex::new(None));
         let task_handle_store = shared_handle.clone();
@@ -5078,7 +5176,7 @@ impl SniGuard {
                         }
                         active_mode = None;
                         active_env = None;
-                        let control = build_sni_control_for_mode(
+                        let control = control_builder(
                             mode,
                             runtime_handle.clone(),
                             kanata.clone(),
@@ -5099,11 +5197,27 @@ impl SniGuard {
                             *task_handle_store.lock().unwrap() = handle;
                             active_mode = Some(mode);
                             active_env = Some(env);
+                        } else {
+                            eprintln!(
+                                "[SNI] Failed to initialize {:?} control; retrying in {}ms unless environment changes",
+                                mode,
+                                retry_delay.as_millis()
+                            );
                         }
                     }
                 }
 
-                if env_receiver.changed().await.is_err() {
+                let should_retry_start =
+                    active_mode.is_none() && sni_control_mode_for_environment(env).is_some();
+                if matches!(
+                    wait_for_sni_runtime_wake_with_delay(
+                        &mut env_receiver,
+                        should_retry_start,
+                        retry_delay,
+                    )
+                    .await,
+                    SniRuntimeWakeReason::ChannelClosed
+                ) {
                     break;
                 }
             }
@@ -6757,10 +6871,6 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
     let detected_env = detect_environment();
     println!("[Init] Detected environment: {}", detected_env.as_str());
 
-    if detected_env == Environment::Gnome {
-        setup_gnome_extension(install_gnome_extension);
-    }
-
     let config = load_config(args.config.as_deref());
     if config.rules.is_empty() && config.native_terminal_rule.is_none() {
         eprintln!("[Config] Error: No rules found in config file");
@@ -6870,6 +6980,9 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         restart_handle: restart_handle.clone(),
         pause_broadcaster,
         runtime_environment,
+        install_gnome_extension,
+        gnome_setup_completed: Arc::new(AtomicBool::new(false)),
+        gnome_setup_hook: Arc::new(setup_gnome_extension),
     };
 
     run_lifecycle_supervisor(

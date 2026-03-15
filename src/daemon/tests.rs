@@ -10,6 +10,7 @@ use zbus::Message;
 use zbus::zvariant::OwnedObjectPath;
 
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+static SNI_WATCHER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 async fn with_test_timeout<F, T>(future: F) -> T
 where
@@ -2193,7 +2194,10 @@ fn test_config_parses_rule_with_class_no_fallthrough() {
 
 // === Runtime Lifecycle Tests ===
 
-fn test_backend_context() -> BackendContext {
+fn test_backend_context_with_gnome_setup<F>(gnome_setup_hook: F) -> BackendContext
+where
+    F: Fn(bool) + Send + Sync + 'static,
+{
     let status_broadcaster = StatusBroadcaster::new();
     BackendContext {
         kanata: KanataClient::new(
@@ -2208,7 +2212,14 @@ fn test_backend_context() -> BackendContext {
         restart_handle: RestartHandle::new(),
         pause_broadcaster: PauseBroadcaster::new(),
         runtime_environment: RuntimeEnvironmentBroadcaster::new(Environment::Unknown),
+        install_gnome_extension: true,
+        gnome_setup_completed: Arc::new(AtomicBool::new(false)),
+        gnome_setup_hook: Arc::new(gnome_setup_hook),
     }
+}
+
+fn test_backend_context() -> BackendContext {
+    test_backend_context_with_gnome_setup(|_| {})
 }
 
 fn test_running_backend_handle(kind: BackendKind, stopped: Arc<AtomicBool>) -> BackendHandle {
@@ -2799,6 +2810,8 @@ async fn test_sni_local_control_tracks_runtime_environment_switches() {
 #[tokio::test]
 async fn test_sni_runtime_managed_transitions_do_not_leak_watcher_tasks() {
     with_test_timeout(async {
+        let _sni_lock = SNI_WATCHER_TEST_LOCK.lock().unwrap();
+
         async fn assert_sni_watcher_count_eventually(expected: usize, label: &str) {
             for _ in 0..100 {
                 if sni_watcher_task_count() == expected {
@@ -2852,6 +2865,95 @@ async fn test_sni_runtime_managed_transitions_do_not_leak_watcher_tasks() {
 
         runtime_environment.set_current(Environment::Wayland);
         assert_sni_watcher_count_eventually(baseline + 3, "second indicator start").await;
+
+        drop(guard);
+        assert_sni_watcher_count_eventually(baseline, "guard drop").await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_sni_runtime_managed_retries_after_transient_start_failure() {
+    with_test_timeout(async {
+        let _sni_lock = SNI_WATCHER_TEST_LOCK.lock().unwrap();
+
+        async fn assert_sni_watcher_count_eventually(expected: usize, label: &str) {
+            for _ in 0..100 {
+                if sni_watcher_task_count() == expected {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            panic!(
+                "expected {} watcher tasks after {}, got {}",
+                expected,
+                label,
+                sni_watcher_task_count()
+            );
+        }
+
+        let baseline = sni_watcher_task_count();
+        let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Unknown);
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let restart_handle = RestartHandle::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            10000,
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let build_attempts = Arc::new(AtomicUsize::new(0));
+        let build_attempts_for_builder = build_attempts.clone();
+
+        let guard = SniGuard::runtime_managed_with_builder(
+            runtime_environment.clone(),
+            tokio::runtime::Handle::current(),
+            kanata,
+            handler,
+            status_broadcaster,
+            pause_broadcaster,
+            restart_handle,
+            None,
+            std::time::Duration::from_millis(20),
+            move |mode,
+                  runtime_handle,
+                  kanata,
+                  handler,
+                  status_broadcaster,
+                  pause_broadcaster,
+                  restart_handle,
+                  runtime_environment| {
+                let build_attempts = build_attempts_for_builder.clone();
+                async move {
+                    let attempt = build_attempts.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        None
+                    } else {
+                        build_sni_control_for_mode(
+                            mode,
+                            runtime_handle,
+                            kanata,
+                            handler,
+                            status_broadcaster,
+                            pause_broadcaster,
+                            restart_handle,
+                            runtime_environment,
+                        )
+                        .await
+                    }
+                }
+            },
+        );
+
+        runtime_environment.set_current(Environment::Wayland);
+        assert_sni_watcher_count_eventually(baseline + 3, "retry-based indicator recovery").await;
+        assert!(
+            build_attempts.load(Ordering::SeqCst) >= 2,
+            "runtime-managed SNI should retry control construction without an environment change"
+        );
 
         drop(guard);
         assert_sni_watcher_count_eventually(baseline, "guard drop").await;
@@ -2928,6 +3030,77 @@ async fn test_transition_runtime_target_updates_runtime_environment() {
         .await
         .expect("transition to idle should succeed");
         assert_eq!(context.runtime_environment.current(), Environment::Unknown);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_transition_runtime_target_runs_gnome_setup_on_runtime_transition() {
+    with_test_timeout(async {
+        let setup_calls = Arc::new(AtomicUsize::new(0));
+        let setup_calls_for_hook = setup_calls.clone();
+        let context = test_backend_context_with_gnome_setup(move |_| {
+            setup_calls_for_hook.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut state = SupervisorState::new();
+
+        let starter = |kind: BackendKind, _context: BackendContext| async move {
+            Ok(test_running_backend_handle(
+                kind,
+                Arc::new(AtomicBool::new(false)),
+            ))
+        };
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::X11),
+            &context,
+            "to-x11",
+            &starter,
+        )
+        .await
+        .expect("transition to x11 should succeed");
+        assert_eq!(setup_calls.load(Ordering::SeqCst), 0);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::Gnome),
+            &context,
+            "to-gnome-runtime-transition",
+            &starter,
+        )
+        .await
+        .expect("transition to gnome should succeed");
+        assert_eq!(setup_calls.load(Ordering::SeqCst), 1);
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Idle,
+            &context,
+            "to-idle",
+            &starter,
+        )
+        .await
+        .expect("transition to idle should succeed");
+
+        transition_runtime_target_with_starter(
+            &mut state,
+            RuntimeTarget::Backend(BackendKind::Gnome),
+            &context,
+            "to-gnome-runtime-transition-second-time",
+            &starter,
+        )
+        .await
+        .expect("second transition to gnome should succeed");
+        assert_eq!(
+            setup_calls.load(Ordering::SeqCst),
+            1,
+            "gnome setup should be cached after first runtime setup"
+        );
+
+        stop_current_backend(&mut state, &context)
+            .await
+            .expect("stopping test backend should succeed");
     })
     .await;
 }

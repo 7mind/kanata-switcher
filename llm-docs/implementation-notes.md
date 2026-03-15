@@ -29,6 +29,8 @@
 25. **KDE unpause query mode is runtime-probed** - DBus unpause no longer uses startup `KDE_SESSION_VERSION` to choose KDE5 vs KDE6 focus-query mode. It probes KWin script object-path layout (`/Scripting/ScriptN` vs `/N`) on the current runtime bus and selects query mode from that.
 26. **Runtime SNI restarts do not leak watcher tasks** - indicator status/pause/menu watcher tasks are now owned by the active indicator runtime handle and aborted on indicator shutdown/drop, so repeated runtime Start/Restart transitions cannot accumulate orphaned watcher tasks.
 27. **KDE backend startup query mode is runtime-probed** - `run_kde` now uses the same runtime KWin script-path probe as unpause, so persistent daemons transitioning into KDE sessions do not rely on stale startup `KDE_SESSION_VERSION`.
+28. **GNOME extension setup follows runtime backend transitions** - GNOME extension setup moved to runtime transitions into GNOME backend, so persistent daemons that start outside GNOME still run setup when a GNOME session appears later.
+29. **Runtime-managed SNI retries transient start failures** - when runtime SNI control construction fails (`build_sni_control_for_mode` returns `None`), the SNI manager no longer stalls until the next environment change; it retries on a fixed timer while still reacting to env-change signals.
 
 ## Lifecycle Design Note
 

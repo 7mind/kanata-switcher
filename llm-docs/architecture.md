@@ -52,8 +52,9 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - GNOME: extension provides GetFocus over DBus
 - KDE: daemon injects a one-shot KWin script and receives a DBus callback; both backend startup and unpause runtime mode selection probe KWin script object path layout at runtime (`/Scripting/ScriptN` for KDE6, `/N` for KDE5) instead of relying on startup env vars
 - Wayland/X11: daemon queries the active window directly
+- GNOME extension setup (`setup_gnome_extension`) is executed from runtime transitions into the GNOME backend, so persistent daemons that start pre-login and later enter GNOME still install/enable/check the extension at the correct time.
 
-Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions.
+Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions. If control construction fails transiently (for example, session bus race), runtime-managed SNI now retries with a timer and still wakes immediately on environment changes.
 
 DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
 - remains registered while session bus is available, including lifecycle `Idle`
