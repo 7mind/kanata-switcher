@@ -12,6 +12,7 @@ use std::env;
 use std::fs;
 use std::os::fd::AsFd;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(test)]
@@ -1925,12 +1926,43 @@ impl AsRawFd for RawFdWatcher {
     }
 }
 
+fn resolve_wayland_socket_path(
+    wayland_display: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    let socket_name = PathBuf::from(wayland_display);
+    if socket_name.is_absolute() {
+        return Ok(socket_name);
+    }
+
+    let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .ok_or("XDG_RUNTIME_DIR is not set")?;
+    if !runtime_dir.is_absolute() {
+        return Err("XDG_RUNTIME_DIR must be an absolute path".into());
+    }
+
+    Ok(runtime_dir.join(socket_name))
+}
+
+fn connect_wayland_with_display_override(
+    wayland_display_override: Option<&str>,
+) -> Result<WaylandConnection, Box<dyn std::error::Error + Send + Sync>> {
+    match wayland_display_override {
+        Some(display) => {
+            let socket_path = resolve_wayland_socket_path(display)?;
+            let socket = UnixStream::connect(socket_path)?;
+            Ok(WaylandConnection::from_socket(socket)?)
+        }
+        None => Ok(WaylandConnection::connect_to_env()?),
+    }
+}
+
 fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(test)]
     {
         WAYLAND_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
     }
-    let connection = WaylandConnection::connect_to_env()?;
+    let connection = connect_wayland_with_display_override(None)?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
     let mut state = WaylandState::default();
 
@@ -1961,7 +1993,7 @@ fn wayland_query_count() -> usize {
 }
 
 fn query_x11_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
-    let state = X11State::new()?;
+    let state = X11State::new(None)?;
     Ok(state.get_active_window())
 }
 
@@ -2978,6 +3010,7 @@ async fn run_kde_backend_task(
 
 async fn run_wayland_backend_task(
     context: BackendContext,
+    wayland_display_override: Option<String>,
     shutdown_handle: ShutdownHandle,
 ) -> Result<BackendExit, DynError> {
     run_wayland(
@@ -2985,6 +3018,7 @@ async fn run_wayland_backend_task(
         context.handler,
         context.status_broadcaster,
         context.pause_broadcaster,
+        wayland_display_override,
         shutdown_handle,
     )
     .await?;
@@ -2993,6 +3027,7 @@ async fn run_wayland_backend_task(
 
 async fn run_x11_backend_task(
     context: BackendContext,
+    x11_display_override: Option<String>,
     shutdown_handle: ShutdownHandle,
 ) -> Result<BackendExit, DynError> {
     run_x11(
@@ -3000,6 +3035,7 @@ async fn run_x11_backend_task(
         context.handler,
         context.status_broadcaster,
         context.pause_broadcaster,
+        x11_display_override,
         shutdown_handle,
     )
     .await?;
@@ -3041,6 +3077,72 @@ async fn ensure_runtime_gnome_extension_setup(context: &BackendContext) -> Resul
     Ok(())
 }
 
+fn backend_expected_session_type(kind: BackendKind) -> Option<&'static str> {
+    match kind {
+        BackendKind::Wayland => Some("wayland"),
+        BackendKind::X11 => Some("x11"),
+        BackendKind::Gnome | BackendKind::Kde | BackendKind::LinuxConsole => None,
+    }
+}
+
+async fn resolve_backend_display_override_from_logind(
+    kind: BackendKind,
+) -> Result<Option<String>, DynError> {
+    let expected_type = match backend_expected_session_type(kind) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    let system_connection = Connection::system().await?;
+    let session_path = match resolve_logind_session_path(&system_connection).await {
+        Ok(path) => path,
+        Err(LogindSessionPathResolutionError::DisplayNotReady) => return Ok(None),
+        Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
+    };
+    let session_proxy = zbus::Proxy::new(
+        &system_connection,
+        LOGIND_BUS_NAME,
+        session_path.as_str(),
+        LOGIND_SESSION_INTERFACE,
+    )
+    .await?;
+    let session_type: String = session_proxy.get_property("Type").await?;
+    if session_type != expected_type {
+        return Ok(None);
+    }
+
+    let display: String = session_proxy.get_property("Display").await?;
+    let trimmed = display.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+async fn resolve_backend_display_override(kind: BackendKind) -> Option<String> {
+    let expected_type = match backend_expected_session_type(kind) {
+        Some(value) => value,
+        None => return None,
+    };
+    match resolve_backend_display_override_from_logind(kind).await {
+        Ok(Some(display)) => {
+            println!(
+                "[Lifecycle] Refreshed {} display endpoint from logind: {}",
+                expected_type, display
+            );
+            Some(display)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            eprintln!(
+                "[Lifecycle] Failed to refresh {} display endpoint from logind: {}",
+                expected_type, error
+            );
+            None
+        }
+    }
+}
+
 async fn start_backend(
     kind: BackendKind,
     context: &BackendContext,
@@ -3069,21 +3171,26 @@ async fn start_backend(
             })
         }
         BackendKind::Wayland => {
+            let wayland_display_override = resolve_backend_display_override(kind).await;
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
             let task_finished = finished_tx.clone();
             tokio::spawn(async move {
-                let result = run_wayland_backend_task(task_context, task_shutdown).await;
+                let result =
+                    run_wayland_backend_task(task_context, wayland_display_override, task_shutdown)
+                        .await;
                 let _ = task_finished.send(true);
                 result
             })
         }
         BackendKind::X11 => {
+            let x11_display_override = resolve_backend_display_override(kind).await;
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
             let task_finished = finished_tx.clone();
             tokio::spawn(async move {
-                let result = run_x11_backend_task(task_context, task_shutdown).await;
+                let result =
+                    run_x11_backend_task(task_context, x11_display_override, task_shutdown).await;
                 let _ = task_finished.send(true);
                 result
             })
@@ -4605,9 +4712,10 @@ async fn run_wayland(
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
+    wayland_display_override: Option<String>,
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let connection = WaylandConnection::connect_to_env()?;
+    let connection = connect_wayland_with_display_override(wayland_display_override.as_deref())?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
 
     let mut state = WaylandState::default();
@@ -4640,16 +4748,20 @@ async fn run_wayland(
     let async_fd = AsyncFd::new(RawFdWatcher::new(raw_fd))?;
     let mut shutdown_receiver = shutdown_handle.subscribe();
 
-    apply_focus_for_env(
-        Environment::Wayland,
-        None,
-        false,
+    let win = state.get_active_window();
+    let default_layer = kanata.default_layer_sync();
+    if let Some(actions) = handle_focus_event(
         &handler,
         &status_broadcaster,
         &pause_broadcaster,
+        &win,
         &kanata,
+        &default_layer,
     )
-    .await?;
+    .await
+    {
+        execute_focus_actions(&kanata, actions).await;
+    }
 
     loop {
         if *shutdown_receiver.borrow() {
@@ -4736,8 +4848,10 @@ struct X11State {
 }
 
 impl X11State {
-    fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let (connection, screen_num) = x11rb::connect(None)?;
+    fn new(
+        display_override: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (connection, screen_num) = x11rb::connect(display_override)?;
         let root = connection.setup().roots[screen_num].root;
         let atoms = X11Atoms::new(&connection)?.reply()?;
 
@@ -4861,22 +4975,27 @@ async fn run_x11(
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
+    x11_display_override: Option<String>,
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = X11State::new()?;
+    let state = X11State::new(x11_display_override.as_deref())?;
 
     println!("[X11] Connected to display");
 
-    apply_focus_for_env(
-        Environment::X11,
-        None,
-        false,
+    let initial = state.get_active_window();
+    let default_layer = kanata.default_layer_sync();
+    if let Some(actions) = handle_focus_event(
         &handler,
         &status_broadcaster,
         &pause_broadcaster,
+        &initial,
         &kanata,
+        &default_layer,
     )
-    .await?;
+    .await
+    {
+        execute_focus_actions(&kanata, actions).await;
+    }
 
     println!("[X11] Listening for focus events...");
 

@@ -3463,6 +3463,16 @@ fn test_wayland_mock_compositor_startup() {
     assert!(!server.socket_name().is_empty());
 }
 
+#[test]
+fn test_wayland_connect_override_ignores_stale_wayland_display_env() {
+    let (_lock, server) = start_wayland_test_server();
+    let _stale_wayland_display = EnvVarGuard::set("WAYLAND_DISPLAY", "stale-wayland-display");
+
+    let connection = connect_wayland_with_display_override(Some(server.socket_name()))
+        .expect("Wayland connection should use explicit display override");
+    drop(connection);
+}
+
 // === X11/Xvfb Integration Tests ===
 
 /// Check if Xvfb is available by trying to run it with -help
@@ -3515,6 +3525,17 @@ impl Drop for XvfbGuard {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+fn test_x11_state_display_override_ignores_stale_display_env() {
+    let xvfb = XvfbGuard::start(104)
+        .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
+    let _stale_display = EnvVarGuard::set("DISPLAY", ":65535");
+
+    let state = X11State::new(Some(&xvfb.display))
+        .expect("X11State should connect using explicit display override");
+    drop(state);
 }
 
 /// Test that X11State can connect to an X server and receive PropertyNotify events

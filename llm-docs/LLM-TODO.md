@@ -37,6 +37,8 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-15: Runtime backend startup now refreshes X11/Wayland display endpoints from the active logind display session (`Session.Display`) and uses explicit connection endpoints (`x11rb::connect(Some(...))`, Wayland `Connection::from_socket`) instead of relying only on startup process env. This covers logout/login transitions where `DISPLAY`/`WAYLAND_DISPLAY` changed without daemon restart.
+- 2026-03-15: Added integration regressions for stale graphical env vars with explicit runtime overrides: Wayland connection with stale `WAYLAND_DISPLAY` and X11 connection with stale `DISPLAY`.
 - 2026-03-15: GNOME extension setup is now bound to runtime backend transitions into GNOME (not startup env detection only). This covers persistent-daemon flows like `Unknown -> GNOME` after login; added lifecycle regression test for non-GNOME startup transitioning into GNOME.
 - 2026-03-15: Runtime-managed SNI now retries control initialization on transient start failures (timer + env-change wake) instead of waiting only on environment changes; added whitebox regression test that fails first start then verifies retry-based recovery.
 - 2026-03-15: KDE backend startup (`run_kde`) now resolves KDE5/KDE6 API mode from the current runtime KWin session (DBus probe) instead of startup `KDE_SESSION_VERSION`; added integration regression test covering stale startup env with KDE6 runtime.
