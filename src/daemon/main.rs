@@ -6385,9 +6385,7 @@ async fn run_kde(
     let connection = Connection::session().await?;
     let focus_query_connection = Connection::session().await?;
     let runtime_handle = tokio::runtime::Handle::current();
-    let is_kde6 = env::var("KDE_SESSION_VERSION")
-        .map(|v| v == "6")
-        .unwrap_or(false);
+    let is_kde6 = resolve_kde_runtime_query_mode(&focus_query_connection).await?;
 
     apply_focus_for_env(
         Environment::Kde,

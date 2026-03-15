@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-15: KDE backend startup (`run_kde`) now resolves KDE5/KDE6 API mode from the current runtime KWin session (DBus probe) instead of startup `KDE_SESSION_VERSION`; added integration regression test covering stale startup env with KDE6 runtime.
 - 2026-03-14: Runtime-managed SNI transitions now bind status/pause/menu watcher task lifetimes to the active indicator handle. On Stop/Restart/drop, old watcher tasks are aborted with indicator shutdown, preventing unbounded task accumulation across `idle <-> x11/wayland/kde` transitions; added whitebox regression test.
 - 2026-03-14: KDE unpause runtime mode resolution no longer depends on startup `KDE_SESSION_VERSION`. DBus unpause now probes KWin script object-path layout at runtime (`/Scripting/ScriptN` vs `/N`) and selects KDE6/KDE5 query mode accordingly; added regression test for mismatched startup env (`KDE_SESSION_VERSION=5`) with KDE6 runtime.
 - 2026-03-14: DBus service registration is now daemon-persistent and lifecycle-independent. A dedicated manager keeps `com.github.kanata.Switcher` owned whenever session bus exists, handles `NameLost` push events, and reconnects/re-registers after bus loss. This prevents `--restart`/control API loss during idle logout/login transitions.

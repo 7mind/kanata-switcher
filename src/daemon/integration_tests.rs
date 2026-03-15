@@ -584,6 +584,8 @@ impl MockKwinScript {
         let parts = extract_call_dbus_parts(&script_contents);
         let bus_name = parts.get(0).expect("Missing bus name");
         let object_path = parts.get(1).expect("Missing object path");
+        let interface = parts.get(2).expect("Missing interface name");
+        let method = parts.get(3).expect("Missing method name");
         let address: zbus::Address = std::env::var("DBUS_SESSION_BUS_ADDRESS")
             .expect("DBUS_SESSION_BUS_ADDRESS not set")
             .parse()
@@ -597,8 +599,8 @@ impl MockKwinScript {
             .call_method(
                 Some(bus_name.as_str()),
                 object_path.as_str(),
-                Some(KDE_QUERY_INTERFACE),
-                KDE_QUERY_METHOD,
+                Some(interface.as_str()),
+                method.as_str(),
                 &("kde-app", "KDE Window"),
             )
             .await
@@ -921,6 +923,162 @@ async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
             },
             Duration::from_secs(2),
         );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_run_kde_resolves_runtime_mode_without_startup_env() {
+    let _dbus_env_lock = DBUS_ENV_LOCK.lock().unwrap();
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let _dbus_address_env = EnvVarGuard::set("DBUS_SESSION_BUS_ADDRESS", dbus.address());
+        let _kde_session_version_env = EnvVarGuard::set("KDE_SESSION_VERSION", "5");
+
+        let scripts = Arc::new(Mutex::new(HashMap::new()));
+        let service_connection = Builder::address(address.clone())
+            .expect("Failed to create connection builder")
+            .name("org.kde.KWin")
+            .expect("Failed to set bus name")
+            .build()
+            .await
+            .expect("Failed to build KDE scripting service");
+        service_connection
+            .object_server()
+            .at(
+                "/Scripting",
+                MockKwinScripting {
+                    scripts: scripts.clone(),
+                    next_id: Arc::new(Mutex::new(1)),
+                    object_server: service_connection.object_server().clone(),
+                    is_kde6: true,
+                    enforce_kde6_query_api: true,
+                },
+            )
+            .await
+            .expect("Failed to register mock scripting interface");
+
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&service_connection)
+            .await
+            .expect("Failed to create DBus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner("org.kde.KWin".try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&has_owner| has_owner)
+            }
+        })
+        .await
+        .expect("Timeout waiting for KDE mock service registration");
+
+        let mock_server = MockKanataServer::start();
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let rules = vec![Rule {
+            class: Some("kde-app".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("terminal".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+
+        let switcher_service_connection = Builder::address(address.clone())
+            .expect("Failed to create switcher service builder")
+            .build()
+            .await
+            .expect("Failed to connect switcher service connection");
+        let switcher_focus_query_connection = Builder::address(address.clone())
+            .expect("Failed to create switcher focus query builder")
+            .build()
+            .await
+            .expect("Failed to connect switcher focus query connection");
+        let _dbus_service_guard = register_dbus_service(
+            &switcher_service_connection,
+            switcher_focus_query_connection,
+            Environment::Kde,
+            true,
+            kanata.clone(),
+            handler.clone(),
+            status_broadcaster.clone(),
+            restart_handle.clone(),
+            pause_broadcaster.clone(),
+        )
+        .await
+        .expect("Failed to register switcher DBus service");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&switcher_service_connection)
+            .await
+            .expect("Failed to create switcher DBus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(DBUS_NAME.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&has_owner| has_owner)
+            }
+        })
+        .await
+        .expect("Timeout waiting for switcher DBus service registration");
+
+        let kanata_for_task = kanata.clone();
+        let handler_for_task = handler.clone();
+        let status_for_task = status_broadcaster.clone();
+        let pause_for_task = pause_broadcaster.clone();
+        let restart_for_task = restart_handle.clone();
+        let shutdown_for_task = shutdown_handle.clone();
+        let run_task = tokio::spawn(async move {
+            run_kde(
+                kanata_for_task,
+                handler_for_task,
+                status_for_task,
+                restart_for_task,
+                pause_for_task,
+                shutdown_for_task,
+            )
+            .await
+        });
+
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "terminal".to_string(),
+            },
+            Duration::from_secs(2),
+        );
+
+        shutdown_handle.request();
+
+        let run_result = tokio::time::timeout(Duration::from_secs(2), run_task)
+            .await
+            .expect("Timed out waiting for KDE backend task");
+        let outcome = run_result
+            .expect("KDE backend task join failed")
+            .expect("KDE backend should start and stop cleanly");
+        assert_eq!(outcome, RunOutcome::Exit);
     })
     .await;
 }
