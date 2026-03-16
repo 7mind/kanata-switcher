@@ -32,7 +32,7 @@
 28. **GNOME extension setup follows runtime backend transitions** - GNOME extension setup moved to runtime transitions into GNOME backend, so persistent daemons that start outside GNOME still run setup when a GNOME session appears later.
 29. **Runtime-managed SNI retries transient start failures** - when runtime SNI control construction fails (`build_sni_control_for_mode` returns `None`), the SNI manager no longer stalls until the next environment change; it retries on a fixed timer while still reacting to env-change signals.
 30. **X11/Wayland backend startup refreshes display endpoints from logind** - before starting X11/Wayland backends, daemon resolves current display endpoint from active logind display session and passes explicit endpoints into backend connectors to avoid stale startup env dependence across logout/login transitions.
-31. **KDE temp script paths are process-scoped** - KWin runtime/query/probe script filenames now include PID (in addition to existing query/probe counters where applicable), preventing cross-process `/tmp` collisions under parallel nextest runs and multi-instance execution.
+31. **KDE temp script paths are UUID-scoped** - KWin runtime/query/probe script filenames now include per-script UUIDs (in addition to existing query/probe counters where applicable), preventing cross-process `/tmp` collisions under parallel nextest runs and multi-instance execution.
 
 ## Lifecycle Design Note
 

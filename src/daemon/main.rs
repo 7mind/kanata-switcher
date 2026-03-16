@@ -26,6 +26,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot, watch};
+use uuid::Uuid;
 use wayland_client::{
     Connection as WaylandConnection, Dispatch, Proxy, QueueHandle,
     backend::{ObjectId, WaylandError},
@@ -2003,26 +2004,26 @@ static WAYLAND_QUERY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn kwin_query_script_path(query_id: u64) -> String {
     let uid = unsafe { libc::getuid() };
-    let pid = std::process::id();
+    let request_id = Uuid::new_v4().hyphenated().to_string();
     format!(
         "/tmp/kanata-switcher-kwin-query-{}-{}-{}.js",
-        uid, pid, query_id
+        uid, query_id, request_id
     )
 }
 
 fn kwin_query_probe_script_path(probe_id: u64) -> String {
     let uid = unsafe { libc::getuid() };
-    let pid = std::process::id();
+    let request_id = Uuid::new_v4().hyphenated().to_string();
     format!(
         "/tmp/kanata-switcher-kwin-query-probe-{}-{}-{}.js",
-        uid, pid, probe_id
+        uid, probe_id, request_id
     )
 }
 
 fn kwin_runtime_script_path() -> String {
     let uid = unsafe { libc::getuid() };
-    let pid = std::process::id();
-    format!("/tmp/kanata-switcher-kwin-{}-{}.js", uid, pid)
+    let request_id = Uuid::new_v4().hyphenated().to_string();
+    format!("/tmp/kanata-switcher-kwin-{}-{}.js", uid, request_id)
 }
 
 #[derive(Debug)]
