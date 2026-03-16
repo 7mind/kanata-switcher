@@ -3252,16 +3252,14 @@ async fn test_lifecycle_provider_startup_variant_emits_once() {
 #[tokio::test]
 async fn test_lifecycle_provider_build_falls_back_to_startup_when_logind_init_fails() {
     with_test_timeout(async {
-        let mut provider = LifecycleProvider::build_with_logind_factory(
-            Environment::Wayland,
-            || async {
+        let mut provider =
+            LifecycleProvider::build_with_logind_factory(Environment::Wayland, || async {
                 Err(std::io::Error::other(
                     "org.freedesktop.DBus.Error.ServiceUnknown: org.freedesktop.login1",
                 )
                 .into())
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(!provider.is_continuous());
         let first = provider
@@ -4016,8 +4014,8 @@ async fn test_run_lifecycle_supervisor_startup_mode_selects_gnome_without_focus_
 }
 
 #[tokio::test]
-async fn test_run_lifecycle_supervisor_startup_mode_falls_back_to_generic_wayland_on_initial_resolver_error(
-) {
+async fn test_run_lifecycle_supervisor_startup_mode_falls_back_to_generic_wayland_on_initial_resolver_error()
+ {
     with_test_timeout(async {
         let provider =
             LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Wayland));

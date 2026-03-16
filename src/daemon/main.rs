@@ -107,6 +107,11 @@ const LOGIND_USER_INTERFACE: &str = "org.freedesktop.login1.User";
 const LOGIND_ERROR_NO_SESSION_FOR_PID: &str = "org.freedesktop.login1.NoSessionForPID";
 const LOGIND_EMPTY_OBJECT_PATH: &str = "/";
 const KDE_KWIN_BUS_NAME: &str = "org.kde.KWin";
+const KDE_KWIN_SCRIPTING_PATH: &str = "/Scripting";
+const KDE_KWIN_SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
+const DBUS_INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
+const KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS: usize = 5;
+const KDE_RUNTIME_QUERY_MODE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlCommand {
@@ -6502,7 +6507,7 @@ async fn resolve_runtime_unpause_context(
         let connection_ref = connection
             .as_ref()
             .expect("KDE runtime unpause context requires session connection");
-        resolve_kde_runtime_query_mode(connection_ref)
+        resolve_kde_runtime_query_mode_with_retry(connection_ref)
             .await
             .unwrap_or_else(|error| {
                 panic!(
@@ -6520,6 +6525,87 @@ async fn resolve_runtime_unpause_context(
     }
 }
 
+async fn resolve_kde_runtime_query_mode_with_retry(
+    connection: &Connection,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
+
+    for attempt in 0..KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS {
+        match ensure_kde_scripting_ready(connection).await {
+            Ok(()) => match resolve_kde_runtime_query_mode(connection).await {
+                Ok(is_kde6) => return Ok(is_kde6),
+                Err(error) => {
+                    eprintln!(
+                        "[KDE] Runtime query mode probe attempt {}/{} failed: {}",
+                        attempt + 1,
+                        KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS,
+                        error
+                    );
+                    last_error = Some(error);
+                }
+            },
+            Err(error) => {
+                eprintln!(
+                    "[KDE] Scripting readiness check attempt {}/{} failed: {}",
+                    attempt + 1,
+                    KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS,
+                    error
+                );
+                last_error = Some(error);
+            }
+        }
+
+        if attempt + 1 < KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS {
+            tokio::time::sleep(KDE_RUNTIME_QUERY_MODE_RETRY_DELAY).await;
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::other("[KDE] Runtime query mode probe failed without error").into()
+    }))
+}
+
+async fn ensure_kde_scripting_ready(
+    connection: &Connection,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let dbus = zbus::fdo::DBusProxy::new(connection).await?;
+    let has_owner = dbus
+        .name_has_owner(KDE_KWIN_BUS_NAME.try_into().unwrap())
+        .await?;
+    if !has_owner {
+        return Err(
+            std::io::Error::other(format!("[KDE] {} is not owned", KDE_KWIN_BUS_NAME)).into(),
+        );
+    }
+
+    if dbus
+        .name_has_owner(KDE_KWIN_SCRIPTING_INTERFACE.try_into().unwrap())
+        .await?
+    {
+        return Ok(());
+    }
+
+    let introspection = connection
+        .call_method(
+            Some(KDE_KWIN_BUS_NAME),
+            KDE_KWIN_SCRIPTING_PATH,
+            Some(DBUS_INTROSPECTABLE_INTERFACE),
+            "Introspect",
+            &(),
+        )
+        .await?;
+    let introspection_xml: String = introspection.body().deserialize()?;
+    if !introspection_xml.contains(KDE_KWIN_SCRIPTING_INTERFACE) {
+        return Err(std::io::Error::other(format!(
+            "[KDE] {} is not exported on {}",
+            KDE_KWIN_SCRIPTING_INTERFACE, KDE_KWIN_SCRIPTING_PATH
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
 async fn resolve_kde_runtime_query_mode(
     connection: &Connection,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
@@ -6530,8 +6616,8 @@ async fn resolve_kde_runtime_query_mode(
     let load_result = connection
         .call_method(
             Some(KDE_KWIN_BUS_NAME),
-            "/Scripting",
-            Some("org.kde.kwin.Scripting"),
+            KDE_KWIN_SCRIPTING_PATH,
+            Some(KDE_KWIN_SCRIPTING_INTERFACE),
             "loadScript",
             &(&script_path,),
         )
@@ -6595,8 +6681,8 @@ async fn unload_kwin_script_by_path(
     connection
         .call_method(
             Some(KDE_KWIN_BUS_NAME),
-            "/Scripting",
-            Some("org.kde.kwin.Scripting"),
+            KDE_KWIN_SCRIPTING_PATH,
+            Some(KDE_KWIN_SCRIPTING_INTERFACE),
             "unloadScript",
             &(&script_path,),
         )
@@ -6871,7 +6957,7 @@ async fn run_kde(
     let connection = Connection::session().await?;
     let focus_query_connection = Connection::session().await?;
     let runtime_handle = tokio::runtime::Handle::current();
-    let is_kde6 = resolve_kde_runtime_query_mode(&focus_query_connection).await?;
+    let is_kde6 = resolve_kde_runtime_query_mode_with_retry(&focus_query_connection).await?;
 
     apply_focus_for_env(
         Environment::Kde,
@@ -6920,8 +7006,8 @@ notifyFocus(workspace.{active});
         let result = connection
             .call_method(
                 Some("org.kde.KWin"),
-                "/Scripting",
-                Some("org.kde.kwin.Scripting"),
+                KDE_KWIN_SCRIPTING_PATH,
+                Some(KDE_KWIN_SCRIPTING_INTERFACE),
                 "loadScript",
                 &(&script_path,),
             )
@@ -6936,8 +7022,8 @@ notifyFocus(workspace.{active});
     let _ = connection
         .call_method(
             Some("org.kde.KWin"),
-            "/Scripting",
-            Some("org.kde.kwin.Scripting"),
+            KDE_KWIN_SCRIPTING_PATH,
+            Some(KDE_KWIN_SCRIPTING_INTERFACE),
             "unloadScript",
             &(&script_path,),
         )
@@ -6946,8 +7032,8 @@ notifyFocus(workspace.{active});
     let load_result = connection
         .call_method(
             Some("org.kde.KWin"),
-            "/Scripting",
-            Some("org.kde.kwin.Scripting"),
+            KDE_KWIN_SCRIPTING_PATH,
+            Some(KDE_KWIN_SCRIPTING_INTERFACE),
             "loadScript",
             &(&script_path,),
         )
@@ -6964,7 +7050,7 @@ notifyFocus(workspace.{active});
     let script_interface = if is_kde6 {
         "org.kde.kwin.Script"
     } else {
-        "org.kde.kwin.Scripting"
+        KDE_KWIN_SCRIPTING_INTERFACE
     };
 
     let script_obj_path: OwnedObjectPath = script_obj_path_str.as_str().try_into()?;

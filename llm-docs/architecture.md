@@ -51,7 +51,7 @@ No polling fallback is used when login1 is unavailable.
 
 Backends are event-driven but the daemon performs one-shot focus queries on startup and unpause:
 - GNOME: extension provides GetFocus over DBus
-- KDE: daemon injects a one-shot KWin script and receives a DBus callback; both backend startup and unpause runtime mode selection probe KWin script object path layout at runtime (`/Scripting/ScriptN` for KDE6, `/N` for KDE5) instead of relying on startup env vars
+- KDE: daemon injects a one-shot KWin script and receives a DBus callback; both backend startup and unpause runtime mode selection probe KWin script object path layout at runtime (`/Scripting/ScriptN` for KDE6, `/N` for KDE5) instead of relying on startup env vars. Runtime mode probing now waits for KWin `/Scripting` export of `org.kde.kwin.Scripting` and retries, so transient startup races do not abort KDE backend startup.
 - Wayland/X11: daemon queries the active window directly; startup/unpause focus queries now resolve display endpoint override via the same runtime logind refresh path used by backend startup, so they do not depend on stale startup `WAYLAND_DISPLAY`/`DISPLAY` after session endpoint changes
 - Wayland flavor resolution picks GNOME when GNOME Shell owns its session bus name (owner-based selection), so startup-snapshot mode does not depend on extension focus-query readiness to enter GNOME backend
 - GNOME extension setup (`setup_gnome_extension`) is executed from runtime transitions into the GNOME backend, so persistent daemons that start pre-login and later enter GNOME still install/enable/check the extension at the correct time.

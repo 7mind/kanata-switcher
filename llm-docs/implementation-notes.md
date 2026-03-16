@@ -38,6 +38,7 @@
 34. **Local SNI unpause is creation-context bound** - runtime-managed Local controls now store an explicit unpause context captured at control creation and do not read `runtime_environment.current()` at click time, preventing transition-race panics when environment flips to GNOME/KDE before control swap.
 35. **Wayland GNOME flavor selection is owner-based** - runtime target resolution now selects GNOME backend whenever GNOME Shell owns its session bus name, without requiring extension focus-query readiness at selection time. This preserves startup-snapshot no-logind GNOME behavior; extension setup still runs on GNOME backend transition.
 36. **Wayland override + startup probe fallback hardening** - login1 `Session.Display` overrides for Wayland are validated (rejecting X11-style values like `:0`), and startup-snapshot Wayland resolver/probe failures now fall back to generic Wayland target instead of terminating daemon startup.
+37. **KDE runtime-mode probe waits for scripting interface readiness** - KDE startup/unpause runtime query-mode resolution now requires KWin ownership plus `/Scripting` introspection export of `org.kde.kwin.Scripting`, and retries probe attempts before failing. This prevents transient “KWin owned, scripting not ready yet” races from aborting runtime transition.
 
 ## Lifecycle Design Note
 
