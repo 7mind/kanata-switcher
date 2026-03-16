@@ -3076,6 +3076,11 @@ async fn resolve_runtime_target_for_snapshot(
     snapshot: &LifecycleSnapshot,
 ) -> Result<RuntimeTarget, DynError> {
     let capabilities = if snapshot.session_kind == SessionKind::GraphicalWayland {
+        if let Some(hinted_target) =
+            runtime_target_from_wayland_startup_session_type_hint(snapshot.session_type.as_str())
+        {
+            return Ok(hinted_target);
+        }
         detect_desktop_capabilities().await?
     } else {
         DesktopCapabilities {
@@ -4609,7 +4614,7 @@ fn session_type_to_session_kind(active: bool, session_type: &str) -> SessionKind
     }
     match session_type {
         "x11" => SessionKind::GraphicalX11,
-        "wayland" => SessionKind::GraphicalWayland,
+        "wayland" | "gnome" | "kde" => SessionKind::GraphicalWayland,
         _ => SessionKind::NoSession,
     }
 }
@@ -4655,6 +4660,16 @@ fn resolve_runtime_target(
     }
 }
 
+fn runtime_target_from_wayland_startup_session_type_hint(
+    session_type: &str,
+) -> Option<RuntimeTarget> {
+    match session_type {
+        "gnome" => Some(RuntimeTarget::Backend(BackendKind::Gnome)),
+        "kde" => Some(RuntimeTarget::Backend(BackendKind::Kde)),
+        _ => None,
+    }
+}
+
 fn target_requires_session_bus(target: RuntimeTarget) -> bool {
     match target {
         RuntimeTarget::Backend(BackendKind::Gnome)
@@ -4667,7 +4682,9 @@ fn target_requires_session_bus(target: RuntimeTarget) -> bool {
 
 fn startup_environment_to_snapshot(env: Environment) -> LifecycleSnapshot {
     let (active, session_type) = match env {
-        Environment::Gnome | Environment::Kde | Environment::Wayland => (true, "wayland"),
+        Environment::Gnome => (true, "gnome"),
+        Environment::Kde => (true, "kde"),
+        Environment::Wayland => (true, "wayland"),
         Environment::X11 => (true, "x11"),
         Environment::LinuxConsoleWithLogind => (true, "tty"),
         Environment::Unknown => (false, ""),

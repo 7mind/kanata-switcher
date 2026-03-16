@@ -2326,6 +2326,14 @@ fn test_session_type_to_session_kind_mappings() {
         SessionKind::GraphicalWayland
     );
     assert_eq!(
+        session_type_to_session_kind(true, "gnome"),
+        SessionKind::GraphicalWayland
+    );
+    assert_eq!(
+        session_type_to_session_kind(true, "kde"),
+        SessionKind::GraphicalWayland
+    );
+    assert_eq!(
         session_type_to_session_kind(true, "mir"),
         SessionKind::NoSession
     );
@@ -2709,7 +2717,7 @@ fn test_target_requires_session_bus() {
 fn test_startup_environment_to_snapshot_mapping() {
     let gnome = startup_environment_to_snapshot(Environment::Gnome);
     assert!(gnome.active);
-    assert_eq!(gnome.session_type, "wayland");
+    assert_eq!(gnome.session_type, "gnome");
     assert_eq!(gnome.session_kind, SessionKind::GraphicalWayland);
 
     let x11 = startup_environment_to_snapshot(Environment::X11);
@@ -2729,7 +2737,7 @@ fn test_startup_environment_to_snapshot_mapping() {
 
     let kde = startup_environment_to_snapshot(Environment::Kde);
     assert!(kde.active);
-    assert_eq!(kde.session_type, "wayland");
+    assert_eq!(kde.session_type, "kde");
     assert_eq!(kde.session_kind, SessionKind::GraphicalWayland);
 
     let wayland = startup_environment_to_snapshot(Environment::Wayland);
@@ -3337,6 +3345,38 @@ async fn test_resolve_runtime_target_for_non_wayland_snapshot() {
             .await
             .expect("idle snapshot resolution should succeed");
         assert_eq!(idle_target, RuntimeTarget::Idle);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_resolve_runtime_target_for_startup_gnome_snapshot_uses_explicit_hint() {
+    with_test_timeout(async {
+        let gnome_snapshot = LifecycleSnapshot {
+            active: true,
+            session_type: "gnome".to_string(),
+            session_kind: SessionKind::GraphicalWayland,
+        };
+        let gnome_target = resolve_runtime_target_for_snapshot(&gnome_snapshot)
+            .await
+            .expect("gnome startup hint should resolve without capability probe");
+        assert_eq!(gnome_target, RuntimeTarget::Backend(BackendKind::Gnome));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_resolve_runtime_target_for_startup_kde_snapshot_uses_explicit_hint() {
+    with_test_timeout(async {
+        let kde_snapshot = LifecycleSnapshot {
+            active: true,
+            session_type: "kde".to_string(),
+            session_kind: SessionKind::GraphicalWayland,
+        };
+        let kde_target = resolve_runtime_target_for_snapshot(&kde_snapshot)
+            .await
+            .expect("kde startup hint should resolve without capability probe");
+        assert_eq!(kde_target, RuntimeTarget::Backend(BackendKind::Kde));
     })
     .await;
 }
