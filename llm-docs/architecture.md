@@ -67,6 +67,7 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
   - resolve active display session path (`resolve_logind_session_path`, with `XDG_SESSION_ID`/PID/User.Display fallback logic),
   - read `Session.Type` and `Session.Display` from login1,
   - accept override only when `Type` matches backend target (`x11` for X11, `wayland` for Wayland) and `Display` is non-empty.
+- Wayland override values are validated before use; invalid values (for example `:0`) are ignored so backend start/focus query falls back to normal env/default Wayland connection.
 - Backend connection behavior when override is accepted (no process env mutation; endpoint is passed explicitly to connector):
   - X11: `x11rb::connect(Some(display))`
   - Wayland: connect via `UnixStream` to explicit socket and build `wayland_client::Connection::from_socket`
@@ -80,6 +81,7 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - X11/Wayland startup still attempts the same override resolution call, but login1 access fails in this mode and the daemon falls back to env-based connectors:
   - X11: `x11rb::connect(None)` (uses `DISPLAY`)
   - Wayland: `Connection::connect_to_env()` (uses `WAYLAND_DISPLAY` + `XDG_RUNTIME_DIR`)
+- If initial Wayland desktop-capability resolver/probe fails in startup-snapshot mode (for example, transient session-bus startup race), daemon falls back to generic Wayland target for that startup snapshot instead of exiting.
 - Because provider is startup-only, daemon does not continuously re-resolve display/session state after startup in this mode.
 
 Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions. If control construction fails transiently (for example, session bus race), runtime-managed SNI now retries with a timer and still wakes immediately on environment changes.

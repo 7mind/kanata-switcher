@@ -2371,6 +2371,36 @@ fn test_active_unknown_session_type_resolves_to_idle_target() {
 }
 
 #[test]
+fn test_normalize_display_override_rejects_x11_style_for_wayland() {
+    assert_eq!(normalize_display_override(BackendKind::Wayland, ":0"), None);
+    assert_eq!(normalize_display_override(BackendKind::Wayland, ":1"), None);
+    assert_eq!(
+        normalize_display_override(BackendKind::Wayland, "nested/socket"),
+        None
+    );
+}
+
+#[test]
+fn test_normalize_display_override_accepts_wayland_socket_values() {
+    assert_eq!(
+        normalize_display_override(BackendKind::Wayland, "wayland-0"),
+        Some("wayland-0".to_string())
+    );
+    assert_eq!(
+        normalize_display_override(BackendKind::Wayland, " /run/user/1000/wayland-1 "),
+        Some("/run/user/1000/wayland-1".to_string())
+    );
+}
+
+#[test]
+fn test_normalize_display_override_preserves_x11_display_values() {
+    assert_eq!(
+        normalize_display_override(BackendKind::X11, ":0"),
+        Some(":0".to_string())
+    );
+}
+
+#[test]
 fn test_decode_logind_change_emits_on_type_change_without_active_change() {
     use zbus::zvariant::{Str, Value};
 
@@ -3986,10 +4016,70 @@ async fn test_run_lifecycle_supervisor_startup_mode_selects_gnome_without_focus_
 }
 
 #[tokio::test]
-async fn test_run_lifecycle_supervisor_startup_mode_fails_on_initial_resolver_error() {
+async fn test_run_lifecycle_supervisor_startup_mode_falls_back_to_generic_wayland_on_initial_resolver_error(
+) {
     with_test_timeout(async {
         let provider =
             LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Wayland));
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls_clone = resolver_calls.clone();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| {
+                let resolver_calls = resolver_calls_clone.clone();
+                async move {
+                    resolver_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(std::io::Error::other("transient startup wayland resolver failure").into())
+                }
+            },
+            std::time::Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("startup wayland resolver errors should not terminate startup provider");
+        assert_eq!(outcome, RunOutcome::Exit);
+        assert_eq!(
+            started_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::Wayland],
+            "startup mode should fall back to generic wayland on transient wayland resolver errors"
+        );
+        assert_eq!(
+            resolver_calls.load(Ordering::SeqCst),
+            1,
+            "startup provider should still be one-shot after fallback"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_startup_mode_non_wayland_resolver_error_is_fatal() {
+    with_test_timeout(async {
+        let provider = LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::X11));
         let context = test_backend_context();
         let restart_handle = RestartHandle::new();
         let shutdown_handle = ShutdownHandle::new();
@@ -4020,7 +4110,7 @@ async fn test_run_lifecycle_supervisor_startup_mode_fails_on_initial_resolver_er
 
         assert!(
             result.is_err(),
-            "startup provider must fail when initial resolver call errors"
+            "non-wayland startup resolver failures should still fail fast"
         );
         let error = result.err().expect("error expected").to_string();
         assert!(

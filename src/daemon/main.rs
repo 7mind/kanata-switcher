@@ -3190,6 +3190,30 @@ fn display_override_expected_session_type(kind: BackendKind) -> Option<&'static 
     }
 }
 
+fn is_valid_wayland_display_override(display: &str) -> bool {
+    if Path::new(display).is_absolute() {
+        return true;
+    }
+    if display.starts_with(':') {
+        return false;
+    }
+    if display.contains('/') {
+        return false;
+    }
+    true
+}
+
+fn normalize_display_override(kind: BackendKind, display: &str) -> Option<String> {
+    let trimmed = display.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if kind == BackendKind::Wayland && !is_valid_wayland_display_override(trimmed) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 async fn resolve_display_override_from_logind(
     kind: BackendKind,
 ) -> Result<Option<String>, DynError> {
@@ -3217,11 +3241,14 @@ async fn resolve_display_override_from_logind(
     }
 
     let display: String = session_proxy.get_property("Display").await?;
-    let trimmed = display.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
+    let normalized = normalize_display_override(kind, &display);
+    if kind == BackendKind::Wayland && normalized.is_none() && !display.trim().is_empty() {
+        eprintln!(
+            "[Lifecycle] Ignoring logind Wayland Display override '{}': not a valid Wayland socket value",
+            display.trim()
+        );
     }
-    Ok(Some(trimmed.to_string()))
+    Ok(normalized)
 }
 
 fn display_override_backend_kind_for_environment(env: Environment) -> Option<BackendKind> {
@@ -3649,6 +3676,19 @@ where
                                             "[Lifecycle] Skipping transition after resolver error: {}",
                                             error
                                         );
+                                    } else if snapshot.session_kind == SessionKind::GraphicalWayland {
+                                        eprintln!(
+                                            "[Lifecycle] Falling back to generic Wayland after startup resolver error: {}",
+                                            error
+                                        );
+                                        transition_runtime_target_with_starter(
+                                            &mut state,
+                                            RuntimeTarget::Backend(BackendKind::Wayland),
+                                            &context,
+                                            "startup-wayland-fallback-after-resolver-error",
+                                            &starter,
+                                        )
+                                        .await?;
                                     } else {
                                         return Err(format!(
                                             "[Lifecycle] Startup lifecycle target resolution failed: {}",

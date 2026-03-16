@@ -21,7 +21,7 @@
 17. **Logind Type is required at provider startup** - initial logind session `Type` read now errors instead of defaulting to empty, and active-session empty `Type` is rejected to avoid silent `NoSession` idle startup
 18. **Wayland capability polling is continuous-mode only** - periodic Wayland backend flavor rechecks now run only when lifecycle provider is continuous (login1); startup-snapshot mode remains strictly startup-only after its single snapshot
 19. **Logind monitor stream health is fail-fast** - if the properties-changed stream terminates unexpectedly, the monitor now fails the process instead of silently degrading to stale lifecycle state
-20. **Startup-snapshot resolver failures are fatal** - in startup-only lifecycle mode, initial target resolution errors now fail supervisor startup instead of logging-and-idling with no backend
+20. **Startup-snapshot resolver failures are mostly fatal** - in startup-only lifecycle mode, initial target resolution errors fail supervisor startup, except Wayland resolver/probe errors which now degrade to generic Wayland fallback for startup robustness
 21. **Logind provider init is non-blocking and push-waited** - provider construction now returns immediately; when no display session exists yet, lifecycle monitor waits on login1 `User.Display` property changes (no retry polling), then starts session monitoring and emits initial snapshot
 22. **Logind monitor reattaches after logout/login** - lifecycle monitor now watches `User.Display` while attached; when display session path changes, it rebinds to the new `Session` object and emits a fresh snapshot. This prevents stale idle state after GNOME logout/login cycles.
 23. **Display-clear detaches stale session stream** - when `User.Display` becomes `/`, lifecycle emits `NoSession` (if needed) and drops the old session properties stream so normal session-object teardown cannot trigger fail-fast; monitoring resumes on next `User.Display` session path.
@@ -37,6 +37,7 @@
 33. **Logind provider selection now gates on lifecycle-monitor prerequisites** - before selecting continuous logind mode, provider init now verifies login1 manager/user/session monitor prerequisites; failures in this phase fall back to startup-snapshot mode rather than returning a logind provider that later exits during detached monitor startup.
 34. **Local SNI unpause is creation-context bound** - runtime-managed Local controls now store an explicit unpause context captured at control creation and do not read `runtime_environment.current()` at click time, preventing transition-race panics when environment flips to GNOME/KDE before control swap.
 35. **Wayland GNOME flavor selection is owner-based** - runtime target resolution now selects GNOME backend whenever GNOME Shell owns its session bus name, without requiring extension focus-query readiness at selection time. This preserves startup-snapshot no-logind GNOME behavior; extension setup still runs on GNOME backend transition.
+36. **Wayland override + startup probe fallback hardening** - login1 `Session.Display` overrides for Wayland are validated (rejecting X11-style values like `:0`), and startup-snapshot Wayland resolver/probe failures now fall back to generic Wayland target instead of terminating daemon startup.
 
 ## Lifecycle Design Note
 
@@ -178,6 +179,7 @@ The X11/Wayland backends accept optional explicit display overrides at startup:
 - On each runtime transition into X11/Wayland, supervisor resolves endpoint override from login1 before launching backend task.
 - Resolution uses `resolve_logind_session_path` (`XDG_SESSION_ID` -> `GetSessionByPID` -> `User.Display`) and reads `Session.Type` + `Session.Display`.
 - Override is used only when `Type` matches target backend (`x11`/`wayland`) and `Display` is non-empty.
+- Wayland override values are validated before use; invalid values (for example, X11-style `:N`) are ignored and daemon falls back to env/default Wayland connection behavior.
 - Wayland override handling:
   - absolute display string: treated as socket path directly
   - relative display string: resolved as `$XDG_RUNTIME_DIR/<display>`
@@ -189,6 +191,7 @@ The X11/Wayland backends accept optional explicit display overrides at startup:
 - X11/Wayland startup attempts the same override resolver, but login1 is unavailable; fallback path is used:
   - X11: `x11rb::connect(None)` (from `DISPLAY`)
   - Wayland: `Connection::connect_to_env()` (from `WAYLAND_DISPLAY` + `XDG_RUNTIME_DIR`)
+- Startup-snapshot Wayland resolver/probe failures (for example, transient session-bus probe races) degrade to generic Wayland backend selection for that one-shot snapshot instead of failing process startup.
 - After startup snapshot selection, no lifecycle-driven display refresh occurs in this mode.
 
 ## X11 Backend
