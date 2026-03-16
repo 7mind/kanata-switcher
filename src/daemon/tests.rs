@@ -320,6 +320,35 @@ fn test_autostart_desktop_content_escapes_exec() {
 }
 
 #[test]
+fn test_kwin_query_script_path_scopes_to_process_and_query_id() {
+    let pid = std::process::id();
+    let path = kwin_query_script_path(7);
+    assert!(path.starts_with("/tmp/kanata-switcher-kwin-query-"));
+    assert!(path.ends_with("-7.js"));
+    assert!(path.contains(&format!("-{}-", pid)));
+    assert_ne!(kwin_query_script_path(7), kwin_query_script_path(8));
+}
+
+#[test]
+fn test_kwin_query_probe_script_path_scopes_to_process_and_probe_id() {
+    let pid = std::process::id();
+    let path = kwin_query_probe_script_path(11);
+    assert!(path.starts_with("/tmp/kanata-switcher-kwin-query-probe-"));
+    assert!(path.ends_with("-11.js"));
+    assert!(path.contains(&format!("-{}-", pid)));
+    assert_ne!(kwin_query_probe_script_path(11), kwin_query_probe_script_path(12));
+}
+
+#[test]
+fn test_kwin_runtime_script_path_scopes_to_process() {
+    let pid = std::process::id();
+    let path = kwin_runtime_script_path();
+    assert!(path.starts_with("/tmp/kanata-switcher-kwin-"));
+    assert!(path.ends_with(".js"));
+    assert!(path.contains(&format!("-{}.js", pid)));
+}
+
+#[test]
 fn test_native_terminal_without_rule_uses_default() {
     let rules = vec![rule(Some("kitty"), None, Some("terminal"))];
     let mut handler = FocusHandler::new(rules, None, true);

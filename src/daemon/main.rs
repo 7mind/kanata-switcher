@@ -2001,6 +2001,30 @@ static KDE_QUERY_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static WAYLAND_QUERY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+fn kwin_query_script_path(query_id: u64) -> String {
+    let uid = unsafe { libc::getuid() };
+    let pid = std::process::id();
+    format!(
+        "/tmp/kanata-switcher-kwin-query-{}-{}-{}.js",
+        uid, pid, query_id
+    )
+}
+
+fn kwin_query_probe_script_path(probe_id: u64) -> String {
+    let uid = unsafe { libc::getuid() };
+    let pid = std::process::id();
+    format!(
+        "/tmp/kanata-switcher-kwin-query-probe-{}-{}-{}.js",
+        uid, pid, probe_id
+    )
+}
+
+fn kwin_runtime_script_path() -> String {
+    let uid = unsafe { libc::getuid() };
+    let pid = std::process::id();
+    format!("/tmp/kanata-switcher-kwin-{}-{}.js", uid, pid)
+}
+
 #[derive(Debug)]
 struct KdeFocusQueryService {
     sender: TokioMutex<Option<oneshot::Sender<WindowInfo>>>,
@@ -2130,8 +2154,7 @@ async fn query_kde_focus(
         .at(query_path.as_str(), service)
         .await?;
 
-    let uid = unsafe { libc::getuid() };
-    let script_path = format!("/tmp/kanata-switcher-kwin-query-{}-{}.js", uid, query_id);
+    let script_path = kwin_query_script_path(query_id);
     let script = build_kde_query_script(is_kde6, unique_name.as_str(), query_path.as_str());
     fs::write(&script_path, script)?;
 
@@ -6267,11 +6290,7 @@ async fn resolve_kde_runtime_query_mode(
     connection: &Connection,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let probe_id = KDE_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let uid = unsafe { libc::getuid() };
-    let script_path = format!(
-        "/tmp/kanata-switcher-kwin-query-probe-{}-{}.js",
-        uid, probe_id
-    );
+    let script_path = kwin_query_probe_script_path(probe_id);
     fs::write(&script_path, "function kanataSwitcherProbe() {}\n")?;
 
     let load_result = connection
@@ -6660,8 +6679,7 @@ notifyFocus(workspace.{active});
         active = active_window
     );
 
-    let uid = unsafe { libc::getuid() };
-    let script_path = format!("/tmp/kanata-switcher-kwin-{}.js", uid);
+    let script_path = kwin_runtime_script_path();
     fs::write(&script_path, &kwin_script)?;
 
     for _ in 0..5 {
