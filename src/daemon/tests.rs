@@ -2364,7 +2364,6 @@ fn test_active_unknown_session_type_resolves_to_idle_target() {
         session_kind,
         DesktopCapabilities {
             gnome_owner: false,
-            gnome_focus_ready: false,
             kde_owner: false,
         },
     );
@@ -2590,22 +2589,18 @@ fn test_expect_some_or_fail_fast_uses_fail_handler_for_none() {
 fn test_resolve_runtime_target_matrix() {
     let none = DesktopCapabilities {
         gnome_owner: false,
-        gnome_focus_ready: false,
         kde_owner: false,
     };
-    let gnome_ready = DesktopCapabilities {
+    let gnome = DesktopCapabilities {
         gnome_owner: true,
-        gnome_focus_ready: true,
         kde_owner: false,
     };
-    let gnome_not_ready = DesktopCapabilities {
+    let gnome_and_kde = DesktopCapabilities {
         gnome_owner: true,
-        gnome_focus_ready: false,
-        kde_owner: false,
+        kde_owner: true,
     };
     let kde = DesktopCapabilities {
         gnome_owner: false,
-        gnome_focus_ready: false,
         kde_owner: true,
     };
 
@@ -2622,7 +2617,7 @@ fn test_resolve_runtime_target_matrix() {
         RuntimeTarget::Backend(BackendKind::X11)
     );
     assert_eq!(
-        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_ready),
+        resolve_runtime_target(SessionKind::GraphicalWayland, gnome),
         RuntimeTarget::Backend(BackendKind::Gnome)
     );
     assert_eq!(
@@ -2630,19 +2625,34 @@ fn test_resolve_runtime_target_matrix() {
         RuntimeTarget::Backend(BackendKind::Kde)
     );
     assert_eq!(
-        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_not_ready),
+        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_and_kde),
+        RuntimeTarget::Backend(BackendKind::Gnome)
+    );
+    assert_eq!(
+        resolve_runtime_target(
+            SessionKind::GraphicalWayland,
+            DesktopCapabilities {
+                gnome_owner: false,
+                kde_owner: false,
+            }
+        ),
         RuntimeTarget::Backend(BackendKind::Wayland)
     );
+}
 
-    let gnome_not_ready_and_kde_owner = DesktopCapabilities {
-        gnome_owner: true,
-        gnome_focus_ready: false,
-        kde_owner: true,
-    };
-    assert_eq!(
-        resolve_runtime_target(SessionKind::GraphicalWayland, gnome_not_ready_and_kde_owner),
-        RuntimeTarget::Backend(BackendKind::Kde)
+#[test]
+fn test_startup_snapshot_wayland_prefers_gnome_when_gnome_shell_is_present() {
+    let snapshot = startup_environment_to_snapshot(Environment::Wayland);
+    assert_eq!(snapshot.session_kind, SessionKind::GraphicalWayland);
+
+    let target = resolve_runtime_target(
+        snapshot.session_kind,
+        DesktopCapabilities {
+            gnome_owner: true,
+            kde_owner: false,
+        },
     );
+    assert_eq!(target, RuntimeTarget::Backend(BackendKind::Gnome));
 }
 
 #[test]
@@ -3156,29 +3166,26 @@ async fn test_transition_runtime_target_runs_gnome_setup_on_runtime_transition()
 
 #[test]
 fn test_resolve_desktop_flavor_wayland_precedence() {
-    let gnome_ready_and_kde = DesktopCapabilities {
+    let gnome_and_kde = DesktopCapabilities {
         gnome_owner: true,
-        gnome_focus_ready: true,
         kde_owner: true,
     };
     assert_eq!(
-        resolve_desktop_flavor(SessionKind::GraphicalWayland, gnome_ready_and_kde),
+        resolve_desktop_flavor(SessionKind::GraphicalWayland, gnome_and_kde),
         DesktopFlavor::Gnome
     );
 
-    let gnome_not_ready_and_kde = DesktopCapabilities {
-        gnome_owner: true,
-        gnome_focus_ready: false,
+    let kde = DesktopCapabilities {
+        gnome_owner: false,
         kde_owner: true,
     };
     assert_eq!(
-        resolve_desktop_flavor(SessionKind::GraphicalWayland, gnome_not_ready_and_kde),
+        resolve_desktop_flavor(SessionKind::GraphicalWayland, kde),
         DesktopFlavor::Kde
     );
 
     let none = DesktopCapabilities {
         gnome_owner: false,
-        gnome_focus_ready: false,
         kde_owner: false,
     };
     assert_eq!(
@@ -3910,6 +3917,69 @@ async fn test_run_lifecycle_supervisor_startup_mode_skips_wayland_capability_rec
         assert_eq!(
             started_kinds.lock().unwrap().as_slice(),
             &[BackendKind::Wayland]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_startup_mode_selects_gnome_without_focus_readiness_gate() {
+    with_test_timeout(async {
+        let provider =
+            LifecycleProvider::Startup(StartupSnapshotProvider::new(Environment::Wayland));
+        let setup_calls = Arc::new(AtomicUsize::new(0));
+        let setup_calls_for_hook = setup_calls.clone();
+        let context = test_backend_context_with_gnome_setup(move |_| {
+            setup_calls_for_hook.fetch_add(1, Ordering::SeqCst);
+        });
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| async move {
+                Ok(resolve_runtime_target(
+                    SessionKind::GraphicalWayland,
+                    DesktopCapabilities {
+                        gnome_owner: true,
+                        kde_owner: false,
+                    },
+                ))
+            },
+            std::time::Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("supervisor should return outcome");
+        assert_eq!(outcome, RunOutcome::Exit);
+        assert_eq!(
+            started_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::Gnome]
+        );
+        assert_eq!(
+            setup_calls.load(Ordering::SeqCst),
+            1,
+            "startup-only mode must run GNOME setup before starting GNOME backend"
         );
     })
     .await;

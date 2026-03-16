@@ -3061,14 +3061,8 @@ async fn detect_desktop_capabilities() -> Result<DesktopCapabilities, DynError> 
     let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
     let gnome_owner = session_bus_name_has_owner(&dbus, GNOME_SHELL_BUS_NAME).await;
     let kde_owner = session_bus_name_has_owner(&dbus, KDE_KWIN_BUS_NAME).await;
-    let gnome_focus_ready = if gnome_owner {
-        query_gnome_focus(&connection).await.is_ok()
-    } else {
-        false
-    };
     Ok(DesktopCapabilities {
         gnome_owner,
-        gnome_focus_ready,
         kde_owner,
     })
 }
@@ -3081,7 +3075,6 @@ async fn resolve_runtime_target_for_snapshot(
     } else {
         DesktopCapabilities {
             gnome_owner: false,
-            gnome_focus_ready: false,
             kde_owner: false,
         }
     };
@@ -4552,7 +4545,6 @@ enum RuntimeTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DesktopCapabilities {
     gnome_owner: bool,
-    gnome_focus_ready: bool,
     kde_owner: bool,
 }
 
@@ -4588,7 +4580,7 @@ fn resolve_desktop_flavor(
     match session_kind {
         SessionKind::GraphicalX11 => DesktopFlavor::X11,
         SessionKind::GraphicalWayland => {
-            if capabilities.gnome_owner && capabilities.gnome_focus_ready {
+            if capabilities.gnome_owner {
                 DesktopFlavor::Gnome
             } else if capabilities.kde_owner {
                 DesktopFlavor::Kde

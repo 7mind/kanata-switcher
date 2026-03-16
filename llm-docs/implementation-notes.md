@@ -36,6 +36,7 @@
 32. **X11/Wayland unpause focus refresh reuses runtime display override resolver** - startup/unpause focus queries now use the same generalized logind display endpoint resolver path as backend startup, eliminating duplicate env-only connection logic and preventing stale `DISPLAY`/`WAYLAND_DISPLAY` failures after session transitions.
 33. **Logind provider selection now gates on lifecycle-monitor prerequisites** - before selecting continuous logind mode, provider init now verifies login1 manager/user/session monitor prerequisites; failures in this phase fall back to startup-snapshot mode rather than returning a logind provider that later exits during detached monitor startup.
 34. **Local SNI unpause is creation-context bound** - runtime-managed Local controls now store an explicit unpause context captured at control creation and do not read `runtime_environment.current()` at click time, preventing transition-race panics when environment flips to GNOME/KDE before control swap.
+35. **Wayland GNOME flavor selection is owner-based** - runtime target resolution now selects GNOME backend whenever GNOME Shell owns its session bus name, without requiring extension focus-query readiness at selection time. This preserves startup-snapshot no-logind GNOME behavior; extension setup still runs on GNOME backend transition.
 
 ## Lifecycle Design Note
 
@@ -155,7 +156,7 @@ When all windows are closed (no window focused), the daemon switches to the defa
 
 When login1 is available, the daemon watches `org.freedesktop.login1.Session.Active` and `Type` on the system bus and transitions runtime targets internally:
 - active `tty` -> Linux console backend
-- active `wayland` -> GNOME/KDE/generic Wayland backend (owner/readiness-probed)
+- active `wayland` -> GNOME/KDE/generic Wayland backend (owner-probed)
 - active `x11` -> X11 backend
 - inactive -> Idle (no focus backend running)
 
