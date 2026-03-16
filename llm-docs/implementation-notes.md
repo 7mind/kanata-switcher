@@ -162,10 +162,34 @@ Logind replies are decoded by inspecting the reply signature (accepting `o`, `s`
 
 If login1 is unavailable, the daemon falls back to startup-only provider mode: it picks one backend from startup env and does not continuously adapt to later lifecycle transitions.
 
+## X11/Wayland Display Endpoint Handling
+
+The X11/Wayland backends accept optional explicit display overrides at startup:
+- X11: `x11rb::connect(display_override)`
+- Wayland: explicit socket (`Connection::from_socket`) when override exists, otherwise `Connection::connect_to_env()`
+
+### 1. logind-supported runtime (`LifecycleProvider::Logind`)
+
+- On each runtime transition into X11/Wayland, supervisor resolves endpoint override from login1 before launching backend task.
+- Resolution uses `resolve_logind_session_path` (`XDG_SESSION_ID` -> `GetSessionByPID` -> `User.Display`) and reads `Session.Type` + `Session.Display`.
+- Override is used only when `Type` matches target backend (`x11`/`wayland`) and `Display` is non-empty.
+- Wayland override handling:
+  - absolute display string: treated as socket path directly
+  - relative display string: resolved as `$XDG_RUNTIME_DIR/<display>`
+- If resolution fails (login1 error, type mismatch, empty display), daemon logs and falls back to env-based connection for that backend start.
+
+### 2. non-logind runtime (`LifecycleProvider::Startup`)
+
+- Startup-only mode means no continuous login/session tracking.
+- X11/Wayland startup attempts the same override resolver, but login1 is unavailable; fallback path is used:
+  - X11: `x11rb::connect(None)` (from `DISPLAY`)
+  - Wayland: `Connection::connect_to_env()` (from `WAYLAND_DISPLAY` + `XDG_RUNTIME_DIR`)
+- After startup snapshot selection, no lifecycle-driven display refresh occurs in this mode.
+
 ## X11 Backend
 
 Uses x11rb with pure Rust connection (no libxcb dependency). Implementation in `run_x11()`:
-1. Connect to X server via `x11rb::connect(None)` (reads $DISPLAY)
+1. Connect to X server via `x11rb::connect(display_override)` (`Some(...)` from logind refresh when available, else `None` -> `$DISPLAY`)
 2. Get atoms for `_NET_ACTIVE_WINDOW`, `_NET_WM_NAME`, `UTF8_STRING`
 3. Subscribe to `PropertyNotify` events on root window
 4. Process initial focused window at startup

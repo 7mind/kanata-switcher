@@ -55,6 +55,31 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - GNOME extension setup (`setup_gnome_extension`) is executed from runtime transitions into the GNOME backend, so persistent daemons that start pre-login and later enter GNOME still install/enable/check the extension at the correct time.
 - On X11/Wayland backend starts, daemon refreshes display endpoints from the current logind display session and connects with explicit endpoints (instead of depending solely on stale startup `DISPLAY`/`WAYLAND_DISPLAY`).
 
+### X11/Wayland Display Endpoint Resolution
+
+#### 1. logind-supported runtime (`LifecycleProvider::Logind`)
+
+- Lifecycle transitions (`Idle <-> x11/wayland`) are continuous and login1-driven.
+- Every runtime transition that starts X11/Wayland (`start_backend`) re-resolves endpoint data from login1 before connecting.
+- Resolution path:
+  - resolve active display session path (`resolve_logind_session_path`, with `XDG_SESSION_ID`/PID/User.Display fallback logic),
+  - read `Session.Type` and `Session.Display` from login1,
+  - accept override only when `Type` matches backend target (`x11` for X11, `wayland` for Wayland) and `Display` is non-empty.
+- Backend connection behavior when override is accepted (no process env mutation; endpoint is passed explicitly to connector):
+  - X11: `x11rb::connect(Some(display))`
+  - Wayland: connect via `UnixStream` to explicit socket and build `wayland_client::Connection::from_socket`
+    - absolute `Display` path is used as-is,
+    - relative `Display` name resolves to `$XDG_RUNTIME_DIR/<Display>`.
+- If logind refresh cannot provide a usable endpoint (query error, mismatch, empty display), daemon logs and falls back to standard env-based connector behavior for that start.
+
+#### 2. non-logind runtime (`LifecycleProvider::Startup`)
+
+- login1 is unavailable, so daemon runs startup-snapshot mode only (single backend selection from startup conditions).
+- X11/Wayland startup still attempts the same override resolution call, but login1 access fails in this mode and the daemon falls back to env-based connectors:
+  - X11: `x11rb::connect(None)` (uses `DISPLAY`)
+  - Wayland: `Connection::connect_to_env()` (uses `WAYLAND_DISPLAY` + `XDG_RUNTIME_DIR`)
+- Because provider is startup-only, daemon does not continuously re-resolve display/session state after startup in this mode.
+
 Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions. If control construction fails transiently (for example, session bus race), runtime-managed SNI now retries with a timer and still wakes immediately on environment changes.
 
 DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
