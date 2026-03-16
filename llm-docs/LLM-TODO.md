@@ -37,6 +37,7 @@ The project daemon is located at `src/daemon/` (Rust).
 - [x] X11 tests use hardcoded display numbers for parallel nextest execution
 
 # Notes
+- 2026-03-16: Refactored X11/Wayland focus-query endpoint resolution to reuse the same generalized logind display-override resolver used by backend startup. Unpause/startup focus refresh no longer hardcodes env-only display resolution; added integration regressions for stale env on unpause (`test_x11_unpause_focus_query_uses_runtime_display_override`, `test_wayland_unpause_focus_query_uses_runtime_display_override`).
 - 2026-03-16: Fixed KDE integration-test flake caused by cross-process `/tmp` script filename collisions. KWin runtime/query/probe script paths now include UUID suffixes (`run_kde`, `query_kde_focus`, runtime query-mode probe), and added unit regressions in `src/daemon/tests.rs` to lock UUID-scoped path generation.
 - 2026-03-15: Runtime backend startup now refreshes X11/Wayland display endpoints from the active logind display session (`Session.Display`) and uses explicit connection endpoints (`x11rb::connect(Some(...))`, Wayland `Connection::from_socket`) instead of relying only on startup process env. This covers logout/login transitions where `DISPLAY`/`WAYLAND_DISPLAY` changed without daemon restart.
 - 2026-03-15: Added integration regressions for stale graphical env vars with explicit runtime overrides: Wayland connection with stale `WAYLAND_DISPLAY` and X11 connection with stale `DISPLAY`.

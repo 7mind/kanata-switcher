@@ -1958,12 +1958,14 @@ fn connect_wayland_with_display_override(
     }
 }
 
-fn query_wayland_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+fn query_wayland_active_window(
+    wayland_display_override: Option<&str>,
+) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(test)]
     {
         WAYLAND_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
     }
-    let connection = connect_wayland_with_display_override(None)?;
+    let connection = connect_wayland_with_display_override(wayland_display_override)?;
     let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
     let mut state = WaylandState::default();
 
@@ -1993,8 +1995,10 @@ fn wayland_query_count() -> usize {
     WAYLAND_QUERY_COUNTER.load(Ordering::SeqCst)
 }
 
-fn query_x11_active_window() -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
-    let state = X11State::new(None)?;
+fn query_x11_active_window(
+    x11_display_override: Option<&str>,
+) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let state = X11State::new(x11_display_override)?;
     Ok(state.get_active_window())
 }
 
@@ -2222,8 +2226,18 @@ async fn query_focus_for_env(
             let conn = connection.expect("KDE focus query requires session connection");
             query_kde_focus(conn, is_kde6).await
         }
-        Environment::Wayland => tokio::task::block_in_place(query_wayland_active_window),
-        Environment::X11 => tokio::task::block_in_place(query_x11_active_window),
+        Environment::Wayland => {
+            let display_override = resolve_display_override_for_environment(env, "Focus").await;
+            tokio::task::block_in_place(move || {
+                query_wayland_active_window(display_override.as_deref())
+            })
+        }
+        Environment::X11 => {
+            let display_override = resolve_display_override_for_environment(env, "Focus").await;
+            tokio::task::block_in_place(move || {
+                query_x11_active_window(display_override.as_deref())
+            })
+        }
         Environment::LinuxConsoleWithLogind => Ok(native_terminal_window()),
         Environment::Unknown => Ok(WindowInfo::default()),
     }
@@ -3101,7 +3115,7 @@ async fn ensure_runtime_gnome_extension_setup(context: &BackendContext) -> Resul
     Ok(())
 }
 
-fn backend_expected_session_type(kind: BackendKind) -> Option<&'static str> {
+fn display_override_expected_session_type(kind: BackendKind) -> Option<&'static str> {
     match kind {
         BackendKind::Wayland => Some("wayland"),
         BackendKind::X11 => Some("x11"),
@@ -3109,10 +3123,10 @@ fn backend_expected_session_type(kind: BackendKind) -> Option<&'static str> {
     }
 }
 
-async fn resolve_backend_display_override_from_logind(
+async fn resolve_display_override_from_logind(
     kind: BackendKind,
 ) -> Result<Option<String>, DynError> {
-    let expected_type = match backend_expected_session_type(kind) {
+    let expected_type = match display_override_expected_session_type(kind) {
         Some(value) => value,
         None => return Ok(None),
     };
@@ -3143,28 +3157,119 @@ async fn resolve_backend_display_override_from_logind(
     Ok(Some(trimmed.to_string()))
 }
 
-async fn resolve_backend_display_override(kind: BackendKind) -> Option<String> {
-    let expected_type = match backend_expected_session_type(kind) {
+fn display_override_backend_kind_for_environment(env: Environment) -> Option<BackendKind> {
+    match env {
+        Environment::Wayland => Some(BackendKind::Wayland),
+        Environment::X11 => Some(BackendKind::X11),
+        Environment::Gnome
+        | Environment::Kde
+        | Environment::LinuxConsoleWithLogind
+        | Environment::Unknown => None,
+    }
+}
+
+#[cfg(test)]
+static TEST_X11_FOCUS_QUERY_DISPLAY_OVERRIDE: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+static TEST_WAYLAND_FOCUS_QUERY_DISPLAY_OVERRIDE: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+struct TestFocusQueryDisplayOverrideGuard {
+    env: Environment,
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+impl Drop for TestFocusQueryDisplayOverrideGuard {
+    fn drop(&mut self) {
+        if let Some(slot) = display_override_test_slot(self.env) {
+            *slot.lock().unwrap() = self.previous.clone();
+        }
+    }
+}
+
+#[cfg(test)]
+fn display_override_test_slot(
+    env: Environment,
+) -> Option<&'static std::sync::Mutex<Option<String>>> {
+    match env {
+        Environment::X11 => Some(&TEST_X11_FOCUS_QUERY_DISPLAY_OVERRIDE),
+        Environment::Wayland => Some(&TEST_WAYLAND_FOCUS_QUERY_DISPLAY_OVERRIDE),
+        Environment::Gnome
+        | Environment::Kde
+        | Environment::LinuxConsoleWithLogind
+        | Environment::Unknown => None,
+    }
+}
+
+#[cfg(test)]
+fn set_test_focus_query_display_override(
+    env: Environment,
+    override_value: Option<&str>,
+) -> TestFocusQueryDisplayOverrideGuard {
+    let slot = display_override_test_slot(env)
+        .expect("focus-query test display override is only valid for X11/Wayland");
+    let mut guard = slot.lock().unwrap();
+    let previous = guard.clone();
+    *guard = override_value.map(str::to_string);
+    TestFocusQueryDisplayOverrideGuard { env, previous }
+}
+
+#[cfg(test)]
+fn resolve_test_focus_query_display_override(env: Environment) -> Option<String> {
+    let slot = match display_override_test_slot(env) {
+        Some(slot) => slot,
+        None => return None,
+    };
+    slot.lock().unwrap().clone()
+}
+
+#[cfg(not(test))]
+fn resolve_test_focus_query_display_override(_env: Environment) -> Option<String> {
+    None
+}
+
+async fn resolve_display_override_for_backend_kind(
+    kind: BackendKind,
+    context_label: &str,
+) -> Option<String> {
+    let expected_type = match display_override_expected_session_type(kind) {
         Some(value) => value,
         None => return None,
     };
-    match resolve_backend_display_override_from_logind(kind).await {
+    match resolve_display_override_from_logind(kind).await {
         Ok(Some(display)) => {
             println!(
-                "[Lifecycle] Refreshed {} display endpoint from logind: {}",
-                expected_type, display
+                "[{}] Refreshed {} display endpoint from logind: {}",
+                context_label, expected_type, display
             );
             Some(display)
         }
         Ok(None) => None,
         Err(error) => {
             eprintln!(
-                "[Lifecycle] Failed to refresh {} display endpoint from logind: {}",
-                expected_type, error
+                "[{}] Failed to refresh {} display endpoint from logind: {}",
+                context_label, expected_type, error
             );
             None
         }
     }
+}
+
+async fn resolve_display_override_for_environment(
+    env: Environment,
+    context_label: &str,
+) -> Option<String> {
+    if let Some(display) = resolve_test_focus_query_display_override(env) {
+        return Some(display);
+    }
+    let kind = match display_override_backend_kind_for_environment(env) {
+        Some(kind) => kind,
+        None => return None,
+    };
+    resolve_display_override_for_backend_kind(kind, context_label).await
 }
 
 async fn start_backend(
@@ -3195,7 +3300,8 @@ async fn start_backend(
             })
         }
         BackendKind::Wayland => {
-            let wayland_display_override = resolve_backend_display_override(kind).await;
+            let wayland_display_override =
+                resolve_display_override_for_backend_kind(kind, "Lifecycle").await;
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
             let task_finished = finished_tx.clone();
@@ -3208,7 +3314,8 @@ async fn start_backend(
             })
         }
         BackendKind::X11 => {
-            let x11_display_override = resolve_backend_display_override(kind).await;
+            let x11_display_override =
+                resolve_display_override_for_backend_kind(kind, "Lifecycle").await;
             let task_context = context.clone();
             let task_shutdown = shutdown_handle.clone();
             let task_finished = finished_tx.clone();

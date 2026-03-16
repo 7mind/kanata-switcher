@@ -33,6 +33,7 @@
 29. **Runtime-managed SNI retries transient start failures** - when runtime SNI control construction fails (`build_sni_control_for_mode` returns `None`), the SNI manager no longer stalls until the next environment change; it retries on a fixed timer while still reacting to env-change signals.
 30. **X11/Wayland backend startup refreshes display endpoints from logind** - before starting X11/Wayland backends, daemon resolves current display endpoint from active logind display session and passes explicit endpoints into backend connectors to avoid stale startup env dependence across logout/login transitions.
 31. **KDE temp script paths are UUID-scoped** - KWin runtime/query/probe script filenames now include per-script UUIDs (in addition to existing query/probe counters where applicable), preventing cross-process `/tmp` collisions under parallel nextest runs and multi-instance execution.
+32. **X11/Wayland unpause focus refresh reuses runtime display override resolver** - startup/unpause focus queries now use the same generalized logind display endpoint resolver path as backend startup, eliminating duplicate env-only connection logic and preventing stale `DISPLAY`/`WAYLAND_DISPLAY` failures after session transitions.
 
 ## Lifecycle Design Note
 

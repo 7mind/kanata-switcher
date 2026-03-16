@@ -22,8 +22,11 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const LONG_TEST_TIMEOUT: Duration = Duration::from_secs(20);
 static WAYLAND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static DBUS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static X11_FOCUS_QUERY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static DISPLAY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct EnvVarGuard {
     key: &'static str,
@@ -90,6 +93,15 @@ where
     F: Future<Output = T>,
 {
     tokio::time::timeout(TEST_TIMEOUT, future)
+        .await
+        .expect("test timeout")
+}
+
+async fn with_long_test_timeout<F, T>(future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(LONG_TEST_TIMEOUT, future)
         .await
         .expect("test timeout")
 }
@@ -852,7 +864,7 @@ async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
         kanata.connect_with_retry().await;
         drain_kanata_messages(&mock_server, Duration::from_millis(100));
 
-        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
         let daemon_connection = Builder::address(address.clone())
             .expect("Failed to create daemon connection builder")
             .build()
@@ -1003,7 +1015,7 @@ async fn test_run_kde_resolves_runtime_mode_without_startup_env() {
         kanata.connect_with_retry().await;
         drain_kanata_messages(&mock_server, Duration::from_millis(100));
 
-        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
 
         let switcher_service_connection = Builder::address(address.clone())
             .expect("Failed to create switcher service builder")
@@ -1209,7 +1221,7 @@ async fn test_dbus_service_virtual_keys() {
         // Skip handshake messages (RequestLayerNames, RequestFakeKeyNames)
         drain_kanata_messages(&server, Duration::from_millis(100));
 
-        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
 
         // Focus firefox
         {
@@ -3353,7 +3365,7 @@ mod wayland_mock {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_wayland_focus_query_on_start_and_unpause() {
-    with_test_timeout(async {
+    with_long_test_timeout(async {
         let (_lock, _server) = start_wayland_test_server();
 
         let mock_server = MockKanataServer::start();
@@ -3378,7 +3390,7 @@ async fn test_wayland_focus_query_on_start_and_unpause() {
         kanata.connect_with_retry().await;
         drain_kanata_messages(&mock_server, Duration::from_millis(100));
 
-        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
         let pause_broadcaster = PauseBroadcaster::new();
 
         let initial_queries = super::wayland_query_count();
@@ -3448,6 +3460,85 @@ async fn test_wayland_focus_query_on_start_and_unpause() {
         assert!(
             after_unpause > before_unpause,
             "expected Wayland focus query on unpause"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_wayland_unpause_focus_query_uses_runtime_display_override() {
+    with_long_test_timeout(async {
+        let (_lock, server) = start_wayland_test_server();
+        let _wayland_override = super::set_test_focus_query_display_override(
+            Environment::Wayland,
+            Some(server.socket_name()),
+        );
+
+        let mock_server = MockKanataServer::start();
+        let rules = vec![Rule {
+            class: Some("wayland-app".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("terminal".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let pause_broadcaster = PauseBroadcaster::new();
+
+        apply_focus_for_env(
+            Environment::Wayland,
+            None,
+            false,
+            &handler,
+            &status_broadcaster,
+            &pause_broadcaster,
+            &kanata,
+        )
+        .await
+        .expect("Failed to apply Wayland focus on startup");
+
+        pause_daemon_direct(
+            &pause_broadcaster,
+            &handler,
+            &status_broadcaster,
+            &kanata,
+            "test",
+        )
+        .await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+        let _stale_wayland_display = EnvVarGuard::set("WAYLAND_DISPLAY", "stale-wayland-display");
+        let before_unpause = super::wayland_query_count();
+
+        unpause_daemon_direct(
+            Environment::Wayland,
+            None,
+            false,
+            &pause_broadcaster,
+            &handler,
+            &status_broadcaster,
+            &kanata,
+            "test",
+        )
+        .await;
+        let after_unpause = super::wayland_query_count();
+        assert!(
+            after_unpause > before_unpause,
+            "expected Wayland focus query on unpause with runtime display override"
         );
     })
     .await;
@@ -3529,6 +3620,7 @@ impl Drop for XvfbGuard {
 
 #[test]
 fn test_x11_state_display_override_ignores_stale_display_env() {
+    let _display_env_lock = DISPLAY_ENV_LOCK.lock().unwrap();
     let xvfb = XvfbGuard::start(104)
         .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
     let _stale_display = EnvVarGuard::set("DISPLAY", ":65535");
@@ -3961,17 +4053,16 @@ fn test_x11_multiple_focus_changes() {
 /// Requires Xvfb. Run via `nix run .#test` or install Xvfb manually.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_x11_focus_query_on_start_and_unpause() {
-    with_test_timeout(async {
+    with_long_test_timeout(async {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
         use x11rb::wrapper::ConnectionExt as WrapperExt;
+        let _display_env_lock = DISPLAY_ENV_LOCK.lock().unwrap();
+        let _x11_focus_query_lock = X11_FOCUS_QUERY_LOCK.lock().unwrap();
 
         let xvfb = XvfbGuard::start(103)
             .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
-
-        unsafe {
-            std::env::set_var("DISPLAY", &xvfb.display);
-        }
+        let _display = EnvVarGuard::set("DISPLAY", &xvfb.display);
 
         let (conn, screen) = xvfb.connect().expect("Failed to connect");
         let root = conn.setup().roots[screen].root;
@@ -4066,6 +4157,141 @@ async fn test_x11_focus_query_on_start_and_unpause() {
         )
         .await;
         drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+        unpause_daemon_direct(
+            Environment::X11,
+            None,
+            false,
+            &pause_broadcaster,
+            &handler,
+            &status_broadcaster,
+            &kanata,
+            "test",
+        )
+        .await;
+
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "terminal".to_string(),
+            },
+            Duration::from_secs(2),
+        );
+    })
+    .await;
+}
+
+/// Regression: unpause-time X11 focus refresh must use runtime display override, not stale env.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_x11_unpause_focus_query_uses_runtime_display_override() {
+    with_long_test_timeout(async {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::*;
+        use x11rb::wrapper::ConnectionExt as WrapperExt;
+        let _display_env_lock = DISPLAY_ENV_LOCK.lock().unwrap();
+        let _x11_focus_query_lock = X11_FOCUS_QUERY_LOCK.lock().unwrap();
+
+        let xvfb = XvfbGuard::start(105)
+            .expect("Xvfb not available. Run `nix run .#test` or install Xvfb manually.");
+        let _display = EnvVarGuard::set("DISPLAY", &xvfb.display);
+        let _x11_override =
+            super::set_test_focus_query_display_override(Environment::X11, Some(&xvfb.display));
+
+        let (conn, screen) = xvfb.connect().expect("Failed to connect");
+        let root = conn.setup().roots[screen].root;
+        let atoms = X11Atoms::new(&conn).unwrap().reply().unwrap();
+
+        let win = conn.generate_id().unwrap();
+        conn.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            win,
+            root,
+            0,
+            0,
+            100,
+            100,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::default(),
+        )
+        .unwrap();
+
+        WrapperExt::change_property8(
+            &conn,
+            PropMode::REPLACE,
+            win,
+            AtomEnum::WM_CLASS,
+            AtomEnum::STRING,
+            b"instance\0X11AppOverride\0",
+        )
+        .unwrap();
+        WrapperExt::change_property32(
+            &conn,
+            PropMode::REPLACE,
+            root,
+            atoms._NET_ACTIVE_WINDOW,
+            AtomEnum::WINDOW,
+            &[win],
+        )
+        .unwrap();
+        conn.flush().unwrap();
+
+        let mock_server = MockKanataServer::start();
+        let rules = vec![Rule {
+            class: Some("X11AppOverride".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("terminal".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = std::sync::Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let pause_broadcaster = PauseBroadcaster::new();
+
+        apply_focus_for_env(
+            Environment::X11,
+            None,
+            false,
+            &handler,
+            &status_broadcaster,
+            &pause_broadcaster,
+            &kanata,
+        )
+        .await
+        .expect("Failed to apply X11 focus on startup");
+
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "terminal".to_string(),
+            },
+            Duration::from_secs(2),
+        );
+
+        pause_daemon_direct(
+            &pause_broadcaster,
+            &handler,
+            &status_broadcaster,
+            &kanata,
+            "test",
+        )
+        .await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(200));
+
+        let _stale_display = EnvVarGuard::set("DISPLAY", ":65535");
 
         unpause_daemon_direct(
             Environment::X11,
