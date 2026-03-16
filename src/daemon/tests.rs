@@ -4237,3 +4237,73 @@ async fn test_run_lifecycle_supervisor_recovers_after_transient_wayland_resolver
     })
     .await;
 }
+
+#[tokio::test]
+async fn test_run_lifecycle_supervisor_continuous_wayland_resolver_error_falls_back_to_generic_wayland()
+ {
+    with_test_timeout(async {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(LifecycleSnapshot {
+                active: true,
+                session_type: "wayland".to_string(),
+                session_kind: SessionKind::GraphicalWayland,
+            })
+            .expect("snapshot send should succeed");
+        drop(sender);
+
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls_clone = resolver_calls.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |_snapshot| {
+                let resolver_calls = resolver_calls_clone.clone();
+                async move {
+                    resolver_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(std::io::Error::other("continuous wayland resolver failure").into())
+                }
+            },
+            std::time::Duration::from_secs(5),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("continuous resolver failure should still fall back to wayland");
+        assert_eq!(outcome, RunOutcome::Exit);
+        assert_eq!(
+            started_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::Wayland],
+            "continuous wayland resolver failure should trigger generic wayland fallback immediately"
+        );
+        assert_eq!(
+            resolver_calls.load(Ordering::SeqCst),
+            1,
+            "fallback should happen on snapshot resolver error without waiting for periodic recheck"
+        );
+    })
+    .await;
+}

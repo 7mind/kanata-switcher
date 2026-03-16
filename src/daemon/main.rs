@@ -3653,9 +3653,17 @@ where
                         }
                         Err(error) => {
                             eprintln!(
-                                "[Lifecycle] Skipping wayland capability recheck after resolver error: {}",
+                                "[Lifecycle] Falling back to generic Wayland after capability recheck resolver error: {}",
                                 error
                             );
+                            transition_runtime_target_with_starter(
+                                &mut state,
+                                RuntimeTarget::Backend(BackendKind::Wayland),
+                                &context,
+                                "wayland-capability-recheck-fallback-after-resolver-error",
+                                &starter,
+                            )
+                            .await?;
                         }
                     }
                 }
@@ -3681,24 +3689,35 @@ where
                                     .await?;
                                 }
                                 Err(error) => {
-                                    if allow_wayland_capability_recheck {
+                                    if snapshot.session_kind == SessionKind::GraphicalWayland {
+                                        let fallback_reason = if allow_wayland_capability_recheck {
+                                            "continuous-wayland-fallback-after-resolver-error"
+                                        } else {
+                                            "startup-wayland-fallback-after-resolver-error"
+                                        };
+                                        let mode_label = if allow_wayland_capability_recheck {
+                                            "continuous"
+                                        } else {
+                                            "startup"
+                                        };
                                         eprintln!(
-                                            "[Lifecycle] Skipping transition after resolver error: {}",
-                                            error
-                                        );
-                                    } else if snapshot.session_kind == SessionKind::GraphicalWayland {
-                                        eprintln!(
-                                            "[Lifecycle] Falling back to generic Wayland after startup resolver error: {}",
+                                            "[Lifecycle] Falling back to generic Wayland after {} resolver error: {}",
+                                            mode_label,
                                             error
                                         );
                                         transition_runtime_target_with_starter(
                                             &mut state,
                                             RuntimeTarget::Backend(BackendKind::Wayland),
                                             &context,
-                                            "startup-wayland-fallback-after-resolver-error",
+                                            fallback_reason,
                                             &starter,
                                         )
                                         .await?;
+                                    } else if allow_wayland_capability_recheck {
+                                        eprintln!(
+                                            "[Lifecycle] Skipping transition after resolver error: {}",
+                                            error
+                                        );
                                     } else {
                                         return Err(format!(
                                             "[Lifecycle] Startup lifecycle target resolution failed: {}",
@@ -3741,9 +3760,17 @@ where
                         }
                         Err(error) => {
                             eprintln!(
-                                "[Lifecycle] Skipping wayland capability recheck after resolver error: {}",
+                                "[Lifecycle] Falling back to generic Wayland after capability recheck resolver error: {}",
                                 error
                             );
+                            transition_runtime_target_with_starter(
+                                &mut state,
+                                RuntimeTarget::Backend(BackendKind::Wayland),
+                                &context,
+                                "wayland-capability-recheck-fallback-after-resolver-error",
+                                &starter,
+                            )
+                            .await?;
                         }
                     }
                 }

@@ -40,6 +40,7 @@
 36. **Wayland override + startup probe fallback hardening** - login1 `Session.Display` overrides for Wayland are validated (rejecting X11-style values like `:0`), and startup-snapshot Wayland resolver/probe failures now fall back to generic Wayland target instead of terminating daemon startup.
 37. **KDE runtime-mode probe waits for scripting interface readiness** - KDE startup/unpause runtime query-mode resolution now requires KWin ownership plus `/Scripting` introspection export of `org.kde.kwin.Scripting`, and retries probe attempts before failing. This prevents transient “KWin owned, scripting not ready yet” races from aborting runtime transition.
 38. **Startup-snapshot preserves explicit GNOME/KDE identity** - no-logind startup snapshots now encode `session_type` hints (`gnome`/`kde`) and snapshot target resolution honors those hints directly. This removes one-shot owner-probe dependence for explicit GNOME/KDE startup environments and prevents permanent fallback to generic Wayland after transient early-session races.
+39. **Continuous Wayland resolver errors degrade to generic Wayland** - in logind continuous mode, Wayland snapshot resolver failures now trigger explicit fallback transition to generic Wayland (instead of skipping transition/recheck and keeping stale state). This matches startup-mode safety behavior and prevents indefinite idle/stale backend under persistent session-bus capability probe failures.
 
 ## Lifecycle Design Note
 
