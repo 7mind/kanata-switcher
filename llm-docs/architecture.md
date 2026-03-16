@@ -82,6 +82,7 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - Because provider is startup-only, daemon does not continuously re-resolve display/session state after startup in this mode.
 
 Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions. If control construction fails transiently (for example, session bus race), runtime-managed SNI now retries with a timer and still wakes immediately on environment changes.
+For Local SNI controls, unpause uses a context captured at control creation (env + focus-query context), not `runtime_environment.current()` at click time, to avoid transition races where stale Local controls observe GNOME/KDE without a matching session connection.
 
 DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
 - remains registered while session bus is available, including lifecycle `Idle`

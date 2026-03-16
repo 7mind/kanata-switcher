@@ -1366,6 +1366,13 @@ impl SniIndicatorState {
 }
 
 #[derive(Clone)]
+struct UnpauseContext {
+    env: Environment,
+    connection: Option<Connection>,
+    is_kde6: bool,
+}
+
+#[derive(Clone)]
 struct SniLocalControl {
     runtime_handle: tokio::runtime::Handle,
     kanata: KanataClient,
@@ -1373,9 +1380,7 @@ struct SniLocalControl {
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
-    runtime_environment: RuntimeEnvironmentBroadcaster,
-    connection: Option<Connection>,
-    is_kde6: bool,
+    unpause_context: UnpauseContext,
 }
 
 #[derive(Clone)]
@@ -1410,6 +1415,25 @@ fn sni_control_mode_for_environment(env: Environment) -> Option<SniControlMode> 
         Environment::Wayland | Environment::X11 => Some(SniControlMode::Local),
         Environment::Kde => Some(SniControlMode::Dbus),
         Environment::Gnome | Environment::LinuxConsoleWithLogind | Environment::Unknown => None,
+    }
+}
+
+fn local_sni_unpause_context(env: Environment) -> UnpauseContext {
+    match env {
+        Environment::Wayland | Environment::X11 => UnpauseContext {
+            env,
+            connection: None,
+            is_kde6: false,
+        },
+        Environment::Gnome
+        | Environment::Kde
+        | Environment::LinuxConsoleWithLogind
+        | Environment::Unknown => {
+            panic!(
+                "[SNI] Local control created for unsupported environment: {:?}",
+                env
+            )
+        }
     }
 }
 
@@ -1526,10 +1550,11 @@ impl SniControlOps for SniControl {
         println!("[SNI] Unpause requested");
         match self {
             SniControl::Local(control) => {
+                let context = control.unpause_context.clone();
                 unpause_daemon(
-                    control.runtime_environment.current(),
-                    control.connection.clone(),
-                    control.is_kde6,
+                    context.env,
+                    context.connection,
+                    context.is_kde6,
                     &control.pause_broadcaster,
                     &control.handler,
                     &control.status_broadcaster,
@@ -3785,6 +3810,7 @@ fn unpause_daemon(
     runtime_handle: &tokio::runtime::Handle,
     request_label: &str,
 ) {
+    record_unpause_request_environment_for_test(env);
     if !pause_broadcaster.set_paused(false) {
         println!(
             "[Pause] Unpause requested {} (already running)",
@@ -3813,6 +3839,23 @@ fn unpause_daemon(
             panic!("[Pause] Failed to refresh focus after unpause: {}", error);
         }
     });
+}
+
+#[cfg(test)]
+static TEST_LAST_UNPAUSE_REQUEST_ENV: std::sync::Mutex<Option<Environment>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn record_unpause_request_environment_for_test(env: Environment) {
+    *TEST_LAST_UNPAUSE_REQUEST_ENV.lock().unwrap() = Some(env);
+}
+
+#[cfg(not(test))]
+fn record_unpause_request_environment_for_test(_env: Environment) {}
+
+#[cfg(test)]
+fn take_unpause_request_environment_for_test() -> Option<Environment> {
+    TEST_LAST_UNPAUSE_REQUEST_ENV.lock().unwrap().take()
 }
 
 // === Kanata Client ===
@@ -5307,7 +5350,7 @@ async fn build_sni_control_for_mode(
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
-    runtime_environment: RuntimeEnvironmentBroadcaster,
+    control_environment: Environment,
 ) -> Option<SniControl> {
     match mode {
         SniControlMode::Local => Some(SniControl::Local(SniLocalControl {
@@ -5317,9 +5360,7 @@ async fn build_sni_control_for_mode(
             status_broadcaster,
             pause_broadcaster,
             restart_handle,
-            runtime_environment,
-            connection: None,
-            is_kde6: false,
+            unpause_context: local_sni_unpause_context(control_environment),
         })),
         SniControlMode::Dbus => match Connection::session().await {
             Ok(connection) => Some(SniControl::Dbus(SniDbusControl {
@@ -5441,7 +5482,7 @@ impl SniGuard {
                 StatusBroadcaster,
                 PauseBroadcaster,
                 RestartHandle,
-                RuntimeEnvironmentBroadcaster,
+                Environment,
             ) -> BFut
             + Send
             + Sync
@@ -5483,7 +5524,7 @@ impl SniGuard {
                             status_broadcaster.clone(),
                             pause_broadcaster.clone(),
                             restart_handle.clone(),
-                            runtime_environment.clone(),
+                            env,
                         )
                         .await;
                         if let Some(control) = control {
@@ -6389,18 +6430,18 @@ impl DbusWindowFocusService {
     }
 
     async fn unpause(&self) {
-        let (env, connection, is_kde6) = match &self.runtime_environment {
+        let context = match &self.runtime_environment {
             Some(runtime_environment) => resolve_runtime_unpause_context(runtime_environment).await,
-            None => (
-                self.env,
-                Some(self.focus_query_connection.clone()),
-                self.is_kde6,
-            ),
+            None => UnpauseContext {
+                env: self.env,
+                connection: Some(self.focus_query_connection.clone()),
+                is_kde6: self.is_kde6,
+            },
         };
         unpause_daemon(
-            env,
-            connection,
-            is_kde6,
+            context.env,
+            context.connection,
+            context.is_kde6,
             &self.pause_broadcaster,
             &self.handler,
             &self.status_broadcaster,
@@ -6413,7 +6454,7 @@ impl DbusWindowFocusService {
 
 async fn resolve_runtime_unpause_context(
     runtime_environment: &RuntimeEnvironmentBroadcaster,
-) -> (Environment, Option<Connection>, bool) {
+) -> UnpauseContext {
     let env = runtime_environment.current();
     let connection = if environment_requires_focus_query_connection(env) {
         Some(Connection::session().await.unwrap_or_else(|error| {
@@ -6440,7 +6481,11 @@ async fn resolve_runtime_unpause_context(
     } else {
         false
     };
-    (env, connection, is_kde6)
+    UnpauseContext {
+        env,
+        connection,
+        is_kde6,
+    }
 }
 
 async fn resolve_kde_runtime_query_mode(

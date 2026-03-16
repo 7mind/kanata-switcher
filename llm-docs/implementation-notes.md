@@ -35,6 +35,7 @@
 31. **KDE temp script paths are UUID-scoped** - KWin runtime/query/probe script filenames now include per-script UUIDs (in addition to existing query/probe counters where applicable), preventing cross-process `/tmp` collisions under parallel nextest runs and multi-instance execution.
 32. **X11/Wayland unpause focus refresh reuses runtime display override resolver** - startup/unpause focus queries now use the same generalized logind display endpoint resolver path as backend startup, eliminating duplicate env-only connection logic and preventing stale `DISPLAY`/`WAYLAND_DISPLAY` failures after session transitions.
 33. **Logind provider selection now gates on lifecycle-monitor prerequisites** - before selecting continuous logind mode, provider init now verifies login1 manager/user/session monitor prerequisites; failures in this phase fall back to startup-snapshot mode rather than returning a logind provider that later exits during detached monitor startup.
+34. **Local SNI unpause is creation-context bound** - runtime-managed Local controls now store an explicit unpause context captured at control creation and do not read `runtime_environment.current()` at click time, preventing transition-race panics when environment flips to GNOME/KDE before control swap.
 
 ## Lifecycle Design Note
 

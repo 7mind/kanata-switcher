@@ -2829,7 +2829,7 @@ fn test_plan_sni_runtime_transition_restarts_on_environment_change() {
 }
 
 #[tokio::test]
-async fn test_sni_local_control_tracks_runtime_environment_switches() {
+async fn test_sni_local_control_unpause_uses_creation_environment_during_transition_race() {
     with_test_timeout(async {
         let status_broadcaster = StatusBroadcaster::new();
         let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Wayland);
@@ -2840,19 +2840,18 @@ async fn test_sni_local_control_tracks_runtime_environment_switches() {
             status_broadcaster,
             pause_broadcaster: PauseBroadcaster::new(),
             restart_handle: RestartHandle::new(),
-            runtime_environment: runtime_environment.clone(),
-            connection: None,
-            is_kde6: false,
+            unpause_context: local_sni_unpause_context(Environment::Wayland),
         };
+        let control = SniControl::Local(control);
 
-        assert_eq!(control.runtime_environment.current(), Environment::Wayland);
-        runtime_environment.set_current(Environment::LinuxConsoleWithLogind);
+        runtime_environment.set_current(Environment::Kde);
+        let _ = take_unpause_request_environment_for_test();
+        control.unpause();
         assert_eq!(
-            control.runtime_environment.current(),
-            Environment::LinuxConsoleWithLogind
+            take_unpause_request_environment_for_test(),
+            Some(Environment::Wayland),
+            "local SNI unpause must use the control's creation environment, not runtime_environment.current()"
         );
-        runtime_environment.set_current(Environment::X11);
-        assert_eq!(control.runtime_environment.current(), Environment::X11);
     })
     .await;
 }
@@ -2975,7 +2974,7 @@ async fn test_sni_runtime_managed_retries_after_transient_start_failure() {
                   status_broadcaster,
                   pause_broadcaster,
                   restart_handle,
-                  runtime_environment| {
+                  control_environment| {
                 let build_attempts = build_attempts_for_builder.clone();
                 async move {
                     let attempt = build_attempts.fetch_add(1, Ordering::SeqCst);
@@ -2990,7 +2989,7 @@ async fn test_sni_runtime_managed_retries_after_transient_start_failure() {
                             status_broadcaster,
                             pause_broadcaster,
                             restart_handle,
-                            runtime_environment,
+                            control_environment,
                         )
                         .await
                     }
