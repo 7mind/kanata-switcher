@@ -2587,6 +2587,7 @@ struct LogindLifecycleProvider {
 impl LogindLifecycleProvider {
     async fn new() -> Result<Self, DynError> {
         let connection = Connection::system().await?;
+        verify_logind_lifecycle_monitor_prerequisites(&connection).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             if let Err(error) = monitor_logind_lifecycle(connection, sender).await {
@@ -2603,6 +2604,46 @@ impl LogindLifecycleProvider {
     async fn next_snapshot(&mut self) -> Option<LifecycleSnapshot> {
         self.receiver.recv().await
     }
+}
+
+async fn verify_logind_lifecycle_monitor_prerequisites(
+    connection: &Connection,
+) -> Result<(), DynError> {
+    let manager = zbus::Proxy::new(
+        connection,
+        LOGIND_BUS_NAME,
+        LOGIND_MANAGER_PATH,
+        LOGIND_MANAGER_INTERFACE,
+    )
+    .await?;
+    let user_reply = manager
+        .call_method("GetUserByPID", &(std::process::id()))
+        .await?;
+    let user_path = decode_logind_object_path_reply(&user_reply, "GetUserByPID")?;
+
+    let _user_proxy = zbus::Proxy::new(
+        connection,
+        LOGIND_BUS_NAME,
+        user_path.clone(),
+        LOGIND_USER_INTERFACE,
+    )
+    .await?;
+    let user_properties_proxy = zbus::fdo::PropertiesProxy::builder(connection)
+        .destination(LOGIND_BUS_NAME)?
+        .path(user_path)?
+        .build()
+        .await?;
+    let _user_signals = user_properties_proxy.receive_properties_changed().await?;
+
+    match resolve_logind_session_path(connection).await {
+        Ok(session_path) => {
+            let _ = open_logind_session_monitor(connection, &session_path).await?;
+        }
+        Err(LogindSessionPathResolutionError::DisplayNotReady) => {}
+        Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
+    }
+
+    Ok(())
 }
 
 fn validate_active_logind_session_type(
@@ -2865,7 +2906,15 @@ enum LifecycleProvider {
 
 impl LifecycleProvider {
     async fn build(env: Environment) -> Self {
-        match LogindLifecycleProvider::new().await {
+        Self::build_with_logind_factory(env, LogindLifecycleProvider::new).await
+    }
+
+    async fn build_with_logind_factory<F, Fut>(env: Environment, logind_factory: F) -> Self
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<LogindLifecycleProvider, DynError>>,
+    {
+        match logind_factory().await {
             Ok(provider) => {
                 println!("[Lifecycle] Provider=logind (continuous)");
                 Self::Logind(provider)
