@@ -57,7 +57,7 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 - Wayland flavor resolution picks GNOME when GNOME Shell owns its session bus name (owner-based selection), so startup-snapshot mode does not depend on extension focus-query readiness to enter GNOME backend
 - GNOME extension setup (`setup_gnome_extension`) is executed from runtime transitions into the GNOME backend, so persistent daemons that start pre-login and later enter GNOME still install/enable/check the extension at the correct time.
 - On X11/Wayland backend starts, daemon refreshes display endpoints from the current logind display session and connects with explicit endpoints (instead of depending solely on stale startup `DISPLAY`/`WAYLAND_DISPLAY`).
-- In logind continuous mode, Wayland resolver failures now degrade to generic Wayland target instead of leaving stale backend/idle state.
+- In logind continuous mode, Wayland resolver failures now degrade conditionally: fallback to generic Wayland only when current target is non-Wayland-family; keep active `gnome`/`kde`/`wayland` backend on transient resolver failures and retry on subsequent rechecks.
 
 ### X11/Wayland Display Endpoint Resolution
 
