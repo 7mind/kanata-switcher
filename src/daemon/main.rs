@@ -7160,11 +7160,28 @@ notifyFocus(workspace.{active});
     Ok(outcome)
 }
 
-const DBUS_RECONNECT_DELAYS_MS: &[u64] = &[250, 1000, 2000, 2000, 5000];
+const DBUS_RECONNECT_DELAYS_MS: &[u64] = &[250, 1000, 2000];
 
 fn dbus_reconnect_delay(attempt: usize) -> Duration {
     let index = attempt.min(DBUS_RECONNECT_DELAYS_MS.len() - 1);
     Duration::from_millis(DBUS_RECONNECT_DELAYS_MS[index])
+}
+
+async fn wait_for_dbus_reconnect_retry(
+    reconnect_attempt: &mut usize,
+    shutdown_receiver: &mut watch::Receiver<bool>,
+    restart_receiver: &mut watch::Receiver<bool>,
+    prefix: &str,
+    error: String,
+) {
+    let delay = dbus_reconnect_delay(*reconnect_attempt);
+    eprintln!("{}; retrying in {}ms: {}", prefix, delay.as_millis(), error);
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => {}
+        _ = shutdown_receiver.changed() => {}
+        _ = restart_receiver.changed() => {}
+    }
+    *reconnect_attempt += 1;
 }
 
 struct PersistentDbusServiceGuard {
@@ -7260,18 +7277,14 @@ async fn run_persistent_dbus_service_with_connector<C, CFut>(
                 connection
             }
             Err(error) => {
-                let delay = dbus_reconnect_delay(reconnect_attempt);
-                eprintln!(
-                    "[DBus] Session bus unavailable; retrying in {}ms: {}",
-                    delay.as_millis(),
-                    error
-                );
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = shutdown_receiver.changed() => {}
-                    _ = restart_receiver.changed() => {}
-                }
-                reconnect_attempt += 1;
+                wait_for_dbus_reconnect_retry(
+                    &mut reconnect_attempt,
+                    &mut shutdown_receiver,
+                    &mut restart_receiver,
+                    "[DBus] Session bus unavailable",
+                    error.to_string(),
+                )
+                .await;
                 continue;
             }
         };
@@ -7296,18 +7309,14 @@ async fn run_persistent_dbus_service_with_connector<C, CFut>(
                 registration
             }
             Err(error) => {
-                let delay = dbus_reconnect_delay(reconnect_attempt);
-                eprintln!(
-                    "[DBus] Failed to register control service; retrying in {}ms: {}",
-                    delay.as_millis(),
-                    error
-                );
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = shutdown_receiver.changed() => {}
-                    _ = restart_receiver.changed() => {}
-                }
-                reconnect_attempt += 1;
+                wait_for_dbus_reconnect_retry(
+                    &mut reconnect_attempt,
+                    &mut shutdown_receiver,
+                    &mut restart_receiver,
+                    "[DBus] Failed to register control service",
+                    error.to_string(),
+                )
+                .await;
                 continue;
             }
         };
@@ -7315,22 +7324,30 @@ async fn run_persistent_dbus_service_with_connector<C, CFut>(
         let proxy = match zbus::fdo::DBusProxy::new(&connection).await {
             Ok(proxy) => proxy,
             Err(error) => {
-                eprintln!(
-                    "[DBus] Failed to create DBus proxy for name-loss monitoring: {}",
-                    error
-                );
                 drop(registration);
+                wait_for_dbus_reconnect_retry(
+                    &mut reconnect_attempt,
+                    &mut shutdown_receiver,
+                    &mut restart_receiver,
+                    "[DBus] Failed to create DBus proxy for name-loss monitoring",
+                    error.to_string(),
+                )
+                .await;
                 continue;
             }
         };
         let mut name_lost = match proxy.receive_name_lost_with_args(&[(0, DBUS_NAME)]).await {
             Ok(stream) => stream,
             Err(error) => {
-                eprintln!(
-                    "[DBus] Failed to subscribe to NameLost; reconnecting: {}",
-                    error
-                );
                 drop(registration);
+                wait_for_dbus_reconnect_retry(
+                    &mut reconnect_attempt,
+                    &mut shutdown_receiver,
+                    &mut restart_receiver,
+                    "[DBus] Failed to subscribe to NameLost",
+                    error.to_string(),
+                )
+                .await;
                 continue;
             }
         };

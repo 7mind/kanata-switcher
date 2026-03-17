@@ -92,7 +92,7 @@ For Local SNI controls, unpause uses a context captured at control creation (env
 DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
 - remains registered while session bus is available, including lifecycle `Idle`
 - receives `NameLost` push signals and re-registers on bus/name loss
-- retries session-bus connect/register with bounded backoff when bus is unavailable
+- retries with bounded backoff (max 2s) across bus connect, service register, DBus proxy setup, and `NameLost` subscription setup failures
 
 ## Wayland Toplevel Protocol
 
