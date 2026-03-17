@@ -3,8 +3,6 @@
 
 [Unit]
 Description=Kanata layer switcher daemon
-After=graphical-session.target
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -14,4 +12,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
