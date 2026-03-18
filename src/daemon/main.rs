@@ -2450,6 +2450,7 @@ fn logind_object_path_from_value(value: &Value<'_>) -> Option<OwnedObjectPath> {
     match value {
         Value::ObjectPath(path) => Some(OwnedObjectPath::from(path.clone())),
         Value::Str(text) => OwnedObjectPath::try_from(text.as_str()).ok(),
+        Value::Structure(structure) => parse_logind_object_path_from_structure(structure),
         Value::Value(inner) => logind_object_path_from_value(inner),
         _ => None,
     }

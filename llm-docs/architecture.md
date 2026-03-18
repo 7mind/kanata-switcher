@@ -44,6 +44,7 @@ Startup env detection is now a fallback path. Runtime backend ownership is super
 - Logind provider selection validates lifecycle-monitor prerequisites (manager/user/session monitor setup) before commit; if those checks fail, daemon does not enter continuous mode.
 - In pre-login startup (no display session yet), logind lifecycle monitor waits on login1 `User.Display` property changes and attaches when the session appears; daemon startup remains non-blocking.
 - During runtime, logind lifecycle monitor also tracks `User.Display` path changes and reattaches to the new display session object after logout/login cycles.
+- `User.Display` signal decoding accepts direct object paths and structure-wrapped object paths (including variant-wrapped structures), matching observed logind `PropertiesChanged` payload shapes.
 - When `User.Display` clears to `/`, session monitoring is detached until a non-empty display session path appears again.
 - Provider `startup-snapshot` (single event): when login1 is unavailable or logind lifecycle-monitor prerequisites fail, the daemon runs startup-only backend selection.
 - In startup-snapshot mode, explicit startup env detection for GNOME/KDE is preserved as snapshot intent (`session_type` hint), so startup target resolution does not rely solely on a one-shot session-bus owner probe.

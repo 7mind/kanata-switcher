@@ -2515,6 +2515,42 @@ fn test_decode_logind_display_path_change_reports_empty_path() {
 }
 
 #[test]
+fn test_decode_logind_display_path_change_parses_variant_wrapped_structure() {
+    use zbus::zvariant::{ObjectPath, StructureBuilder, Value};
+
+    let display =
+        ObjectPath::try_from("/org/freedesktop/login1/session/_42").expect("valid object path");
+    let structure = StructureBuilder::new()
+        .add_field(display)
+        .build()
+        .expect("structure should build");
+    let value = Value::Value(Box::new(Value::from(structure)));
+    assert_eq!(
+        decode_logind_display_path_change(Some(&value)).expect("decode should succeed"),
+        LogindDisplayPathChange::Path(
+            OwnedObjectPath::try_from("/org/freedesktop/login1/session/_42")
+                .expect("valid object path")
+        )
+    );
+}
+
+#[test]
+fn test_decode_logind_display_path_change_parses_variant_wrapped_structure_empty_path() {
+    use zbus::zvariant::{ObjectPath, StructureBuilder, Value};
+
+    let display = ObjectPath::try_from("/").expect("valid object path");
+    let structure = StructureBuilder::new()
+        .add_field(display)
+        .build()
+        .expect("structure should build");
+    let value = Value::Value(Box::new(Value::from(structure)));
+    assert_eq!(
+        decode_logind_display_path_change(Some(&value)).expect("decode should succeed"),
+        LogindDisplayPathChange::Empty
+    );
+}
+
+#[test]
 fn test_decode_logind_display_path_change_errors_on_invalid_value() {
     use zbus::zvariant::Value;
 
