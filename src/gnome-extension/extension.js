@@ -11,7 +11,12 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { formatLayerLetter, formatVirtualKeys, selectStatus } from './format.js';
 import { unpackSingleBoolean } from './dbus.js';
-import { disconnectedState, isDaemonOwnerAvailable } from './daemon-state.js';
+import {
+  disconnectedState,
+  initialFocusStatusState,
+  initialStatusState,
+  isDaemonOwnerAvailable
+} from './daemon-state.js';
 import { extractFocus } from './focus.js';
 
 const DBUS_NAME = 'com.github.kanata.Switcher';
@@ -29,25 +34,19 @@ const FOCUS_DBUS_XML = `
     </interface>
   </node>
 `;
+const DAEMON_RECONNECT_POLL_INTERVAL_MS = 1000;
 
 const SETTINGS_KEY_SHOW_ICON = 'show-top-bar-icon';
 const SETTINGS_KEY_FOCUS_ONLY = 'show-focus-layer-only';
 export default class KanataSwitcherExtension extends Extension {
   enable() {
     this._settings = this.getSettings();
-    this._status = {
-      layer: '',
-      virtualKeys: [],
-      source: 'external'
-    };
-    this._focusStatus = {
-      layer: '',
-      virtualKeys: [],
-      source: 'focus'
-    };
+    this._status = initialStatusState();
+    this._focusStatus = initialFocusStatusState();
     this._lastStatus = this._status;
     this._paused = false;
     this._isUpdatingPauseItem = false;
+    this._daemonReconnectProbeId = 0;
 
     this._settingsChangedId = this._settings.connect(
       `changed::${SETTINGS_KEY_SHOW_ICON}`,
@@ -131,6 +130,8 @@ export default class KanataSwitcherExtension extends Extension {
       this._focusDbus.unexport();
       this._focusDbus = null;
     }
+
+    this._clearDaemonReconnectProbe();
 
     if (this._indicator) {
       this._indicator.destroy();
@@ -313,18 +314,57 @@ export default class KanataSwitcherExtension extends Extension {
       return;
     }
 
+    this._clearDaemonReconnectProbe();
     this._refreshStatusFromDaemon();
     this._refreshPausedFromDaemon();
   }
 
   _setDisconnected() {
-    const state = disconnectedState();
+    const state = disconnectedState(this._lastStatus, this._focusStatus);
     this._status = state.status;
     this._focusStatus = state.focusStatus;
     this._lastStatus = state.lastStatus;
     this._paused = state.paused;
     this._syncPauseMenuItem();
     this._applyStatusToIndicator();
+    this._ensureDaemonReconnectProbe();
+  }
+
+  _ensureDaemonReconnectProbe() {
+    if (this._daemonReconnectProbeId !== 0) {
+      return;
+    }
+    this._daemonReconnectProbeId = GLib.timeout_add(
+      GLib.PRIORITY_DEFAULT,
+      DAEMON_RECONNECT_POLL_INTERVAL_MS,
+      () => {
+        if (!this._daemonProxy) {
+          this._daemonReconnectProbeId = 0;
+          return GLib.SOURCE_REMOVE;
+        }
+        let owner = null;
+        try {
+          owner = this._daemonProxy.get_name_owner();
+        } catch (error) {
+          owner = null;
+        }
+        if (!isDaemonOwnerAvailable(owner)) {
+          return GLib.SOURCE_CONTINUE;
+        }
+        this._daemonReconnectProbeId = 0;
+        this._refreshStatusFromDaemon();
+        this._refreshPausedFromDaemon();
+        return GLib.SOURCE_REMOVE;
+      }
+    );
+  }
+
+  _clearDaemonReconnectProbe() {
+    if (this._daemonReconnectProbeId === 0) {
+      return;
+    }
+    GLib.source_remove(this._daemonReconnectProbeId);
+    this._daemonReconnectProbeId = 0;
   }
 
   _requestRestart() {
