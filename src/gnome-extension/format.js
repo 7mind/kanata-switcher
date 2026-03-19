@@ -49,5 +49,17 @@ export function formatVirtualKeys(virtualKeys) {
 }
 
 export function selectStatus(showFocusOnly, focusStatus, lastStatus) {
-  return showFocusOnly ? focusStatus : lastStatus;
+  if (!showFocusOnly) {
+    return lastStatus;
+  }
+  if (!focusStatus || typeof focusStatus !== 'object') {
+    return lastStatus;
+  }
+  if (typeof focusStatus.layer !== 'string') {
+    return lastStatus;
+  }
+  if (focusStatus.layer.trim().length === 0) {
+    return lastStatus;
+  }
+  return focusStatus;
 }

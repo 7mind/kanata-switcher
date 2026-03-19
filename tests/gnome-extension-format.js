@@ -37,6 +37,38 @@ async function main() {
   const lastStatus = { layer: 'browser', virtualKeys: [], source: 'external' };
   assertEqual(selectStatus(true, focusStatus, lastStatus).layer, 'vim', 'select focus status');
   assertEqual(selectStatus(false, focusStatus, lastStatus).layer, 'browser', 'select last status');
+  assertEqual(
+    selectStatus(
+      true,
+      { layer: '', virtualKeys: [], source: 'focus' },
+      lastStatus
+    ).layer,
+    'browser',
+    'focus-only falls back when focus layer empty'
+  );
+  assertEqual(
+    selectStatus(
+      true,
+      { layer: '   ', virtualKeys: [], source: 'focus' },
+      lastStatus
+    ).layer,
+    'browser',
+    'focus-only falls back when focus layer whitespace'
+  );
+  assertEqual(
+    selectStatus(
+      true,
+      { layer: 1, virtualKeys: [], source: 'focus' },
+      lastStatus
+    ).layer,
+    'browser',
+    'focus-only falls back when focus layer is non-string'
+  );
+  assertEqual(
+    selectStatus(true, null, lastStatus).layer,
+    'browser',
+    'focus-only falls back when focus status missing'
+  );
 }
 
 main();

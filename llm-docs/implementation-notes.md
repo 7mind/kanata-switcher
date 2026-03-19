@@ -44,6 +44,7 @@
 40. **Persistent DBus reconnect backoff now covers monitor-setup failures and is capped at 2s** - the persistent DBus manager applies the same bounded retry backoff path to session-bus connect, service registration, DBus proxy creation, and `NameLost` subscription setup failures. This removes rapid spin/log-flood loops when monitor setup fails while keeping reconnect latency responsive.
 41. **Logind `User.Display` change decoding accepts structure encodings** - lifecycle monitor `User.Display` decode now accepts structure-wrapped object paths (including variant-wrapped structures), not only direct object-path/string values. This prevents false parse failures and fail-fast exits during real GNOME <-> Linux console display-session transitions.
 42. **GNOME extension reconnects status after suspend/resume owner-loss races** - on daemon-owner loss, extension now keeps the last known layer/VK status (instead of resetting display state to empty) and starts a periodic owner probe timer. When owner becomes available again, it refreshes `GetStatus` and `GetPaused`, covering missed `notify::g-name-owner` recovery events after suspend.
+43. **GNOME focus-only indicator falls back to last status when focus snapshot is empty** - `selectStatus()` now returns `lastStatus` if focus-only is enabled but focus layer is missing/invalid/blank, preventing lock/unlock and startup races from rendering `?` while daemon status is valid.
 
 ## Lifecycle Design Note
 
