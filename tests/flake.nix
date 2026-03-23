@@ -144,6 +144,44 @@
               ];
             }).config.system.build.toplevel;
 
+          nixos-module-keyboards-unit-names =
+            let
+              services = (
+                nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    kanata-switcher.nixosModules.default
+                    {
+                      services.kanata-switcher = {
+                        enable = true;
+                        keyboards = {
+                          kinesis = {
+                            kanataPort = 22334;
+                            settings = [ { default = "default"; } ];
+                          };
+                          framework13 = {
+                            kanataPort = 22335;
+                            settings = [ { default = "default"; } ];
+                          };
+                        };
+                      };
+                      fileSystems."/".device = "/dev/disk/by-label/ci-root";
+                      fileSystems."/".fsType = "ext4";
+                      boot.loader.grub.devices = [ "/dev/sda" ];
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }
+              ).config.systemd.user.services;
+            in
+            assert (builtins.hasAttr "kanata-switcher-kinesis" services);
+            assert (builtins.hasAttr "kanata-switcher-framework13" services);
+            assert (!(builtins.hasAttr "kinesis" services));
+            assert (!(builtins.hasAttr "framework13" services));
+            pkgs.runCommand "nixos-module-keyboards-unit-names" { } ''
+              touch "$out"
+            '';
+
           nixos-module-keyboards-invalid-mixed =
             let
               evalResult = builtins.tryEval (
