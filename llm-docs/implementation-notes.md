@@ -45,6 +45,7 @@
 41. **Logind `User.Display` change decoding accepts structure encodings** - lifecycle monitor `User.Display` decode now accepts structure-wrapped object paths (including variant-wrapped structures), not only direct object-path/string values. This prevents false parse failures and fail-fast exits during real GNOME <-> Linux console display-session transitions.
 42. **GNOME extension reconnects status after suspend/resume owner-loss races** - on daemon-owner loss, extension now keeps the last known layer/VK status (instead of resetting display state to empty) and starts a periodic owner probe timer. When owner becomes available again, it refreshes `GetStatus` and `GetPaused`, covering missed `notify::g-name-owner` recovery events after suspend.
 43. **GNOME focus-only indicator falls back to last status when focus snapshot is empty** - `selectStatus()` now returns `lastStatus` if focus-only is enabled but focus layer is missing/invalid/blank, preventing lock/unlock and startup races from rendering `?` while daemon status is valid.
+44. **Nix module supports optional per-keyboard multiplexing mode** - `services.kanata-switcher.keyboards` can define multiple instances, each with independent `kanataPort`/`kanataHost`/`configFile|settings`/`logging`, producing user units `kanata-switcher-<name>`. Single-instance mode remains default under top-level options. Module asserts enforce either keyboards-mode or top-level mode, and mutual exclusivity of `configFile` vs `settings` per instance.
 
 ## Lifecycle Design Note
 
