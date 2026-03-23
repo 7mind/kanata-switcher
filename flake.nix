@@ -456,32 +456,50 @@
                 (toString configFile)
               ]
               ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [ "--no-install-gnome-extension" ];
-            singleInstance = {
-              name = "kanata-switcher";
-              config = {
-                inherit (cfg)
-                  kanataPort
-                  kanataHost
-                  configFile
-                  settings
-                  logging
-                  ;
-              };
+            singleServiceName = "kanata-switcher";
+            singleInstanceConfig = {
+              inherit (cfg)
+                kanataPort
+                kanataHost
+                configFile
+                settings
+                logging
+                ;
             };
-            instances =
-              if keyboardMode then cfg.keyboards else { ${singleInstance.name} = singleInstance.config; };
-            execArgsByInstance = lib.mapAttrs buildExecArgs instances;
+            serviceToKeyboard =
+              if keyboardMode then
+                lib.mapAttrs' (
+                  keyboardName: _:
+                  lib.nameValuePair "kanata-switcher-${keyboardName}" keyboardName
+                ) cfg.keyboards
+              else
+                { ${singleServiceName} = null; };
+            instances = lib.mapAttrs (
+              _: keyboardName:
+              if keyboardName == null then singleInstanceConfig else cfg.keyboards.${keyboardName}
+            ) serviceToKeyboard;
+            execArgsByInstance = lib.mapAttrs (
+              serviceName: keyboardName:
+              let
+                instanceCfg = instances.${serviceName};
+                configName = if keyboardName == null then serviceName else keyboardName;
+              in
+              buildExecArgs configName instanceCfg
+            ) serviceToKeyboard;
             restartTriggersByInstance = lib.mapAttrs (
-              name: instanceCfg:
+              serviceName: keyboardName:
+              let
+                instanceCfg = instances.${serviceName};
+              in
               builtins.toJSON {
                 settings = instanceCfg.settings;
                 configFile = instanceCfg.configFile;
                 kanataPort = instanceCfg.kanataPort;
                 kanataHost = instanceCfg.kanataHost;
                 logging = instanceCfg.logging;
-                keyboard = if keyboardMode then name else null;
+                keyboard = keyboardName;
               }
-            ) instances;
+            ) serviceToKeyboard;
           in
           {
             options.services.kanata-switcher = moduleOptions lib packages;
