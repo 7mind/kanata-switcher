@@ -297,6 +297,38 @@ Enable in your Home Manager config:
 }
 ```
 
+Optional multiplex mode (multiple Kanata ports/instances):
+
+```nix
+# home.nix
+{
+  services.kanata-switcher = {
+    enable = true;
+    keyboards = {
+      kinesis = {
+        kanataPort = 22334;
+        settings = [
+          { default = "default"; }
+          { class = "code|codium|jetbrains"; layer = "terminal"; }
+        ];
+      };
+      framework13 = {
+        kanataPort = 22335;
+        logging = "none";
+        settings = [
+          { default = "default"; }
+          { class = "kitty|alacritty|wezterm"; layer = "terminal"; }
+        ];
+      };
+    };
+  };
+}
+```
+
+When `services.kanata-switcher.keyboards` is non-empty, the module creates one user service per entry named
+`kanata-switcher-<keyboard>`. In this mode, top-level `kanataPort`, `kanataHost`, `configFile`, `settings`, and
+`logging` must stay at defaults.
+
 #### NixOS Module (NixOS)
 
 For system-wide installation without Home Manager:
@@ -345,8 +377,37 @@ For system-wide installation without Home Manager:
 }
 ```
 
+Optional multiplex mode (multiple Kanata ports/instances):
+
+```nix
+# configuration.nix
+{
+  services.kanata-switcher = {
+    enable = true;
+    keyboards = {
+      kinesis = {
+        kanataPort = 22334;
+        settings = [
+          { default = "default"; }
+          { class = "code|codium|jetbrains"; layer = "terminal"; }
+        ];
+      };
+      framework13 = {
+        kanataPort = 22335;
+        logging = "none";
+        settings = [
+          { default = "default"; }
+          { class = "kitty|alacritty|wezterm"; layer = "terminal"; }
+        ];
+      };
+    };
+  };
+}
+```
+
 The NixOS module creates a systemd user service (`systemd.user.services`) that auto-starts for all users on graphical
-login. Config file still defaults to per-user `~/.config/kanata/kanata-switcher.json`.
+login. Config file still defaults to per-user `~/.config/kanata/kanata-switcher.json`. In multiplex mode, unit names
+are `kanata-switcher-<keyboard>`; in single-instance mode, the unit name remains `kanata-switcher`.
 
 ##### External GNOME Extension Management
 

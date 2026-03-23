@@ -263,6 +263,28 @@ services.kanata-switcher = {
 
 Creates `systemd.user.services.kanata-switcher` (starts for all users on graphical login).
 
+Optional multiplex mode:
+
+```nix
+services.kanata-switcher = {
+  enable = true;
+  keyboards = {
+    kinesis = {
+      kanataPort = 22334;
+      settings = [{ default = "default"; }];
+    };
+    framework13 = {
+      kanataPort = 22335;
+      settings = [{ default = "default"; }];
+      logging = "none";
+    };
+  };
+};
+```
+
+When `keyboards` is non-empty, one unit is generated per keyboard (`kanata-switcher-<name>`). In this mode, top-level
+`kanataPort`/`kanataHost`/`configFile`/`settings`/`logging` must remain at defaults.
+
 Home Manager module options:
 ```nix
 services.kanata-switcher = {
