@@ -6696,6 +6696,95 @@ async fn test_control_command_broadcast_times_out_hanging_daemon_per_call() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_broadcast_dispatches_in_parallel() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        // Two daemons that both hang on Pause for 60s. With sequential dispatch
+        // the broadcast would take roughly `2 * BROADCAST_PER_CALL_TIMEOUT`
+        // (~4s); with parallel dispatch it should complete in roughly one
+        // per-call timeout (~2s). The assertion below proves the parallel
+        // path is in effect.
+        let hanging_a = Builder::address(address.clone())
+            .expect("Failed to build hanging A connection")
+            .name(TEST_DAEMON_DBUS_NAME_A)
+            .expect("Failed to claim hanging A name")
+            .serve_at("/com/github/kanata/Switcher", HangingControlService)
+            .expect("Failed to mount hanging A service")
+            .build()
+            .await
+            .expect("Failed to register hanging A daemon");
+        let hanging_b = Builder::address(address.clone())
+            .expect("Failed to build hanging B connection")
+            .name(TEST_DAEMON_DBUS_NAME_B)
+            .expect("Failed to claim hanging B name")
+            .serve_at("/com/github/kanata/Switcher", HangingControlService)
+            .expect("Failed to mount hanging B service")
+            .build()
+            .await
+            .expect("Failed to register hanging B daemon");
+
+        let client = Builder::address(address.clone())
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        for name in [TEST_DAEMON_DBUS_NAME_A, TEST_DAEMON_DBUS_NAME_B] {
+            wait_for_async(|| {
+                let proxy = dbus_proxy.clone();
+                async move {
+                    proxy
+                        .name_has_owner(name.try_into().unwrap())
+                        .await
+                        .ok()
+                        .filter(|&owned| owned)
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("Timeout waiting for {}", name));
+        }
+
+        let started = std::time::Instant::now();
+        let report = send_control_command_broadcast(&client, ControlCommand::Pause)
+            .await
+            .expect("Broadcast must not fail just because every call timed out (report still aggregated)");
+        let elapsed = started.elapsed();
+        // Sequential would be ~4s. Parallel should be ~2s. Allow ~1s slack
+        // for scheduling/zbus overhead but stay well below the sequential
+        // total to prove parallelism.
+        assert!(
+            elapsed < Duration::from_millis(3000),
+            "broadcast must dispatch in parallel; took {:?} (would be ~4s sequentially)",
+            elapsed
+        );
+        assert_eq!(report.results.len(), 2);
+        for entry in &report.results {
+            let error = entry
+                .outcome
+                .as_ref()
+                .err()
+                .unwrap_or_else(|| panic!("Hanging daemon {} should time out", entry.bus_name));
+            assert!(
+                error.to_string().contains("timed out"),
+                "Hanging daemon {} error must mention timeout, got: {}",
+                entry.bus_name,
+                error
+            );
+        }
+
+        drop(hanging_a);
+        drop(hanging_b);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_focus_changed_signal_ignores_unrelated_sender() {
     with_test_timeout(async {
         use zbus::connection::Builder;

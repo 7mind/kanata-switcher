@@ -79,6 +79,22 @@ async function main() {
     contents.includes('<method name="GetFocus">'),
     'extension.js still exposes GetFocus method on extensions.GNOME interface'
   );
+
+  // Regression: NameOwnerChanged subscription uses broker-side arg0namespace
+  // filtering. Older code path used a DBusProxy + client-side filter, which
+  // woke the extension on every name change on the session bus.
+  assertTrue(
+    contents.includes('signal_subscribe('),
+    'extension.js uses Gio.DBus.session.signal_subscribe for NameOwnerChanged'
+  );
+  assertTrue(
+    contents.includes('MATCH_ARG0_NAMESPACE'),
+    'extension.js sets MATCH_ARG0_NAMESPACE on NameOwnerChanged subscription'
+  );
+  assertTrue(
+    !/Gio\.DBusProxy\.new_for_bus_sync\([^)]*'org\.freedesktop\.DBus'/.test(contents),
+    'extension.js must not subscribe to all NameOwnerChanged via a DBusProxy on org.freedesktop.DBus'
+  );
 }
 
 main();

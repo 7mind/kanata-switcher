@@ -475,49 +475,85 @@ fn test_sanitize_dbus_suffix_at_max_length_accepted() {
     assert_eq!(sanitized.chars().count(), 64);
 }
 
+#[test]
+fn test_sanitize_dbus_suffix_max_length_digit_start_rejected() {
+    // 64-char input starting with a digit would expand to 65 chars after the
+    // leading-underscore prepend, exceeding the cap. Must be rejected.
+    let raw = "1".repeat(64);
+    let result = sanitize_dbus_suffix(&raw);
+    assert!(
+        matches!(
+            result,
+            Err(DbusSuffixError::TooLong {
+                length: 65,
+                limit: 64,
+            })
+        ),
+        "64-char digit-start input must overflow the cap, got {:?}",
+        result
+    );
+}
+
 proptest! {
     /// Property: any non-empty ASCII input within the length cap must sanitize
-    /// to a string that is non-empty, contains only valid DBus name-element
-    /// characters, does not start with a digit, and round-trips through
-    /// `effective_dbus_name` to be recognized by `is_daemon_bus_name`.
+    /// successfully *unless* it triggers a digit-prepend overflow (input ==
+    /// 64 chars with a leading digit). Successful outputs satisfy the
+    /// `[A-Za-z0-9_-]` rules, do not start with a digit, fit within the cap,
+    /// and round-trip through `effective_dbus_name` → `is_daemon_bus_name`.
     #[test]
     fn proptest_sanitize_dbus_suffix_invariants(input in ".{1,64}") {
-        let result = sanitize_dbus_suffix(&input);
-        prop_assert!(
-            result.is_ok(),
-            "non-empty input within length cap must succeed, got error for input {:?}: {:?}",
-            input,
-            result
-        );
-        let sanitized = result.unwrap();
-        prop_assert!(!sanitized.is_empty(), "sanitized output must be non-empty");
-        // Prepending '_' to a digit-start input can extend by 1.
-        prop_assert!(
-            sanitized.chars().count() <= MAX_DBUS_SUFFIX_LEN + 1,
-            "sanitized length {} exceeds cap {}",
-            sanitized.chars().count(),
-            MAX_DBUS_SUFFIX_LEN + 1
-        );
-        let invalid_char = sanitized
-            .chars()
-            .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-'));
-        prop_assert!(
-            invalid_char.is_none(),
-            "invalid char {:?} in sanitized output {:?}",
-            invalid_char,
-            sanitized
-        );
-        let first = sanitized.chars().next().expect("non-empty");
-        prop_assert!(
-            !first.is_ascii_digit(),
-            "sanitized output must not start with a digit, got {:?}",
-            sanitized
-        );
-        prop_assert!(
-            is_daemon_bus_name(&effective_dbus_name(&sanitized)),
-            "effective_dbus_name({:?}) must be recognized as a daemon name",
-            sanitized
-        );
+        match sanitize_dbus_suffix(&input) {
+            Ok(sanitized) => {
+                prop_assert!(!sanitized.is_empty(), "sanitized output must be non-empty");
+                prop_assert!(
+                    sanitized.chars().count() <= MAX_DBUS_SUFFIX_LEN,
+                    "sanitized length {} exceeds cap {}",
+                    sanitized.chars().count(),
+                    MAX_DBUS_SUFFIX_LEN
+                );
+                let invalid_char = sanitized
+                    .chars()
+                    .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-'));
+                prop_assert!(
+                    invalid_char.is_none(),
+                    "invalid char {:?} in sanitized output {:?}",
+                    invalid_char,
+                    sanitized
+                );
+                let first = sanitized.chars().next().expect("non-empty");
+                prop_assert!(
+                    !first.is_ascii_digit(),
+                    "sanitized output must not start with a digit, got {:?}",
+                    sanitized
+                );
+                prop_assert!(
+                    is_daemon_bus_name(&effective_dbus_name(&sanitized)),
+                    "effective_dbus_name({:?}) must be recognized as a daemon name",
+                    sanitized
+                );
+            }
+            Err(DbusSuffixError::TooLong { length, limit }) => {
+                // The only failure path reachable from a ≤64-char input is
+                // the digit-prepend overflow: input chars().count() == 64 and
+                // first char is a digit (which survives sanitization as a digit
+                // and therefore triggers the underscore prepend).
+                prop_assert_eq!(limit, MAX_DBUS_SUFFIX_LEN);
+                prop_assert_eq!(length, MAX_DBUS_SUFFIX_LEN + 1);
+                prop_assert_eq!(input.chars().count(), MAX_DBUS_SUFFIX_LEN);
+                let first = input.chars().next().expect("non-empty input");
+                prop_assert!(
+                    first.is_ascii_digit(),
+                    "TooLong from a 64-char input is only valid for digit-start; got {:?}",
+                    input
+                );
+            }
+            Err(other) => prop_assert!(
+                false,
+                "unexpected sanitize error {:?} for input {:?}",
+                other,
+                input
+            ),
+        }
     }
 }
 

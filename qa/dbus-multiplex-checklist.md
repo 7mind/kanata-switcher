@@ -79,6 +79,11 @@ Start both kanata instances on the matching ports.
       top-bar indicator appears within a second without restarting GNOME
       Shell.
 - [ ] Killing a daemon at runtime: its indicator disappears.
+- [ ] Restarting an existing daemon (same `--dbus-suffix`) at runtime:
+      its indicator does **not** duplicate (only one indicator per
+      keyboard remains in the top bar). This exercises the
+      `_addOrRefreshEntry` idempotency contract — no GJS-level test
+      covers this since it requires the live GNOME Shell environment.
 
 ### Single-keyboard config
 

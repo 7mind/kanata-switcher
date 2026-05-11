@@ -96,6 +96,8 @@ const DCONF_FOCUS_ONLY_KEY: &str =
 /// (`com.github.kanata.Switcher.extensions.*`) for interface/path identifiers
 /// but never own a name in our namespace.
 const DBUS_BASE_NAME: &str = "com.github.kanata.Switcher.instances";
+/// Convenience prefix (DBUS_BASE_NAME + ".") for daemon-bus-name membership tests.
+const DAEMON_BUS_NAME_PREFIX: &str = "com.github.kanata.Switcher.instances.";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
 /// Control interface — same literal across all daemon instances. Interface
 /// names don't collide across distinct bus-name owners and zbus's
@@ -148,7 +150,9 @@ impl std::error::Error for DbusSuffixError {}
 /// Sanitize a suffix to DBus name element rules.
 /// Replaces every char not in `[A-Za-z0-9_-]` with `_`. Prepends `_` when the
 /// first character is a digit (DBus name elements cannot start with a digit).
-/// Rejects empty input and inputs exceeding `MAX_DBUS_SUFFIX_LEN` chars.
+/// Rejects empty input and inputs whose final sanitized form exceeds
+/// `MAX_DBUS_SUFFIX_LEN` chars (digit-start inputs can grow by 1 after the
+/// underscore prepend, so a 64-char digit-start input is rejected).
 fn sanitize_dbus_suffix(raw: &str) -> Result<String, DbusSuffixError> {
     if raw.is_empty() {
         return Err(DbusSuffixError::Empty);
@@ -168,11 +172,20 @@ fn sanitize_dbus_suffix(raw: &str) -> Result<String, DbusSuffixError> {
             out.push('_');
         }
     }
-    if out.is_empty() {
-        return Err(DbusSuffixError::Empty);
-    }
-    if out.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+    if out
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
         out.insert(0, '_');
+    }
+    let out_len = out.chars().count();
+    if out_len > MAX_DBUS_SUFFIX_LEN {
+        return Err(DbusSuffixError::TooLong {
+            length: out_len,
+            limit: MAX_DBUS_SUFFIX_LEN,
+        });
     }
     Ok(out)
 }
@@ -208,16 +221,11 @@ fn effective_dbus_name(suffix: &str) -> String {
     format!("{}.{}", DBUS_BASE_NAME, suffix)
 }
 
-/// Bus-name prefix for the daemon `instances.*` subtree, including the trailing dot.
-fn daemon_bus_name_prefix() -> String {
-    format!("{}.", DBUS_BASE_NAME)
-}
-
 /// Test whether `name` is a daemon bus name (in the `instances.*` subtree).
-/// The `extensions.*` subtree is disjoint by construction.
+/// The `extensions.*` subtree is disjoint by construction. For ASCII bus names
+/// (the only realistic case) byte length and char count coincide.
 fn is_daemon_bus_name(name: &str) -> bool {
-    let prefix = daemon_bus_name_prefix();
-    name.len() > prefix.len() && name.starts_with(&prefix)
+    name.len() > DAEMON_BUS_NAME_PREFIX.len() && name.starts_with(DAEMON_BUS_NAME_PREFIX)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -563,16 +571,14 @@ async fn send_control_command(
     match dispatch {
         ControlDispatch::Unicast { bus_name } => {
             send_control_command_with_connection(&connection, &bus_name, command).await?;
-            println!("[Control] Sent {} request to {}", command.label(), bus_name);
+            println!("[Control] {}: {} ok", bus_name, command.label());
             Ok(())
         }
         ControlDispatch::Broadcast => {
             let report = send_control_command_broadcast(&connection, command).await?;
             for entry in &report.results {
                 match &entry.outcome {
-                    Ok(()) => {
-                        println!("[Control] {}: {} ok", entry.bus_name, command.label())
-                    }
+                    Ok(()) => println!("[Control] {}: {} ok", entry.bus_name, command.label()),
                     Err(error) => eprintln!(
                         "[Control] {}: {} failed: {}",
                         entry.bus_name,
@@ -651,27 +657,34 @@ async fn send_control_command_broadcast(
             "No daemons running (no owners under com.github.kanata.Switcher.instances.*)".into(),
         );
     }
-    let mut results = Vec::with_capacity(names.len());
-    for name in names {
-        let outcome = tokio::time::timeout(
-            BROADCAST_PER_CALL_TIMEOUT,
-            send_control_command_with_connection(connection, &name, command),
-        )
-        .await;
-        let outcome: Result<(), Box<dyn std::error::Error + Send + Sync>> = match outcome {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(format!(
-                "timed out after {}ms",
-                BROADCAST_PER_CALL_TIMEOUT.as_millis()
+    // Dispatch in parallel so one hanging daemon doesn't extend total broadcast
+    // time by `N * per_call_timeout`. Per-call `tokio::time::timeout` still
+    // bounds individual call time; the futures share the same connection
+    // (cheap to clone — `zbus::Connection` is internally `Arc`-backed).
+    let futures = names.iter().cloned().map(|name| {
+        let connection = connection.clone();
+        async move {
+            let outcome = tokio::time::timeout(
+                BROADCAST_PER_CALL_TIMEOUT,
+                send_control_command_with_connection(&connection, &name, command),
             )
-            .into()),
-        };
-        results.push(BroadcastEntryReport {
-            bus_name: name,
-            outcome,
-        });
-    }
+            .await;
+            let outcome: Result<(), Box<dyn std::error::Error + Send + Sync>> = match outcome {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(format!(
+                    "timed out after {}ms",
+                    BROADCAST_PER_CALL_TIMEOUT.as_millis()
+                )
+                .into()),
+            };
+            BroadcastEntryReport {
+                bus_name: name,
+                outcome,
+            }
+        }
+    });
+    let results = futures_util::future::join_all(futures).await;
     Ok(BroadcastReport { results })
 }
 

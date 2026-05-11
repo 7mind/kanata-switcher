@@ -33,6 +33,10 @@ const DBUS_PATH = '/com/github/kanata/Switcher';
 const DBUS_INTERFACE = 'com.github.kanata.Switcher';
 const FOCUS_DBUS_PATH = '/com/github/kanata/Switcher/extensions/GNOME';
 const FOCUS_DBUS_INTERFACE = 'com.github.kanata.Switcher.extensions.GNOME';
+// arg0namespace bus-name filter passed to `signal_subscribe`. DBus matches any
+// arg0 equal to this string or beginning with `<this>.` — exactly the daemon
+// `instances.*` subtree.
+const DAEMON_BUS_NAME_NAMESPACE = 'com.github.kanata.Switcher.instances';
 const FOCUS_DBUS_XML = `
   <node>
     <interface name="${FOCUS_DBUS_INTERFACE}">
@@ -74,23 +78,23 @@ export default class KanataSwitcherExtension extends Extension {
       () => this._notifyFocus()
     );
 
-    this._sessionBusProxy = Gio.DBusProxy.new_for_bus_sync(
-      Gio.BusType.SESSION,
-      Gio.DBusProxyFlags.DO_NOT_AUTO_START,
-      null,
+    // Server-side arg0namespace filter — broker delivers only NameOwnerChanged
+    // signals whose first arg equals `DAEMON_BUS_NAME_NAMESPACE` or starts
+    // with `<namespace>.` (i.e., daemon `instances.*` bus names). Removes the
+    // wakeup cost of unrelated name churn on busy session buses.
+    this._nameOwnerChangedId = Gio.DBus.session.signal_subscribe(
       'org.freedesktop.DBus',
+      'org.freedesktop.DBus',
+      'NameOwnerChanged',
       '/org/freedesktop/DBus',
-      'org.freedesktop.DBus',
-      null
-    );
-    this._nameOwnerChangedId = this._sessionBusProxy.connect(
-      'g-signal',
-      (_proxy, _sender, signalName, parameters) => {
-        if (signalName !== 'NameOwnerChanged') {
-          return;
-        }
+      DAEMON_BUS_NAME_NAMESPACE,
+      Gio.DBusSignalFlags.MATCH_ARG0_NAMESPACE,
+      (_connection, _sender, _path, _iface, _signal, parameters) => {
         const [name, oldOwner, newOwner] = parameters.deep_unpack();
-        if (typeof name !== 'string' || !name.startsWith(DAEMON_BUS_NAME_PREFIX)) {
+        // arg0namespace also matches the bare `instances` namespace itself
+        // (an unowned name our daemons never register); filterDaemonNames
+        // rejects names without a trailing-component suffix.
+        if (!name || !name.startsWith(DAEMON_BUS_NAME_PREFIX)) {
           return;
         }
         if (newOwner && newOwner.length > 0) {
@@ -124,11 +128,10 @@ export default class KanataSwitcherExtension extends Extension {
       this._settingsFocusOnlyChangedId = null;
     }
 
-    if (this._nameOwnerChangedId && this._sessionBusProxy) {
-      this._sessionBusProxy.disconnect(this._nameOwnerChangedId);
+    if (this._nameOwnerChangedId) {
+      Gio.DBus.session.signal_unsubscribe(this._nameOwnerChangedId);
+      this._nameOwnerChangedId = 0;
     }
-    this._nameOwnerChangedId = null;
-    this._sessionBusProxy = null;
 
     if (this._focusDbus) {
       this._focusDbus.flush();

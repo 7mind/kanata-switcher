@@ -182,7 +182,7 @@
               }).config.system.build.toplevel;
             nixos-module-keyboard-suffix-check =
               let
-                evalConfig = (nixpkgs.lib.nixosSystem {
+                multiplexConfig = (nixpkgs.lib.nixosSystem {
                   inherit system;
                   modules = [
                     self.nixosModules.default
@@ -209,15 +209,33 @@
                     }
                   ];
                 }).config;
-                kinesisUnit = evalConfig.systemd.user.services."kanata-switcher-kinesis";
-                fwUnit = evalConfig.systemd.user.services."kanata-switcher-framework13";
+                singleConfig = (nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.default
+                    {
+                      services.kanata-switcher.enable = true;
+                      boot.isContainer = true;
+                      fileSystems."/" = {
+                        device = "tmpfs";
+                        fsType = "tmpfs";
+                      };
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }).config;
+                kinesisUnit = multiplexConfig.systemd.user.services."kanata-switcher-kinesis";
+                fwUnit = multiplexConfig.systemd.user.services."kanata-switcher-framework13";
+                singleUnit = singleConfig.systemd.user.services."kanata-switcher";
               in
               pkgs.runCommand "kanata-switcher-keyboard-suffix-check" { } ''
                 set -euo pipefail
                 kinesis_exec=${pkgs.lib.escapeShellArg kinesisUnit.serviceConfig.ExecStart}
                 fw_exec=${pkgs.lib.escapeShellArg fwUnit.serviceConfig.ExecStart}
+                single_exec=${pkgs.lib.escapeShellArg singleUnit.serviceConfig.ExecStart}
                 echo "kinesis ExecStart: $kinesis_exec"
                 echo "framework13 ExecStart: $fw_exec"
+                echo "single-instance ExecStart: $single_exec"
                 case "$kinesis_exec" in
                   *"--dbus-suffix kinesis"*) : ;;
                   *) echo "kanata-switcher-kinesis is missing --dbus-suffix kinesis"; exit 1 ;;
@@ -225,6 +243,12 @@
                 case "$fw_exec" in
                   *"--dbus-suffix framework13"*) : ;;
                   *) echo "kanata-switcher-framework13 is missing --dbus-suffix framework13"; exit 1 ;;
+                esac
+                case "$single_exec" in
+                  *"--dbus-suffix"*)
+                    echo "single-instance unit must not include --dbus-suffix (suffix is auto-derived)"
+                    exit 1
+                    ;;
                 esac
                 touch $out
               '';
