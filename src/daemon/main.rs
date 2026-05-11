@@ -88,41 +88,17 @@ use cosmic_workspace::{
     zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
 };
 
-const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
-const DCONF_FOCUS_ONLY_KEY: &str =
-    "/org/gnome/shell/extensions/kanata-switcher/show-focus-layer-only";
-/// Namespace root for daemon well-known bus names. Each daemon instance owns
-/// a name `{DBUS_BASE_NAME}.{suffix}`. Extensions use a disjoint subtree
-/// (`com.github.kanata.Switcher.extensions.*`) for interface/path identifiers
-/// but never own a name in our namespace.
-const DBUS_BASE_NAME: &str = "com.github.kanata.Switcher.instances";
-/// Convenience prefix (DBUS_BASE_NAME + ".") for daemon-bus-name membership tests.
-const DAEMON_BUS_NAME_PREFIX: &str = "com.github.kanata.Switcher.instances.";
-const DBUS_PATH: &str = "/com/github/kanata/Switcher";
-/// Control interface — same literal across all daemon instances. Interface
-/// names don't collide across distinct bus-name owners and zbus's
-/// `#[interface]` macro requires a literal.
-const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
-const GNOME_FOCUS_OBJECT_PATH: &str = "/com/github/kanata/Switcher/extensions/GNOME";
-const GNOME_FOCUS_INTERFACE: &str = "com.github.kanata.Switcher.extensions.GNOME";
-const GNOME_FOCUS_METHOD: &str = "GetFocus";
-const GNOME_FOCUS_SIGNAL: &str = "FocusChanged";
-const KDE_QUERY_INTERFACE: &str = "com.github.kanata.Switcher.KdeQuery";
-const MAX_DBUS_SUFFIX_LEN: usize = 64;
-const KDE_QUERY_METHOD: &str = "Focus";
-const LOGIND_BUS_NAME: &str = "org.freedesktop.login1";
-const LOGIND_MANAGER_PATH: &str = "/org/freedesktop/login1";
-const LOGIND_MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
-const LOGIND_SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
-const LOGIND_USER_INTERFACE: &str = "org.freedesktop.login1.User";
-const LOGIND_ERROR_NO_SESSION_FOR_PID: &str = "org.freedesktop.login1.NoSessionForPID";
-const LOGIND_EMPTY_OBJECT_PATH: &str = "/";
-const KDE_KWIN_BUS_NAME: &str = "org.kde.KWin";
-const KDE_KWIN_SCRIPTING_PATH: &str = "/Scripting";
-const KDE_KWIN_SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
-const DBUS_INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
-const KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS: usize = 5;
-const KDE_RUNTIME_QUERY_MODE_RETRY_DELAY: Duration = Duration::from_secs(1);
+mod constants;
+mod errors;
+mod environ;
+
+use constants::*;
+use errors::DynError;
+use environ::*;
+
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::{constants::*, errors::*, environ::*};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DbusSuffixError {
@@ -2861,7 +2837,6 @@ async fn wait_for_logind_display_session_path(
     }
 }
 
-type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug)]
 struct StartupSnapshotProvider {
@@ -4881,207 +4856,6 @@ impl Drop for ShutdownGuard {
     }
 }
 
-// === Environment Detection ===
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Environment {
-    Gnome,
-    Kde,
-    Wayland,
-    X11,
-    LinuxConsoleWithLogind,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunOutcome {
-    Restart,
-    Exit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionKind {
-    NoSession,
-    GraphicalX11,
-    GraphicalWayland,
-    NativeTerminal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DesktopFlavor {
-    Gnome,
-    Kde,
-    GenericWayland,
-    X11,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackendKind {
-    Gnome,
-    Kde,
-    Wayland,
-    X11,
-    LinuxConsole,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeTarget {
-    Backend(BackendKind),
-    Idle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DesktopCapabilities {
-    gnome_owner: bool,
-    kde_owner: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LifecycleSnapshot {
-    active: bool,
-    session_type: String,
-    session_kind: SessionKind,
-}
-
-fn session_type_to_session_kind(active: bool, session_type: &str) -> SessionKind {
-    if !active {
-        return SessionKind::NoSession;
-    }
-    if session_type_indicates_native_terminal(session_type) {
-        return SessionKind::NativeTerminal;
-    }
-    match session_type {
-        "x11" => SessionKind::GraphicalX11,
-        "wayland" | "gnome" | "kde" => SessionKind::GraphicalWayland,
-        _ => SessionKind::NoSession,
-    }
-}
-
-fn session_type_indicates_native_terminal(session_type: &str) -> bool {
-    session_type == "tty"
-}
-
-fn resolve_desktop_flavor(
-    session_kind: SessionKind,
-    capabilities: DesktopCapabilities,
-) -> DesktopFlavor {
-    match session_kind {
-        SessionKind::GraphicalX11 => DesktopFlavor::X11,
-        SessionKind::GraphicalWayland => {
-            if capabilities.gnome_owner {
-                DesktopFlavor::Gnome
-            } else if capabilities.kde_owner {
-                DesktopFlavor::Kde
-            } else {
-                DesktopFlavor::GenericWayland
-            }
-        }
-        SessionKind::NativeTerminal | SessionKind::NoSession => DesktopFlavor::Unknown,
-    }
-}
-
-fn resolve_runtime_target(
-    session_kind: SessionKind,
-    capabilities: DesktopCapabilities,
-) -> RuntimeTarget {
-    match session_kind {
-        SessionKind::NoSession => RuntimeTarget::Idle,
-        SessionKind::NativeTerminal => RuntimeTarget::Backend(BackendKind::LinuxConsole),
-        SessionKind::GraphicalX11 => RuntimeTarget::Backend(BackendKind::X11),
-        SessionKind::GraphicalWayland => match resolve_desktop_flavor(session_kind, capabilities) {
-            DesktopFlavor::Gnome => RuntimeTarget::Backend(BackendKind::Gnome),
-            DesktopFlavor::Kde => RuntimeTarget::Backend(BackendKind::Kde),
-            DesktopFlavor::GenericWayland => RuntimeTarget::Backend(BackendKind::Wayland),
-            DesktopFlavor::X11 => RuntimeTarget::Backend(BackendKind::X11),
-            DesktopFlavor::Unknown => RuntimeTarget::Idle,
-        },
-    }
-}
-
-fn runtime_target_from_wayland_startup_session_type_hint(
-    session_type: &str,
-) -> Option<RuntimeTarget> {
-    match session_type {
-        "gnome" => Some(RuntimeTarget::Backend(BackendKind::Gnome)),
-        "kde" => Some(RuntimeTarget::Backend(BackendKind::Kde)),
-        _ => None,
-    }
-}
-
-fn target_requires_session_bus(target: RuntimeTarget) -> bool {
-    match target {
-        RuntimeTarget::Backend(BackendKind::Gnome)
-        | RuntimeTarget::Backend(BackendKind::Kde)
-        | RuntimeTarget::Backend(BackendKind::Wayland)
-        | RuntimeTarget::Backend(BackendKind::X11) => true,
-        RuntimeTarget::Backend(BackendKind::LinuxConsole) | RuntimeTarget::Idle => false,
-    }
-}
-
-fn startup_environment_to_snapshot(env: Environment) -> LifecycleSnapshot {
-    let (active, session_type) = match env {
-        Environment::Gnome => (true, "gnome"),
-        Environment::Kde => (true, "kde"),
-        Environment::Wayland => (true, "wayland"),
-        Environment::X11 => (true, "x11"),
-        Environment::LinuxConsoleWithLogind => (true, "tty"),
-        Environment::Unknown => (false, ""),
-    };
-    let session_type = session_type.to_string();
-    let session_kind = session_type_to_session_kind(active, &session_type);
-    LifecycleSnapshot {
-        active,
-        session_type,
-        session_kind,
-    }
-}
-
-impl Environment {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Environment::Gnome => "gnome",
-            Environment::Kde => "kde",
-            Environment::Wayland => "wayland",
-            Environment::X11 => "x11",
-            Environment::LinuxConsoleWithLogind => "linux-console-with-logind",
-            Environment::Unknown => "unknown",
-        }
-    }
-}
-
-fn detect_environment() -> Environment {
-    let desktop = env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_lowercase();
-
-    if desktop.contains("gnome-greeter") {
-        return Environment::Unknown;
-    }
-
-    // GNOME - needs special DBus extension
-    if desktop.contains("gnome") || env::var("GNOME_SETUP_DISPLAY").is_ok() {
-        return Environment::Gnome;
-    }
-
-    // KDE - needs KWin script injection
-    if env::var("KDE_SESSION_VERSION").is_ok() {
-        return Environment::Kde;
-    }
-
-    // Wayland compositors (wlr-based or COSMIC) - use toplevel protocol
-    if env::var("WAYLAND_DISPLAY").is_ok() {
-        return Environment::Wayland;
-    }
-
-    // X11 fallback
-    if env::var("DISPLAY").is_ok() {
-        return Environment::X11;
-    }
-
-    Environment::Unknown
-}
-
 // === Wayland Toplevel State ===
 
 #[derive(Default)]
@@ -6033,12 +5807,6 @@ fn is_dconf_unavailable(error: &str) -> bool {
 
 // === GNOME Extension Management ===
 
-/// Path to GNOME extension source relative to repository root
-const GNOME_EXTENSION_SRC_PATH: &str = "src/gnome-extension";
-const GNOME_EXTENSION_SCHEMA_FILE: &str =
-    "schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml";
-const GNOME_EXTENSION_SCHEMA_COMPILED: &str = "schemas/gschemas.compiled";
-
 #[cfg(feature = "embed-gnome-extension")]
 macro_rules! gnome_ext_file {
     ($file:literal) => {
@@ -6182,14 +5950,6 @@ fn parse_gnome_extension_state(
         method: GnomeDetectionMethod::Dbus,
     }
 }
-
-// D-Bus coordinates for GNOME Shell Extensions interface
-const GNOME_SHELL_BUS_NAME: &str = "org.gnome.Shell";
-const GNOME_SHELL_OBJECT_PATH: &str = "/org/gnome/Shell";
-const GNOME_SHELL_EXTENSIONS_INTERFACE: &str = "org.gnome.Shell.Extensions";
-const DBUS_ERROR_SERVICE_UNKNOWN: &str = "org.freedesktop.DBus.Error.ServiceUnknown";
-const DBUS_ERROR_NAME_HAS_NO_OWNER: &str = "org.freedesktop.DBus.Error.NameHasNoOwner";
-const DBUS_ERROR_UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 
 enum GnomeDbusProbeResult {
     Status(GnomeExtensionStatus),

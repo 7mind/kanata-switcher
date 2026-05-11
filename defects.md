@@ -211,3 +211,15 @@ Status: `[ ]` open · `[~]` under fix · `[x]` resolved
 - **Description**: After the D20 fix excluded `BackendExit` and `map_run_outcome_to_backend_exit` from PR-08's supervisor-move and shifted them to PR-12, the LOC accounting in both PRs drifted. The supervisor cluster (3203–4145) is ~942 LOC. PR-08 now moves ~929 LOC total (~746 to supervisor/, ~183 to display_override.rs), with ~13 LOC for `BackendExit`/`map_run_outcome_to_backend_exit` staying behind (until D23's resolution). The "~850" claim does not cleanly map to either the supervisor-only count (~746) or the combined count (~929). PR-12 line 356 says "+200 / -150 net +50", but PR-12 step 0 now also moves ~13 LOC of `BackendExit`/`map_run_outcome_to_backend_exit` into `backends/mod.rs`, nudging the net closer to +63.
 - **Root cause**: LOC totals were not re-summed after the D20 reorganisation moved 13 LOC between PRs.
 - **Suggested fix**: Update PR-08 LOC to "~930 (≈746 to `supervisor/`, ≈183 to `display_override.rs`)". Update PR-12 LOC to "+213 / -150 net +63 (including BackendExit and map_run_outcome_to_backend_exit moved out of main.rs/supervisor)". Minor — does not affect correctness, only the accuracy of the budget headers.
+
+---
+
+## PR-01
+
+### PR-01-D01
+- **Status**: `[x]` resolved
+- **Severity**: minor
+- **Location**: `src/daemon/environ.rs` (file name); `src/daemon/main.rs` lines 11 (`use std::env;`), 91-93 (`mod environ;`), 97 (`use environ::*;`), 101 (test re-export); plan §5 PR-01 line 230, §3 module tree.
+- **Description**: The plan calls the new module `env.rs`. The executor named it `environ.rs` instead, to avoid colliding with `use std::env;` at main.rs line 11. The deviation is real: main.rs still calls `env::var(...)`/`env::var_os(...)` at lines 386, 392, 773, 2214, 2559 (5 call sites). Naming the new module `env` would shadow `std::env` and require either (a) removing `use std::env;` and rewriting each call site to `std::env::var(...)`, or (b) renaming the module on import (`use crate::env as environ;`), or (c) accepting the shadow and prefixing each `env::var` call with `std::`. The executor chose to rename the module instead. This works and tests pass, but the plan's prose still refers to `env.rs` / `crate::env::*` / `use crate::env::Environment;` in PR-01 §5, §3 module tree, and downstream PRs (PR-03 line 266, PR-04 line 277, PR-06 line 296, PR-07 line 306, PR-11 callouts).
+- **Root cause**: The plan never probed the `std::env` shadowing case; PR-00 probe should have caught it. Executor made a defensible local fix without updating the plan.
+- **Fix**: Accepted `environ` as the chosen name (lowest-friction option — keeps `use std::env;` intact, no per-call-site edits in main.rs). Updated plan to use `environ` consistently in §2 cross-cutting types row, §3 module tree (line 88), §3 main.rs `mod` declarations list (line 145), §5 PR-01 (lines 230, 245, 248), and the downstream PR sections that previously referenced `crate::env::*` (PR-03 line 266, PR-04 line 277, PR-06 line 296, PR-07 line 306). No code changes.
