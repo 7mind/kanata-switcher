@@ -6,6 +6,12 @@ function assertEqual(actual, expected, message) {
   }
 }
 
+function assertTrue(value, message) {
+  if (!value) {
+    throw new Error(message);
+  }
+}
+
 async function main() {
   const srcRoot = GLib.getenv('KANATA_SWITCHER_SRC');
   if (!srcRoot) {
@@ -36,6 +42,43 @@ async function main() {
   const missingFocus = extractFocus(missing);
   assertEqual(missingFocus.windowClass, '', 'missing class');
   assertEqual(missingFocus.windowTitle, '', 'missing title');
+
+  // Regression: extension.js declares the FocusChanged signal in its DBus XML.
+  const extensionPath = GLib.build_filenamev([
+    srcRoot,
+    'src/gnome-extension/extension.js'
+  ]);
+  const [ok, contentsBytes] = GLib.file_get_contents(extensionPath);
+  assertTrue(ok, `Failed to read ${extensionPath}`);
+  const contents = new TextDecoder('utf-8').decode(contentsBytes);
+  assertTrue(
+    contents.includes("'/com/github/kanata/Switcher/extensions/GNOME'"),
+    'extension.js uses renamed extensions.GNOME path'
+  );
+  assertTrue(
+    contents.includes("'com.github.kanata.Switcher.extensions.GNOME'"),
+    'extension.js uses renamed extensions.GNOME interface'
+  );
+  assertTrue(
+    contents.includes('<signal name="FocusChanged">'),
+    'extension.js declares FocusChanged signal in DBus XML'
+  );
+  assertTrue(
+    contents.includes("emit_signal(\n      'FocusChanged'"),
+    'extension.js emits FocusChanged signal for focus pushes'
+  );
+  // Regression: no direct Gio.DBus.session.call with a "WindowFocus" method —
+  // the extension must push via signal, not method call.
+  assertTrue(
+    !/Gio\.DBus\.session\.call\([^)]*WindowFocus/.test(contents),
+    'extension.js must not call WindowFocus method on the daemon'
+  );
+
+  // Regression: GetFocus method is still exposed on the renamed XML.
+  assertTrue(
+    contents.includes('<method name="GetFocus">'),
+    'extension.js still exposes GetFocus method on extensions.GNOME interface'
+  );
 }
 
 main();

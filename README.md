@@ -473,13 +473,42 @@ passed on the command line. To update the entry, rerun the install command with 
 --no-install-gnome-extension       Do not auto-install GNOME extension
 --no-indicator                     Disable the StatusNotifier (SNI) indicator on non-GNOME desktops
 --indicator-focus-only true|false  Override StatusNotifier (SNI) indicator focus-only mode
---restart                          Send Restart request to an existing daemon and exit
---pause                            Send Pause request to an existing daemon and exit
---unpause                          Send Unpause request to an existing daemon and exit
+--dbus-suffix SUFFIX               Per-instance DBus name suffix (see "Multi-instance daemons" below)
+--restart                          Send Restart request to running daemon(s) and exit
+--pause                            Send Pause request to running daemon(s) and exit
+--unpause                          Send Unpause request to running daemon(s) and exit
 -h, --help                         Show help
 ```
 
 Systemd units use `--quiet-focus` by default to reduce log noise.
+
+### Multi-instance daemons
+
+Each `kanata-switcher` daemon owns a per-instance well-known DBus name
+`com.github.kanata.Switcher.instances.<suffix>`. The suffix is either passed
+explicitly with `--dbus-suffix <SUFFIX>` (sanitized to DBus name element
+rules) or auto-derived from `--host`/`--port`:
+
+- default host (`127.0.0.1`) + port `N` → `pN` (so default settings yield
+  `com.github.kanata.Switcher.instances.p10000`)
+- non-default host `H` + port `N` → `h<sanitized_H>_p<N>`
+
+Multiple daemons on the same session bus must therefore use distinct ports
+or distinct `--dbus-suffix` values. The Nix module's `keyboards` block
+automatically passes `--dbus-suffix <keyboardName>` for each instance.
+
+Control CLI semantics:
+
+- `kanata-switcher --pause` (or `--unpause`/`--restart`) without
+  `--dbus-suffix` **broadcasts**: it enumerates every owner under
+  `com.github.kanata.Switcher.instances.*` and sends the command to each.
+  Per-daemon results are printed; an empty enumeration is an error.
+- `kanata-switcher --dbus-suffix kinesis --pause` **unicasts** to the
+  matching daemon only.
+
+On GNOME, the extension enumerates these owners and shows one top-bar
+indicator per daemon (panel label stays layer/VK only; the keyboard name
+appears in the per-indicator tooltip).
 
 ## Related Projects
 

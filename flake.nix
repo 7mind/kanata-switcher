@@ -180,6 +180,54 @@
                   }
                 ];
               }).config.system.build.toplevel;
+            nixos-module-keyboard-suffix-check =
+              let
+                evalConfig = (nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.default
+                    {
+                      services.kanata-switcher = {
+                        enable = true;
+                        keyboards = {
+                          kinesis = {
+                            kanataPort = 22334;
+                            settings = [ { default = "default"; } ];
+                          };
+                          framework13 = {
+                            kanataPort = 22335;
+                            settings = [ { default = "default"; } ];
+                          };
+                        };
+                      };
+                      boot.isContainer = true;
+                      fileSystems."/" = {
+                        device = "tmpfs";
+                        fsType = "tmpfs";
+                      };
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }).config;
+                kinesisUnit = evalConfig.systemd.user.services."kanata-switcher-kinesis";
+                fwUnit = evalConfig.systemd.user.services."kanata-switcher-framework13";
+              in
+              pkgs.runCommand "kanata-switcher-keyboard-suffix-check" { } ''
+                set -euo pipefail
+                kinesis_exec=${pkgs.lib.escapeShellArg kinesisUnit.serviceConfig.ExecStart}
+                fw_exec=${pkgs.lib.escapeShellArg fwUnit.serviceConfig.ExecStart}
+                echo "kinesis ExecStart: $kinesis_exec"
+                echo "framework13 ExecStart: $fw_exec"
+                case "$kinesis_exec" in
+                  *"--dbus-suffix kinesis"*) : ;;
+                  *) echo "kanata-switcher-kinesis is missing --dbus-suffix kinesis"; exit 1 ;;
+                esac
+                case "$fw_exec" in
+                  *"--dbus-suffix framework13"*) : ;;
+                  *) echo "kanata-switcher-framework13 is missing --dbus-suffix framework13"; exit 1 ;;
+                esac
+                touch $out
+              '';
             gnome-schema = pkgs.runCommand "kanata-switcher-gnome-schema-check" { } ''
               test -f ${kanata-switcher-gnome-extension}/share/gnome-shell/extensions/kanata-switcher@7mind.io/schemas/gschemas.compiled
               touch $out
@@ -234,6 +282,7 @@
                   KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-dbus.js}
                   KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-daemon-state.js}
                   KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-focus.js}
+                  KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-multiplex.js}
                   touch $out
                 '';
           };
@@ -454,6 +503,10 @@
               ++ lib.optionals (configFile != null) [
                 "-c"
                 (toString configFile)
+              ]
+              ++ lib.optionals keyboardMode [
+                "--dbus-suffix"
+                name
               ]
               ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [ "--no-install-gnome-extension" ];
             singleServiceName = "kanata-switcher";

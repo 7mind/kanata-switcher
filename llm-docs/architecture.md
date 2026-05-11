@@ -91,10 +91,29 @@ Backends are event-driven but the daemon performs one-shot focus queries on star
 Runtime-managed SNI indicator restarts own their watcher tasks (status/pause/menu) via an indicator handle wrapper; when the indicator is stopped or replaced, those tasks are aborted with the old handle to avoid task leaks across runtime transitions. If control construction fails transiently (for example, session bus race), runtime-managed SNI now retries with a timer and still wakes immediately on environment changes.
 For Local SNI controls, unpause uses a context captured at control creation (env + focus-query context), not `runtime_environment.current()` at click time, to avoid transition races where stale Local controls observe GNOME/KDE without a matching session connection.
 
-DBus control API (`com.github.kanata.Switcher`) is managed by a dedicated persistent task (not backend-owned):
+DBus control API is managed by a dedicated persistent task (not backend-owned):
+- daemons own per-instance well-known names `com.github.kanata.Switcher.instances.<suffix>` (suffix from `--dbus-suffix`, else `p<port>` for default host or `h<host>_p<port>` for non-default host)
+- control interface stays the literal `com.github.kanata.Switcher` (path `/com/github/kanata/Switcher`); interface/path don't collide across distinct bus-name owners
 - remains registered while session bus is available, including lifecycle `Idle`
 - receives `NameLost` push signals and re-registers on bus/name loss
 - retries with bounded backoff (max 2s) across bus connect, service register, DBus proxy setup, and `NameLost` subscription setup failures
+
+DBus namespace partitioning:
+- `com.github.kanata.Switcher.instances.<suffix>` — daemon bus names (one per instance). Discovery filter: `starts_with("com.github.kanata.Switcher.instances.")` with no exceptions.
+- `com.github.kanata.Switcher.extensions.<de>` — interface name + object path for desktop-environment bridges (currently only `…extensions.GNOME` exposed by the GNOME Shell extension). The extension does not own a bus name in this project's namespace — it piggybacks on `org.gnome.Shell`.
+- Object paths: daemon control at `/com/github/kanata/Switcher`; GNOME bridge at `/com/github/kanata/Switcher/extensions/GNOME`; KDE one-shot focus queries at `/com/github/kanata/Switcher/KdeQuery<N>` (per-connection).
+
+Control CLI dispatch:
+- `--dbus-suffix <SUFFIX>` → unicast to `com.github.kanata.Switcher.instances.<suffix>` only.
+- no suffix → broadcast: enumerate owners under `com.github.kanata.Switcher.instances.*`, send to each with bounded per-call timeout, print per-daemon result, error if enumeration is empty.
+
+GNOME extension/daemon contract (post-multiplex):
+- Live focus pushes: extension emits `FocusChanged(class, title)` signal on its exported object (`/com/github/kanata/Switcher/extensions/GNOME`, interface `com.github.kanata.Switcher.extensions.GNOME`); each daemon subscribes via a MatchRule (`sender=org.gnome.Shell`, `path`, `interface`, `member=FocusChanged`). One emitter, N receivers — focus latency does not scale with keyboard count.
+- One-shot pull (backend start / unpause): daemon issues sync `GetFocus` method call on the same renamed path/interface.
+- Extension is a multi-indicator: enumerates `instances.*` via `ListNames` at enable, watches `NameOwnerChanged` with `arg0namespace=com.github.kanata.Switcher.instances`, maintains a `Map<busName, IndicatorEntry>`. Panel label is layer/VK only (no keyboard prefix); the keyboard name (parsed from the bus name suffix) appears in the indicator's accessible-name/tooltip.
+
+KDE multi-instance:
+- Each daemon injects its own UUID-scoped KWin script. The script's `callDBus` targets the daemon's per-instance bus name `com.github.kanata.Switcher.instances.<suffix>` directly (KWin scripts cannot own bus names, so they push). Per-script isolation is already provided by UUID-scoped script paths.
 
 ## Wayland Toplevel Protocol
 
@@ -313,6 +332,9 @@ The old user helper service `kanata-switcher-graphical-session-restart` was remo
 --quiet-focus                Suppress focus messages only
 --install-gnome-extension    Auto-install GNOME extension (default)
 --no-install-gnome-extension Skip auto-install
+--dbus-suffix SUFFIX         Override per-instance DBus name suffix (sanitized; auto-derived from host/port when absent)
+--restart / --pause / --unpause
+                             Without --dbus-suffix: broadcast to all daemons; with: unicast to the named one.
 ```
 
 Systemd units use `--quiet-focus` by default.

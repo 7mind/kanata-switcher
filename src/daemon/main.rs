@@ -91,13 +91,22 @@ use cosmic_workspace::{
 const GNOME_EXTENSION_UUID: &str = "kanata-switcher@7mind.io";
 const DCONF_FOCUS_ONLY_KEY: &str =
     "/org/gnome/shell/extensions/kanata-switcher/show-focus-layer-only";
-const DBUS_NAME: &str = "com.github.kanata.Switcher";
+/// Namespace root for daemon well-known bus names. Each daemon instance owns
+/// a name `{DBUS_BASE_NAME}.{suffix}`. Extensions use a disjoint subtree
+/// (`com.github.kanata.Switcher.extensions.*`) for interface/path identifiers
+/// but never own a name in our namespace.
+const DBUS_BASE_NAME: &str = "com.github.kanata.Switcher.instances";
 const DBUS_PATH: &str = "/com/github/kanata/Switcher";
+/// Control interface — same literal across all daemon instances. Interface
+/// names don't collide across distinct bus-name owners and zbus's
+/// `#[interface]` macro requires a literal.
 const DBUS_INTERFACE: &str = "com.github.kanata.Switcher";
-const GNOME_FOCUS_OBJECT_PATH: &str = "/com/github/kanata/Switcher/Gnome";
-const GNOME_FOCUS_INTERFACE: &str = "com.github.kanata.Switcher.Gnome";
+const GNOME_FOCUS_OBJECT_PATH: &str = "/com/github/kanata/Switcher/extensions/GNOME";
+const GNOME_FOCUS_INTERFACE: &str = "com.github.kanata.Switcher.extensions.GNOME";
 const GNOME_FOCUS_METHOD: &str = "GetFocus";
+const GNOME_FOCUS_SIGNAL: &str = "FocusChanged";
 const KDE_QUERY_INTERFACE: &str = "com.github.kanata.Switcher.KdeQuery";
+const MAX_DBUS_SUFFIX_LEN: usize = 64;
 const KDE_QUERY_METHOD: &str = "Focus";
 const LOGIND_BUS_NAME: &str = "org.freedesktop.login1";
 const LOGIND_MANAGER_PATH: &str = "/org/freedesktop/login1";
@@ -112,6 +121,104 @@ const KDE_KWIN_SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
 const DBUS_INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 const KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS: usize = 5;
 const KDE_RUNTIME_QUERY_MODE_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DbusSuffixError {
+    Empty,
+    TooLong { length: usize, limit: usize },
+}
+
+impl std::fmt::Display for DbusSuffixError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DbusSuffixError::Empty => {
+                write!(f, "dbus suffix must contain at least one character")
+            }
+            DbusSuffixError::TooLong { length, limit } => write!(
+                f,
+                "dbus suffix length {} exceeds limit {}",
+                length, limit
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DbusSuffixError {}
+
+/// Sanitize a suffix to DBus name element rules.
+/// Replaces every char not in `[A-Za-z0-9_-]` with `_`. Prepends `_` when the
+/// first character is a digit (DBus name elements cannot start with a digit).
+/// Rejects empty input and inputs exceeding `MAX_DBUS_SUFFIX_LEN` chars.
+fn sanitize_dbus_suffix(raw: &str) -> Result<String, DbusSuffixError> {
+    if raw.is_empty() {
+        return Err(DbusSuffixError::Empty);
+    }
+    let raw_len = raw.chars().count();
+    if raw_len > MAX_DBUS_SUFFIX_LEN {
+        return Err(DbusSuffixError::TooLong {
+            length: raw_len,
+            limit: MAX_DBUS_SUFFIX_LEN,
+        });
+    }
+    let mut out = String::with_capacity(raw.len() + 1);
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        return Err(DbusSuffixError::Empty);
+    }
+    if out.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        out.insert(0, '_');
+    }
+    Ok(out)
+}
+
+/// Always returns a non-empty sanitized suffix derived from host + port.
+/// Default host (`127.0.0.1`) maps to `p<port>`; non-default host maps to
+/// `h<sanitized_host>_p<port>`.
+fn derive_default_dbus_suffix(host: &str, port: u16) -> String {
+    if host == "127.0.0.1" {
+        let raw = format!("p{}", port);
+        sanitize_dbus_suffix(&raw).expect("derived default suffix is always non-empty")
+    } else {
+        let raw = format!("h{}_p{}", host, port);
+        sanitize_dbus_suffix(&raw).expect("derived default suffix is always non-empty")
+    }
+}
+
+/// Resolve CLI flag + defaults into the effective suffix. Explicit CLI value
+/// (after sanitization) wins; otherwise derived from host/port.
+fn resolve_dbus_suffix(
+    cli: Option<&str>,
+    host: &str,
+    port: u16,
+) -> Result<String, DbusSuffixError> {
+    match cli {
+        Some(raw) => sanitize_dbus_suffix(raw),
+        None => Ok(derive_default_dbus_suffix(host, port)),
+    }
+}
+
+/// Compose the per-instance well-known name from a sanitized suffix.
+fn effective_dbus_name(suffix: &str) -> String {
+    format!("{}.{}", DBUS_BASE_NAME, suffix)
+}
+
+/// Bus-name prefix for the daemon `instances.*` subtree, including the trailing dot.
+fn daemon_bus_name_prefix() -> String {
+    format!("{}.", DBUS_BASE_NAME)
+}
+
+/// Test whether `name` is a daemon bus name (in the `instances.*` subtree).
+/// The `extensions.*` subtree is disjoint by construction.
+fn is_daemon_bus_name(name: &str) -> bool {
+    let prefix = daemon_bus_name_prefix();
+    name.len() > prefix.len() && name.starts_with(&prefix)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlCommand {
@@ -215,6 +322,17 @@ struct Args {
     /// Send Unpause request to an existing daemon and exit
     #[arg(long, conflicts_with_all = ["restart", "pause"])]
     unpause: bool,
+
+    /// DBus suffix used as the last name element of this daemon's well-known bus
+    /// name (`com.github.kanata.Switcher.instances.<suffix>`). When omitted the
+    /// suffix is auto-derived from `--host` and `--port`. Control CLI commands
+    /// target this exact suffix when set; otherwise they broadcast.
+    #[arg(long, value_name = "SUFFIX", value_parser = parse_dbus_suffix_arg)]
+    dbus_suffix: Option<String>,
+}
+
+fn parse_dbus_suffix_arg(raw: &str) -> Result<String, String> {
+    sanitize_dbus_suffix(raw).map_err(|error| error.to_string())
 }
 
 const AUTOSTART_DESKTOP_FILENAME: &str = "kanata-switcher.desktop";
@@ -228,6 +346,7 @@ const AUTOSTART_PASSTHROUGH_OPTIONS: &[&str] = &[
     "no_install_gnome_extension",
     "no_indicator",
     "indicator_focus_only",
+    "dbus_suffix",
 ];
 const AUTOSTART_ONESHOT_OPTIONS: &[&str] = &[
     "restart",
@@ -380,6 +499,14 @@ fn autostart_passthrough_args(matches: &ArgMatches, args: &Args) -> Vec<String> 
                 exec_args.push("--indicator-focus-only".to_string());
                 exec_args.push(value.as_arg().to_string());
             }
+            "dbus_suffix" => {
+                let suffix = args
+                    .dbus_suffix
+                    .as_ref()
+                    .expect("dbus_suffix missing after command-line input");
+                exec_args.push("--dbus-suffix".to_string());
+                exec_args.push(suffix.clone());
+            }
             _ => {
                 panic!("autostart passthrough option missing handler: {}", name);
             }
@@ -421,25 +548,61 @@ fn uninstall_autostart_desktop() -> Result<(), Box<dyn std::error::Error + Send 
     Ok(())
 }
 
-async fn send_control_command(
-    command: ControlCommand,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let connection = Connection::session().await?;
-    send_control_command_with_connection(&connection, command).await?;
-    println!(
-        "[Control] Sent {} request to running daemon",
-        command.label()
-    );
-    Ok(())
+/// Per-instance control dispatch mode. `Unicast` targets a single daemon bus
+/// name; `Broadcast` enumerates all daemons in the `instances.*` namespace.
+enum ControlDispatch {
+    Unicast { bus_name: String },
+    Broadcast,
 }
 
+async fn send_control_command(
+    command: ControlCommand,
+    dispatch: ControlDispatch,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let connection = Connection::session().await?;
+    match dispatch {
+        ControlDispatch::Unicast { bus_name } => {
+            send_control_command_with_connection(&connection, &bus_name, command).await?;
+            println!("[Control] Sent {} request to {}", command.label(), bus_name);
+            Ok(())
+        }
+        ControlDispatch::Broadcast => {
+            let report = send_control_command_broadcast(&connection, command).await?;
+            for entry in &report.results {
+                match &entry.outcome {
+                    Ok(()) => {
+                        println!("[Control] {}: {} ok", entry.bus_name, command.label())
+                    }
+                    Err(error) => eprintln!(
+                        "[Control] {}: {} failed: {}",
+                        entry.bus_name,
+                        command.label(),
+                        error
+                    ),
+                }
+            }
+            if report.results.iter().all(|entry| entry.outcome.is_err()) {
+                return Err(format!(
+                    "All daemons failed to respond to {}",
+                    command.label()
+                )
+                .into());
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Send a control command to a specific daemon by bus name. Used by both the
+/// unicast control CLI path and the broadcast fan-out (per-target).
 async fn send_control_command_with_connection(
     connection: &Connection,
+    bus_name: &str,
     command: ControlCommand,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     connection
         .call_method(
-            Some(DBUS_NAME),
+            Some(bus_name),
             DBUS_PATH,
             Some(DBUS_INTERFACE),
             command.dbus_method(),
@@ -447,6 +610,69 @@ async fn send_control_command_with_connection(
         )
         .await?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct BroadcastEntryReport {
+    bus_name: String,
+    outcome: Result<(), Box<dyn std::error::Error + Send + Sync>>,
+}
+
+#[derive(Debug)]
+struct BroadcastReport {
+    results: Vec<BroadcastEntryReport>,
+}
+
+/// Enumerate every well-known bus name in the `instances.*` subtree.
+async fn enumerate_daemon_names(
+    connection: &Connection,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let dbus = zbus::fdo::DBusProxy::new(connection).await?;
+    let names = dbus.list_names().await?;
+    let mut filtered: Vec<String> = names
+        .into_iter()
+        .map(|name| name.as_str().to_string())
+        .filter(|name| is_daemon_bus_name(name))
+        .collect();
+    filtered.sort();
+    filtered.dedup();
+    Ok(filtered)
+}
+
+const BROADCAST_PER_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn send_control_command_broadcast(
+    connection: &Connection,
+    command: ControlCommand,
+) -> Result<BroadcastReport, Box<dyn std::error::Error + Send + Sync>> {
+    let names = enumerate_daemon_names(connection).await?;
+    if names.is_empty() {
+        return Err(
+            "No daemons running (no owners under com.github.kanata.Switcher.instances.*)".into(),
+        );
+    }
+    let mut results = Vec::with_capacity(names.len());
+    for name in names {
+        let outcome = tokio::time::timeout(
+            BROADCAST_PER_CALL_TIMEOUT,
+            send_control_command_with_connection(connection, &name, command),
+        )
+        .await;
+        let outcome: Result<(), Box<dyn std::error::Error + Send + Sync>> = match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(format!(
+                "timed out after {}ms",
+                BROADCAST_PER_CALL_TIMEOUT.as_millis()
+            )
+            .into()),
+        };
+        results.push(BroadcastEntryReport {
+            bus_name: name,
+            outcome,
+        });
+    }
+    Ok(BroadcastReport { results })
 }
 
 // === Config ===
@@ -1393,6 +1619,8 @@ struct SniDbusControl {
     runtime_handle: tokio::runtime::Handle,
     connection: Connection,
     restart_handle: RestartHandle,
+    /// Per-instance daemon bus name to target with DBus control calls.
+    daemon_bus_name: String,
 }
 
 #[derive(Clone)]
@@ -1511,6 +1739,7 @@ impl SniControlOps for SniControl {
                 control.runtime_handle.block_on(async {
                     if let Err(error) = send_control_command_with_connection(
                         &control.connection,
+                        &control.daemon_bus_name,
                         ControlCommand::Restart,
                     )
                     .await
@@ -1540,6 +1769,7 @@ impl SniControlOps for SniControl {
                 control.runtime_handle.block_on(async {
                     if let Err(error) = send_control_command_with_connection(
                         &control.connection,
+                        &control.daemon_bus_name,
                         ControlCommand::Pause,
                     )
                     .await
@@ -1572,6 +1802,7 @@ impl SniControlOps for SniControl {
                 control.runtime_handle.block_on(async {
                     if let Err(error) = send_control_command_with_connection(
                         &control.connection,
+                        &control.daemon_bus_name,
                         ControlCommand::Unpause,
                     )
                     .await
@@ -2996,6 +3227,9 @@ struct BackendContext {
     install_gnome_extension: bool,
     gnome_setup_completed: Arc<AtomicBool>,
     gnome_setup_hook: Arc<dyn Fn(bool) + Send + Sync>,
+    /// Effective per-instance well-known DBus name owned by this daemon.
+    /// Threaded into the GNOME signal-match filter and the KWin script template.
+    effective_dbus_name: String,
 }
 
 struct BackendHandle {
@@ -3128,6 +3362,7 @@ async fn run_kde_backend_task(
         context.restart_handle,
         context.pause_broadcaster,
         shutdown_handle,
+        context.effective_dbus_name,
     )
     .await?;
     Ok(map_run_outcome_to_backend_exit(outcome))
@@ -5470,6 +5705,7 @@ async fn build_sni_control_for_mode(
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
     control_environment: Environment,
+    daemon_bus_name: String,
 ) -> Option<SniControl> {
     match mode {
         SniControlMode::Local => Some(SniControl::Local(SniLocalControl {
@@ -5486,6 +5722,7 @@ async fn build_sni_control_for_mode(
                 runtime_handle,
                 connection,
                 restart_handle,
+                daemon_bus_name,
             })),
             Err(error) => {
                 eprintln!("[SNI] Failed to connect to session bus: {}", error);
@@ -5565,6 +5802,7 @@ impl SniGuard {
         pause_broadcaster: PauseBroadcaster,
         restart_handle: RestartHandle,
         indicator_focus_only: Option<TrayFocusOnly>,
+        daemon_bus_name: String,
     ) -> Self {
         Self::runtime_managed_with_builder(
             runtime_environment,
@@ -5577,6 +5815,7 @@ impl SniGuard {
             indicator_focus_only,
             SNI_RUNTIME_RETRY_INTERVAL,
             build_sni_control_for_mode,
+            daemon_bus_name,
         )
     }
 
@@ -5591,6 +5830,7 @@ impl SniGuard {
         indicator_focus_only: Option<TrayFocusOnly>,
         retry_delay: Duration,
         control_builder: B,
+        daemon_bus_name: String,
     ) -> Self
     where
         B: Fn(
@@ -5602,6 +5842,7 @@ impl SniGuard {
                 PauseBroadcaster,
                 RestartHandle,
                 Environment,
+                String,
             ) -> BFut
             + Send
             + Sync
@@ -5644,6 +5885,7 @@ impl SniGuard {
                             pause_broadcaster.clone(),
                             restart_handle.clone(),
                             env,
+                            daemon_bus_name.clone(),
                         )
                         .await;
                         if let Some(control) = control {
@@ -5770,6 +6012,10 @@ const EMBEDDED_DBUS_JS: &str = include_str!(gnome_ext_file!("dbus.js"));
 #[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_FOCUS_JS: &str = include_str!(gnome_ext_file!("focus.js"));
 #[cfg(feature = "embed-gnome-extension")]
+const EMBEDDED_DAEMON_STATE_JS: &str = include_str!(gnome_ext_file!("daemon-state.js"));
+#[cfg(feature = "embed-gnome-extension")]
+const EMBEDDED_MULTIPLEX_JS: &str = include_str!(gnome_ext_file!("extension-multiplex.js"));
+#[cfg(feature = "embed-gnome-extension")]
 const EMBEDDED_GSETTINGS_SCHEMA: &str = include_str!(gnome_ext_file!(
     "schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"
 ));
@@ -5788,6 +6034,8 @@ fn gnome_extension_fs_exists() -> bool {
         && path.join("format.js").exists()
         && path.join("dbus.js").exists()
         && path.join("focus.js").exists()
+        && path.join("daemon-state.js").exists()
+        && path.join("extension-multiplex.js").exists()
         && path.join(GNOME_EXTENSION_SCHEMA_FILE).exists()
         && path.join(GNOME_EXTENSION_SCHEMA_COMPILED).exists()
 }
@@ -5818,6 +6066,8 @@ fn write_embedded_extension_to_dir(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join("format.js"), EMBEDDED_FORMAT_JS)?;
     fs::write(dir.join("dbus.js"), EMBEDDED_DBUS_JS)?;
     fs::write(dir.join("focus.js"), EMBEDDED_FOCUS_JS)?;
+    fs::write(dir.join("daemon-state.js"), EMBEDDED_DAEMON_STATE_JS)?;
+    fs::write(dir.join("extension-multiplex.js"), EMBEDDED_MULTIPLEX_JS)?;
     let schema_dir = dir.join("schemas");
     fs::create_dir_all(&schema_dir)?;
     fs::write(
@@ -6813,6 +7063,7 @@ async fn register_dbus_service(
     status_broadcaster: StatusBroadcaster,
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
+    effective_name: &str,
 ) -> Result<DbusServiceRegistration, DynError> {
     register_dbus_service_with_runtime_environment(
         connection,
@@ -6825,6 +7076,7 @@ async fn register_dbus_service(
         restart_handle,
         pause_broadcaster,
         None,
+        effective_name,
     )
     .await
 }
@@ -6840,6 +7092,7 @@ async fn register_dbus_service_with_runtime_environment(
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
     runtime_environment: Option<RuntimeEnvironmentBroadcaster>,
+    effective_name: &str,
 ) -> Result<DbusServiceRegistration, DynError> {
     let service = DbusWindowFocusService {
         kanata,
@@ -6856,7 +7109,7 @@ async fn register_dbus_service_with_runtime_environment(
 
     connection.object_server().at(DBUS_PATH, service).await?;
 
-    connection.request_name(DBUS_NAME).await?;
+    connection.request_name(effective_name).await?;
 
     let mut receiver = status_broadcaster.subscribe();
     let signal_emitter = SignalEmitter::new(connection, DBUS_PATH)?.into_owned();
@@ -6942,9 +7195,98 @@ async fn run_gnome(
     )
     .await?;
 
-    println!("[GNOME] Listening for focus events from extension...");
+    let signal_connection = Connection::session().await?;
+    let focus_signal_subscription = subscribe_to_gnome_focus_signal(
+        &signal_connection,
+        kanata.clone(),
+        handler.clone(),
+        status_broadcaster.clone(),
+        pause_broadcaster.clone(),
+    )
+    .await?;
+
+    println!(
+        "[GNOME] Listening for FocusChanged signals from extension at {}",
+        GNOME_FOCUS_OBJECT_PATH
+    );
     let outcome = wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
+    drop(focus_signal_subscription);
+    drop(signal_connection);
     Ok(outcome)
+}
+
+/// Guard owning the GNOME FocusChanged signal subscription task. Dropping the
+/// guard aborts the listener (and releases the match rule when the connection
+/// is dropped).
+struct GnomeFocusSignalSubscription {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for GnomeFocusSignalSubscription {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn subscribe_to_gnome_focus_signal(
+    connection: &Connection,
+    kanata: KanataClient,
+    handler: Arc<Mutex<FocusHandler>>,
+    status_broadcaster: StatusBroadcaster,
+    pause_broadcaster: PauseBroadcaster,
+) -> Result<GnomeFocusSignalSubscription, Box<dyn std::error::Error + Send + Sync>> {
+    use zbus::MatchRule;
+    let match_rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(GNOME_SHELL_BUS_NAME)
+        .map_err(|error| format!("Invalid sender match rule: {}", error))?
+        .interface(GNOME_FOCUS_INTERFACE)
+        .map_err(|error| format!("Invalid interface match rule: {}", error))?
+        .path(GNOME_FOCUS_OBJECT_PATH)
+        .map_err(|error| format!("Invalid path match rule: {}", error))?
+        .member(GNOME_FOCUS_SIGNAL)
+        .map_err(|error| format!("Invalid member match rule: {}", error))?
+        .build();
+
+    let mut stream = zbus::MessageStream::for_match_rule(match_rule, connection, None).await?;
+    let task = tokio::spawn(async move {
+        while let Some(message) = stream.next().await {
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    eprintln!("[GNOME] FocusChanged signal error: {}", error);
+                    continue;
+                }
+            };
+            let (window_class, window_title): (String, String) =
+                match message.body().deserialize() {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        eprintln!("[GNOME] FocusChanged decode error: {}", error);
+                        continue;
+                    }
+                };
+            let win = WindowInfo {
+                class: window_class,
+                title: window_title,
+                is_native_terminal: false,
+            };
+            let default_layer = kanata.default_layer().await.unwrap_or_default();
+            if let Some(actions) = handle_focus_event(
+                &handler,
+                &status_broadcaster,
+                &pause_broadcaster,
+                &win,
+                &kanata,
+                &default_layer,
+            )
+            .await
+            {
+                execute_focus_actions(&kanata, actions).await;
+            }
+        }
+    });
+    Ok(GnomeFocusSignalSubscription { task })
 }
 
 // === KDE Backend ===
@@ -7028,6 +7370,31 @@ impl Drop for KwinScriptGuard {
     }
 }
 
+/// Build the KWin focus-push script body. Targets the per-instance daemon
+/// bus name so multiple daemons coexist on KDE with isolated push channels.
+fn build_kde_focus_push_script(bus_name: &str, api: &str, active_window: &str) -> String {
+    format!(
+        r#"function notifyFocus(client) {{
+  callDBus(
+    "{bus}",
+    "{path}",
+    "{iface}",
+    "WindowFocus",
+    client ? (client.resourceClass || "") : "",
+    client ? (client.caption || "") : ""
+  );
+}}
+workspace.{api}.connect(notifyFocus);
+notifyFocus(workspace.{active});
+"#,
+        bus = bus_name,
+        path = DBUS_PATH,
+        iface = DBUS_INTERFACE,
+        api = api,
+        active = active_window
+    )
+}
+
 async fn run_kde(
     kanata: KanataClient,
     handler: Arc<Mutex<FocusHandler>>,
@@ -7035,6 +7402,7 @@ async fn run_kde(
     restart_handle: RestartHandle,
     pause_broadcaster: PauseBroadcaster,
     shutdown_handle: ShutdownHandle,
+    effective_name: String,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let connection = Connection::session().await?;
     let focus_query_connection = Connection::session().await?;
@@ -7063,23 +7431,7 @@ async fn run_kde(
     } else {
         "activeClient"
     };
-    let kwin_script = format!(
-        r#"function notifyFocus(client) {{
-  callDBus(
-    "com.github.kanata.Switcher",
-    "/com/github/kanata/Switcher",
-    "com.github.kanata.Switcher",
-    "WindowFocus",
-    client ? (client.resourceClass || "") : "",
-    client ? (client.caption || "") : ""
-  );
-}}
-workspace.{api}.connect(notifyFocus);
-notifyFocus(workspace.{active});
-"#,
-        api = api,
-        active = active_window
-    );
+    let kwin_script = build_kde_focus_push_script(&effective_name, api, active_window);
 
     let script_path = kwin_runtime_script_path();
     fs::write(&script_path, &kwin_script)?;
@@ -7203,6 +7555,7 @@ fn start_persistent_dbus_service(
     pause_broadcaster: PauseBroadcaster,
     runtime_environment: RuntimeEnvironmentBroadcaster,
     shutdown_handle: ShutdownHandle,
+    effective_name: String,
 ) -> PersistentDbusServiceGuard {
     start_persistent_dbus_service_with_connector(
         || async {
@@ -7217,6 +7570,7 @@ fn start_persistent_dbus_service(
         pause_broadcaster,
         runtime_environment,
         shutdown_handle,
+        effective_name,
     )
 }
 
@@ -7229,6 +7583,7 @@ fn start_persistent_dbus_service_with_connector<C, CFut>(
     pause_broadcaster: PauseBroadcaster,
     runtime_environment: RuntimeEnvironmentBroadcaster,
     shutdown_handle: ShutdownHandle,
+    effective_name: String,
 ) -> PersistentDbusServiceGuard
 where
     C: Fn() -> CFut + Send + Sync + 'static,
@@ -7244,6 +7599,7 @@ where
             pause_broadcaster,
             runtime_environment,
             shutdown_handle,
+            effective_name,
         )
         .await;
     });
@@ -7259,6 +7615,7 @@ async fn run_persistent_dbus_service_with_connector<C, CFut>(
     pause_broadcaster: PauseBroadcaster,
     runtime_environment: RuntimeEnvironmentBroadcaster,
     shutdown_handle: ShutdownHandle,
+    effective_name: String,
 ) where
     C: Fn() -> CFut + Send + Sync + 'static,
     CFut: std::future::Future<Output = Result<Connection, DynError>> + Send + 'static,
@@ -7301,11 +7658,12 @@ async fn run_persistent_dbus_service_with_connector<C, CFut>(
             restart_handle.clone(),
             pause_broadcaster.clone(),
             Some(runtime_environment.clone()),
+            &effective_name,
         )
         .await
         {
             Ok(registration) => {
-                println!("[DBus] Control service registered");
+                println!("[DBus] Control service registered as {}", effective_name);
                 reconnect_attempt = 0;
                 registration
             }
@@ -7337,7 +7695,10 @@ async fn run_persistent_dbus_service_with_connector<C, CFut>(
                 continue;
             }
         };
-        let mut name_lost = match proxy.receive_name_lost_with_args(&[(0, DBUS_NAME)]).await {
+        let mut name_lost = match proxy
+            .receive_name_lost_with_args(&[(0, effective_name.as_str())])
+            .await
+        {
             Ok(stream) => stream,
             Err(error) => {
                 drop(registration);
@@ -7418,9 +7779,21 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         return Ok(RunOutcome::Exit);
     }
     if let Some(command) = resolve_control_command(&args) {
-        send_control_command(command).await?;
+        let dispatch = match args.dbus_suffix.as_deref() {
+            Some(suffix) => ControlDispatch::Unicast {
+                bus_name: effective_dbus_name(suffix),
+            },
+            None => ControlDispatch::Broadcast,
+        };
+        send_control_command(command, dispatch).await?;
         return Ok(RunOutcome::Exit);
     }
+    let effective_name = effective_dbus_name(&resolve_dbus_suffix(
+        args.dbus_suffix.as_deref(),
+        &args.host,
+        args.port,
+    )?);
+    println!("[DBus] Using bus name: {}", effective_name);
 
     let install_gnome_extension = resolve_install_gnome_extension(&matches);
 
@@ -7482,6 +7855,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         pause_broadcaster.clone(),
         runtime_environment.clone(),
         shutdown_handle.clone(),
+        effective_name.clone(),
     );
 
     // Set up signal handlers
@@ -7524,6 +7898,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             pause_broadcaster.clone(),
             restart_handle.clone(),
             args.indicator_focus_only,
+            effective_name.clone(),
         )
     } else {
         SniGuard::disabled()
@@ -7539,6 +7914,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
         install_gnome_extension,
         gnome_setup_completed: Arc::new(AtomicBool::new(false)),
         gnome_setup_hook: Arc::new(setup_gnome_extension),
+        effective_dbus_name: effective_name,
     };
 
     run_lifecycle_supervisor(

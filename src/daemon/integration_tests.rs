@@ -198,7 +198,7 @@ struct FocusService {
     title: String,
 }
 
-#[zbus::interface(name = "com.github.kanata.Switcher.Gnome")]
+#[zbus::interface(name = "com.github.kanata.Switcher.extensions.GNOME")]
 impl FocusService {
     #[allow(non_snake_case)]
     fn GetFocus(&self) -> (String, String) {
@@ -206,7 +206,20 @@ impl FocusService {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         (self.class.clone(), self.title.clone())
     }
+
+    #[zbus(signal, name = "FocusChanged")]
+    async fn focus_changed(
+        signal_emitter: &zbus::object_server::SignalEmitter<'_>,
+        class: &str,
+        title: &str,
+    ) -> zbus::Result<()>;
 }
+
+/// Bus name used by integration tests when registering the daemon's control
+/// service on a private session bus. All test sites that previously hardcoded
+/// `com.github.kanata.Switcher` should use this constant so the per-instance
+/// name plumbing is exercised consistently.
+const TEST_DAEMON_DBUS_NAME: &str = "com.github.kanata.Switcher.instances.test";
 
 async fn start_gnome_focus_service(
     address: &zbus::Address,
@@ -886,6 +899,7 @@ async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
             restart_handle,
             pause_broadcaster.clone(),
             Some(runtime_environment),
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register DBus service with runtime environment");
@@ -902,7 +916,7 @@ async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner(DBUS_NAME.try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -912,7 +926,7 @@ async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
         .expect("Timeout waiting for service registration");
 
         let pause_result =
-            send_control_command_with_connection(&client, ControlCommand::Pause).await;
+            send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Pause).await;
         assert!(
             pause_result.is_ok(),
             "Pause control command failed: {:?}",
@@ -921,7 +935,7 @@ async fn test_dbus_unpause_resolves_kde_runtime_mode_without_startup_env() {
         drain_kanata_messages(&mock_server, Duration::from_millis(200));
 
         let unpause_result =
-            send_control_command_with_connection(&client, ControlCommand::Unpause).await;
+            send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Unpause).await;
         assert!(
             unpause_result.is_ok(),
             "Unpause control command failed: {:?}",
@@ -1037,6 +1051,7 @@ async fn test_run_kde_resolves_runtime_mode_without_startup_env() {
             status_broadcaster.clone(),
             restart_handle.clone(),
             pause_broadcaster.clone(),
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register switcher DBus service");
@@ -1047,7 +1062,7 @@ async fn test_run_kde_resolves_runtime_mode_without_startup_env() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner(DBUS_NAME.try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -1070,6 +1085,7 @@ async fn test_run_kde_resolves_runtime_mode_without_startup_env() {
                 restart_for_task,
                 pause_for_task,
                 shutdown_for_task,
+                TEST_DAEMON_DBUS_NAME.to_string(),
             )
             .await
         });
@@ -1200,6 +1216,7 @@ async fn test_run_kde_waits_for_scripting_interface_before_runtime_probe() {
             status_broadcaster.clone(),
             restart_handle.clone(),
             pause_broadcaster.clone(),
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register switcher DBus service");
@@ -1210,7 +1227,7 @@ async fn test_run_kde_waits_for_scripting_interface_before_runtime_probe() {
             let proxy = switcher_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner(DBUS_NAME.try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -1233,6 +1250,7 @@ async fn test_run_kde_waits_for_scripting_interface_before_runtime_probe() {
                 restart_for_task,
                 pause_for_task,
                 shutdown_for_task,
+                TEST_DAEMON_DBUS_NAME.to_string(),
             )
             .await
         });
@@ -1745,6 +1763,7 @@ async fn test_dbus_service_real_bus() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -1764,7 +1783,7 @@ async fn test_dbus_service_real_bus() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -1779,7 +1798,7 @@ async fn test_dbus_service_real_bus() {
         // Call WindowFocus method
         let result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "WindowFocus",
@@ -1864,6 +1883,7 @@ async fn test_dbus_get_status_initial_layer() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -1881,7 +1901,7 @@ async fn test_dbus_get_status_initial_layer() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -1892,7 +1912,7 @@ async fn test_dbus_get_status_initial_layer() {
 
         let reply = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "GetStatus",
@@ -1975,6 +1995,7 @@ async fn test_dbus_get_status_focus_source() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -1992,7 +2013,7 @@ async fn test_dbus_get_status_focus_source() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2003,7 +2024,7 @@ async fn test_dbus_get_status_focus_source() {
 
         let focus_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "WindowFocus",
@@ -2018,7 +2039,7 @@ async fn test_dbus_get_status_focus_source() {
 
         let reply = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "GetStatus",
@@ -2101,6 +2122,7 @@ async fn test_dbus_restart_request() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -2118,7 +2140,7 @@ async fn test_dbus_restart_request() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2129,7 +2151,7 @@ async fn test_dbus_restart_request() {
 
         let restart_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "Restart",
@@ -2211,6 +2233,7 @@ async fn test_control_command_restart_private_dbus() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -2228,7 +2251,7 @@ async fn test_control_command_restart_private_dbus() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2238,7 +2261,7 @@ async fn test_control_command_restart_private_dbus() {
         .expect("Timeout waiting for service registration");
 
         let control_result =
-            send_control_command_with_connection(&client, ControlCommand::Restart).await;
+            send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Restart).await;
         assert!(
             control_result.is_ok(),
             "Restart control command failed: {:?}",
@@ -2314,6 +2337,7 @@ async fn test_dbus_pause_unpause() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -2331,7 +2355,7 @@ async fn test_dbus_pause_unpause() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2342,7 +2366,7 @@ async fn test_dbus_pause_unpause() {
 
         let focus_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "WindowFocus",
@@ -2373,7 +2397,7 @@ async fn test_dbus_pause_unpause() {
 
         let pause_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "Pause",
@@ -2406,7 +2430,7 @@ async fn test_dbus_pause_unpause() {
 
         let focus_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "WindowFocus",
@@ -2423,7 +2447,7 @@ async fn test_dbus_pause_unpause() {
 
         let unpause_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "Unpause",
@@ -2523,6 +2547,7 @@ async fn test_dbus_paused_changed_signal() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -2540,7 +2565,7 @@ async fn test_dbus_paused_changed_signal() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2551,7 +2576,7 @@ async fn test_dbus_paused_changed_signal() {
 
         let proxy = zbus::Proxy::new(
             &client,
-            "com.github.kanata.Switcher",
+            TEST_DAEMON_DBUS_NAME,
             "/com/github/kanata/Switcher",
             "com.github.kanata.Switcher",
         )
@@ -2564,7 +2589,7 @@ async fn test_dbus_paused_changed_signal() {
 
         let pause_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "Pause",
@@ -2589,7 +2614,7 @@ async fn test_dbus_paused_changed_signal() {
 
         let unpause_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "Unpause",
@@ -2677,6 +2702,7 @@ async fn test_dbus_status_changed_focus_signal() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -2694,7 +2720,7 @@ async fn test_dbus_status_changed_focus_signal() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2705,7 +2731,7 @@ async fn test_dbus_status_changed_focus_signal() {
 
         let proxy = zbus::Proxy::new(
             &client,
-            "com.github.kanata.Switcher",
+            TEST_DAEMON_DBUS_NAME,
             "/com/github/kanata/Switcher",
             "com.github.kanata.Switcher",
         )
@@ -2718,7 +2744,7 @@ async fn test_dbus_status_changed_focus_signal() {
 
         let focus_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "WindowFocus",
@@ -2892,6 +2918,7 @@ async fn test_dbus_pause_wayland_env() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster,
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -2909,7 +2936,7 @@ async fn test_dbus_pause_wayland_env() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -2920,7 +2947,7 @@ async fn test_dbus_pause_wayland_env() {
 
         let pause_result = client
             .call_method(
-                Some("com.github.kanata.Switcher"),
+                Some(TEST_DAEMON_DBUS_NAME),
                 "/com/github/kanata/Switcher",
                 Some("com.github.kanata.Switcher"),
                 "Pause",
@@ -2952,7 +2979,7 @@ async fn test_control_command_returns_error_without_service() {
             .await
             .expect("Failed to connect client");
 
-        let result = send_control_command_with_connection(&client, ControlCommand::Restart).await;
+        let result = send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Restart).await;
         assert!(result.is_err(), "Expected error when service is missing");
     })
     .await;
@@ -3140,6 +3167,7 @@ async fn test_control_command_pause_unpause_private_dbus() {
             status_broadcaster,
             restart_handle,
             pause_broadcaster.clone(),
+            TEST_DAEMON_DBUS_NAME,
         )
         .await
         .expect("Failed to register service");
@@ -3157,7 +3185,7 @@ async fn test_control_command_pause_unpause_private_dbus() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -3167,7 +3195,7 @@ async fn test_control_command_pause_unpause_private_dbus() {
         .expect("Timeout waiting for service registration");
 
         let pause_result =
-            send_control_command_with_connection(&client, ControlCommand::Pause).await;
+            send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Pause).await;
         assert!(
             pause_result.is_ok(),
             "Pause control command failed: {:?}",
@@ -3180,7 +3208,7 @@ async fn test_control_command_pause_unpause_private_dbus() {
         assert!(*pause_receiver.borrow(), "Expected paused state true");
 
         let unpause_result =
-            send_control_command_with_connection(&client, ControlCommand::Unpause).await;
+            send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Unpause).await;
         assert!(
             unpause_result.is_ok(),
             "Unpause control command failed: {:?}",
@@ -3239,6 +3267,7 @@ async fn test_persistent_dbus_service_handles_restart_in_idle_runtime() {
             pause_broadcaster,
             runtime_environment,
             shutdown_handle.clone(),
+            TEST_DAEMON_DBUS_NAME.to_string(),
         );
 
         let client = Builder::address(address.clone())
@@ -3254,7 +3283,7 @@ async fn test_persistent_dbus_service_handles_restart_in_idle_runtime() {
             let proxy = dbus_proxy.clone();
             async move {
                 proxy
-                    .name_has_owner(DBUS_NAME.try_into().unwrap())
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME.try_into().unwrap())
                     .await
                     .ok()
                     .filter(|&has_owner| has_owner)
@@ -3264,7 +3293,7 @@ async fn test_persistent_dbus_service_handles_restart_in_idle_runtime() {
         .expect("Timeout waiting for persistent DBus service registration");
 
         let restart_result =
-            send_control_command_with_connection(&client, ControlCommand::Restart).await;
+            send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME, ControlCommand::Restart).await;
         assert!(
             restart_result.is_ok(),
             "Restart control command failed: {:?}",
@@ -5682,4 +5711,1106 @@ fn test_sni_settings_store_with_isolated_dconf() {
     store.write_focus_only(false);
     let value = store.read_focus_only();
     assert_eq!(value, Some(false));
+}
+
+// === DBus multi-instance integration tests ===
+
+const TEST_DAEMON_DBUS_NAME_A: &str = "com.github.kanata.Switcher.instances.a";
+const TEST_DAEMON_DBUS_NAME_B: &str = "com.github.kanata.Switcher.instances.b";
+
+async fn register_test_daemon_with_name(
+    address: &zbus::Address,
+    bus_name: &str,
+    pause_broadcaster: PauseBroadcaster,
+    handler: Arc<Mutex<FocusHandler>>,
+    kanata: KanataClient,
+    status_broadcaster: StatusBroadcaster,
+    restart_handle: RestartHandle,
+) -> (Connection, DbusServiceRegistration) {
+    use zbus::connection::Builder;
+    let service_connection = Builder::address(address.clone())
+        .expect("Failed to build service connection")
+        .build()
+        .await
+        .expect("Failed to connect service to bus");
+    let focus_query_connection = Builder::address(address.clone())
+        .expect("Failed to build focus query connection")
+        .build()
+        .await
+        .expect("Failed to connect focus query to bus");
+    let registration = register_dbus_service(
+        &service_connection,
+        focus_query_connection,
+        Environment::Unknown,
+        false,
+        kanata,
+        handler,
+        status_broadcaster,
+        restart_handle,
+        pause_broadcaster,
+        bus_name,
+    )
+    .await
+    .expect("Failed to register named daemon service");
+    (service_connection, registration)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_two_daemons_register_independent_names() {
+    with_test_timeout(async {
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let server_a = MockKanataServer::start();
+        let server_b = MockKanataServer::start();
+        let status_a = StatusBroadcaster::new();
+        let status_b = StatusBroadcaster::new();
+        let kanata_a = KanataClient::new(
+            "127.0.0.1",
+            server_a.port(),
+            Some("default".to_string()),
+            true,
+            status_a.clone(),
+        );
+        let kanata_b = KanataClient::new(
+            "127.0.0.1",
+            server_b.port(),
+            Some("default".to_string()),
+            true,
+            status_b.clone(),
+        );
+        kanata_a.connect_with_retry().await;
+        kanata_b.connect_with_retry().await;
+        drain_kanata_messages(&server_a, Duration::from_millis(100));
+        drain_kanata_messages(&server_b, Duration::from_millis(100));
+
+        let handler_a = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let handler_b = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let pause_a = PauseBroadcaster::new();
+        let pause_b = PauseBroadcaster::new();
+        let (_conn_a, _reg_a) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_A,
+            pause_a.clone(),
+            handler_a,
+            kanata_a,
+            status_a,
+            RestartHandle::new(),
+        )
+        .await;
+        let (_conn_b, _reg_b) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_B,
+            pause_b.clone(),
+            handler_b,
+            kanata_b,
+            status_b,
+            RestartHandle::new(),
+        )
+        .await;
+
+        let client = zbus::connection::Builder::address(address)
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_A.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon A registration");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_B.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon B registration");
+
+        // Bare base name and root not owned.
+        let bare_owned = dbus_proxy
+            .name_has_owner("com.github.kanata.Switcher.instances".try_into().unwrap())
+            .await
+            .unwrap_or(true);
+        assert!(
+            !bare_owned,
+            "Bare prefix com.github.kanata.Switcher.instances should not be owned"
+        );
+        let root_owned = dbus_proxy
+            .name_has_owner("com.github.kanata.Switcher".try_into().unwrap())
+            .await
+            .unwrap_or(true);
+        assert!(
+            !root_owned,
+            "Root com.github.kanata.Switcher must not be owned in instances mode"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_targets_specific_daemon_when_suffix_given() {
+    with_test_timeout(async {
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let server_a = MockKanataServer::start();
+        let server_b = MockKanataServer::start();
+        let status_a = StatusBroadcaster::new();
+        let status_b = StatusBroadcaster::new();
+        let kanata_a = KanataClient::new(
+            "127.0.0.1",
+            server_a.port(),
+            Some("default".to_string()),
+            true,
+            status_a.clone(),
+        );
+        let kanata_b = KanataClient::new(
+            "127.0.0.1",
+            server_b.port(),
+            Some("default".to_string()),
+            true,
+            status_b.clone(),
+        );
+        kanata_a.connect_with_retry().await;
+        kanata_b.connect_with_retry().await;
+        drain_kanata_messages(&server_a, Duration::from_millis(100));
+        drain_kanata_messages(&server_b, Duration::from_millis(100));
+
+        let handler_a = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let handler_b = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let pause_a = PauseBroadcaster::new();
+        let pause_b = PauseBroadcaster::new();
+        let mut pause_a_rx = pause_a.subscribe();
+        let mut pause_b_rx = pause_b.subscribe();
+        let (_conn_a, _reg_a) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_A,
+            pause_a.clone(),
+            handler_a,
+            kanata_a,
+            status_a,
+            RestartHandle::new(),
+        )
+        .await;
+        let (_conn_b, _reg_b) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_B,
+            pause_b.clone(),
+            handler_b,
+            kanata_b,
+            status_b,
+            RestartHandle::new(),
+        )
+        .await;
+
+        let client = zbus::connection::Builder::address(address)
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_A.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon A");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_B.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon B");
+
+        send_control_command_with_connection(&client, TEST_DAEMON_DBUS_NAME_A, ControlCommand::Pause)
+            .await
+            .expect("Pause unicast call failed");
+
+        // Wait for A pause broadcast
+        tokio::time::timeout(Duration::from_secs(2), pause_a_rx.changed())
+            .await
+            .expect("Daemon A did not flip paused state")
+            .expect("Daemon A pause channel closed");
+        assert!(*pause_a_rx.borrow(), "Daemon A should be paused");
+
+        // Daemon B's broadcaster should not have changed; give it a small grace window
+        let observed_b =
+            tokio::time::timeout(Duration::from_millis(200), pause_b_rx.changed()).await;
+        assert!(
+            observed_b.is_err(),
+            "Daemon B unexpectedly observed a pause change after unicast targeted A"
+        );
+        assert!(
+            !*pause_b_rx.borrow(),
+            "Daemon B should remain unpaused after unicast to A"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_broadcasts_when_suffix_absent() {
+    with_test_timeout(async {
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let server_a = MockKanataServer::start();
+        let server_b = MockKanataServer::start();
+        let status_a = StatusBroadcaster::new();
+        let status_b = StatusBroadcaster::new();
+        let kanata_a = KanataClient::new(
+            "127.0.0.1",
+            server_a.port(),
+            Some("default".to_string()),
+            true,
+            status_a.clone(),
+        );
+        let kanata_b = KanataClient::new(
+            "127.0.0.1",
+            server_b.port(),
+            Some("default".to_string()),
+            true,
+            status_b.clone(),
+        );
+        kanata_a.connect_with_retry().await;
+        kanata_b.connect_with_retry().await;
+        drain_kanata_messages(&server_a, Duration::from_millis(100));
+        drain_kanata_messages(&server_b, Duration::from_millis(100));
+
+        let handler_a = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let handler_b = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let pause_a = PauseBroadcaster::new();
+        let pause_b = PauseBroadcaster::new();
+        let mut pause_a_rx = pause_a.subscribe();
+        let mut pause_b_rx = pause_b.subscribe();
+        let (_conn_a, _reg_a) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_A,
+            pause_a.clone(),
+            handler_a,
+            kanata_a,
+            status_a,
+            RestartHandle::new(),
+        )
+        .await;
+        let (_conn_b, _reg_b) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_B,
+            pause_b.clone(),
+            handler_b,
+            kanata_b,
+            status_b,
+            RestartHandle::new(),
+        )
+        .await;
+
+        let client = zbus::connection::Builder::address(address)
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_A.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon A");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_B.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon B");
+
+        let report =
+            send_control_command_broadcast(&client, ControlCommand::Pause)
+                .await
+                .expect("Broadcast Pause failed");
+        let names: Vec<&str> = report
+            .results
+            .iter()
+            .map(|entry| entry.bus_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&TEST_DAEMON_DBUS_NAME_A),
+            "broadcast missed daemon A: got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&TEST_DAEMON_DBUS_NAME_B),
+            "broadcast missed daemon B: got {:?}",
+            names
+        );
+        for entry in &report.results {
+            assert!(
+                entry.outcome.is_ok(),
+                "broadcast to {} reported error: {:?}",
+                entry.bus_name,
+                entry.outcome
+            );
+        }
+
+        tokio::time::timeout(Duration::from_secs(2), pause_a_rx.changed())
+            .await
+            .expect("Daemon A did not flip paused")
+            .expect("Daemon A pause channel closed");
+        tokio::time::timeout(Duration::from_secs(2), pause_b_rx.changed())
+            .await
+            .expect("Daemon B did not flip paused")
+            .expect("Daemon B pause channel closed");
+        assert!(*pause_a_rx.borrow(), "Daemon A should be paused");
+        assert!(*pause_b_rx.borrow(), "Daemon B should be paused");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_broadcast_with_no_daemons_errors() {
+    with_test_timeout(async {
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let client = zbus::connection::Builder::address(address)
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+
+        let outcome = send_control_command_broadcast(&client, ControlCommand::Pause).await;
+        let error = outcome.expect_err("Expected broadcast to fail with no daemons");
+        let message = error.to_string();
+        assert!(
+            message.contains("No daemons running"),
+            "expected 'No daemons running' in error message, got: {}",
+            message
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_enumerate_daemon_names_ignores_unrelated_namespaces() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let server = MockKanataServer::start();
+        let status = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            server.port(),
+            Some("default".to_string()),
+            true,
+            status.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let pause = PauseBroadcaster::new();
+        let (_conn, _reg) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_A,
+            pause,
+            handler,
+            kanata,
+            status,
+            RestartHandle::new(),
+        )
+        .await;
+
+        // Register an unrelated name that shares the project root prefix but is
+        // outside the `instances.*` subtree (it lives in `extensions.*`-shaped path
+        // but as a bus name). The filter must drop it.
+        let imposter_connection = Builder::address(address.clone())
+            .expect("Failed to build imposter connection")
+            .name("com.github.kanata.Switcher.extensions.GNOME")
+            .expect("Failed to set imposter bus name")
+            .build()
+            .await
+            .expect("Failed to register imposter name");
+
+        let client = Builder::address(address.clone())
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_A.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon A");
+
+        let names = enumerate_daemon_names(&client)
+            .await
+            .expect("enumerate_daemon_names failed");
+        assert_eq!(
+            names,
+            vec![TEST_DAEMON_DBUS_NAME_A.to_string()],
+            "Daemon enumeration must not include the extensions.* imposter; got {:?}",
+            names
+        );
+
+        drop(imposter_connection);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_targeted_unknown_suffix_errors() {
+    with_test_timeout(async {
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let client = zbus::connection::Builder::address(address)
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+
+        let bus_name = "com.github.kanata.Switcher.instances.does_not_exist";
+        let outcome =
+            send_control_command_with_connection(&client, bus_name, ControlCommand::Pause).await;
+        let error = outcome.expect_err("Expected unicast to unknown suffix to fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("does_not_exist") || message.contains("ServiceUnknown") || message.contains("NameHasNoOwner"),
+            "expected target name in error or DBus 'unknown service' marker, got: {}",
+            message
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_gnome_daemon_subscribes_to_focus_signal() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        // Mock GNOME Shell stand-in: owns org.gnome.Shell, exports the renamed
+        // extensions.GNOME object at the renamed path, and can emit FocusChanged.
+        let mock_extension_connection = Builder::address(address.clone())
+            .expect("Failed to build extension connection builder")
+            .name(GNOME_SHELL_BUS_NAME)
+            .expect("Failed to claim org.gnome.Shell")
+            .serve_at(
+                GNOME_FOCUS_OBJECT_PATH,
+                FocusService {
+                    call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    class: "firefox".to_string(),
+                    title: "".to_string(),
+                },
+            )
+            .expect("Failed to mount extensions.GNOME interface")
+            .build()
+            .await
+            .expect("Failed to build mock extension connection");
+
+        let mock_server = MockKanataServer::start();
+        let rules = vec![Rule {
+            class: Some("firefox".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("browser".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let pause_broadcaster = PauseBroadcaster::new();
+
+        let signal_connection = Builder::address(address.clone())
+            .expect("Failed to build signal connection")
+            .build()
+            .await
+            .expect("Failed to connect signal listener");
+        let _subscription = subscribe_to_gnome_focus_signal(
+            &signal_connection,
+            kanata.clone(),
+            handler.clone(),
+            status_broadcaster.clone(),
+            pause_broadcaster.clone(),
+        )
+        .await
+        .expect("Failed to subscribe to FocusChanged signal");
+
+        // Give zbus a moment to register the match rule on the bus.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let signal_emitter =
+            zbus::object_server::SignalEmitter::new(&mock_extension_connection, GNOME_FOCUS_OBJECT_PATH)
+                .expect("Failed to create signal emitter");
+        FocusService::focus_changed(&signal_emitter, "firefox", "")
+            .await
+            .expect("Failed to emit FocusChanged signal");
+
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "browser".to_string(),
+            },
+            Duration::from_secs(3),
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_gnome_daemon_multiple_instances_receive_focus_signal() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let mock_extension_connection = Builder::address(address.clone())
+            .expect("Failed to build extension connection builder")
+            .name(GNOME_SHELL_BUS_NAME)
+            .expect("Failed to claim org.gnome.Shell")
+            .serve_at(
+                GNOME_FOCUS_OBJECT_PATH,
+                FocusService {
+                    call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    class: "firefox".to_string(),
+                    title: "".to_string(),
+                },
+            )
+            .expect("Failed to mount extensions.GNOME interface")
+            .build()
+            .await
+            .expect("Failed to build mock extension connection");
+
+        let server_a = MockKanataServer::start();
+        let server_b = MockKanataServer::start();
+        let rules = vec![Rule {
+            class: Some("firefox".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("browser".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+        let status_a = StatusBroadcaster::new();
+        let status_b = StatusBroadcaster::new();
+        let kanata_a = KanataClient::new(
+            "127.0.0.1",
+            server_a.port(),
+            Some("default".to_string()),
+            true,
+            status_a.clone(),
+        );
+        let kanata_b = KanataClient::new(
+            "127.0.0.1",
+            server_b.port(),
+            Some("default".to_string()),
+            true,
+            status_b.clone(),
+        );
+        kanata_a.connect_with_retry().await;
+        kanata_b.connect_with_retry().await;
+        drain_kanata_messages(&server_a, Duration::from_millis(100));
+        drain_kanata_messages(&server_b, Duration::from_millis(100));
+
+        let handler_a = Arc::new(Mutex::new(FocusHandler::new(rules.clone(), None, true)));
+        let handler_b = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let pause_a = PauseBroadcaster::new();
+        let pause_b = PauseBroadcaster::new();
+
+        let signal_connection_a = Builder::address(address.clone())
+            .expect("Failed to build signal connection A")
+            .build()
+            .await
+            .expect("Failed to connect A");
+        let signal_connection_b = Builder::address(address.clone())
+            .expect("Failed to build signal connection B")
+            .build()
+            .await
+            .expect("Failed to connect B");
+        let _sub_a = subscribe_to_gnome_focus_signal(
+            &signal_connection_a,
+            kanata_a.clone(),
+            handler_a,
+            status_a,
+            pause_a,
+        )
+        .await
+        .expect("Failed to subscribe A");
+        let _sub_b = subscribe_to_gnome_focus_signal(
+            &signal_connection_b,
+            kanata_b.clone(),
+            handler_b,
+            status_b,
+            pause_b,
+        )
+        .await
+        .expect("Failed to subscribe B");
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let signal_emitter =
+            zbus::object_server::SignalEmitter::new(&mock_extension_connection, GNOME_FOCUS_OBJECT_PATH)
+                .expect("Failed to create signal emitter");
+        FocusService::focus_changed(&signal_emitter, "firefox", "")
+            .await
+            .expect("Failed to emit FocusChanged signal");
+
+        wait_for_kanata_message(
+            &server_a,
+            KanataMessage::ChangeLayer {
+                new: "browser".to_string(),
+            },
+            Duration::from_secs(3),
+        );
+        wait_for_kanata_message(
+            &server_b,
+            KanataMessage::ChangeLayer {
+                new: "browser".to_string(),
+            },
+            Duration::from_secs(3),
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_persistent_dbus_service_reconnect_uses_effective_name() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        let mock_server = MockKanataServer::start();
+        let status_broadcaster = StatusBroadcaster::new();
+        let pause_broadcaster = PauseBroadcaster::new();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let runtime_environment = RuntimeEnvironmentBroadcaster::new(Environment::Unknown);
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+
+        let effective_name = "com.github.kanata.Switcher.instances.kinesis".to_string();
+        let connector_address = address.clone();
+        let _dbus_guard = start_persistent_dbus_service_with_connector(
+            move || {
+                let address = connector_address.clone();
+                async move {
+                    Builder::address(address)
+                        .expect("Failed to create connection builder")
+                        .build()
+                        .await
+                        .map_err(|error| -> DynError { Box::new(error) })
+                }
+            },
+            kanata,
+            handler,
+            status_broadcaster,
+            restart_handle.clone(),
+            pause_broadcaster,
+            runtime_environment,
+            shutdown_handle.clone(),
+            effective_name.clone(),
+        );
+
+        let client = Builder::address(address.clone())
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            let name = effective_name.clone();
+            async move {
+                proxy
+                    .name_has_owner(name.as_str().try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for persistent DBus service registration");
+
+        let restart_result =
+            send_control_command_with_connection(&client, &effective_name, ControlCommand::Restart)
+                .await;
+        assert!(
+            restart_result.is_ok(),
+            "Restart control command failed: {:?}",
+            restart_result.err()
+        );
+
+        let mut restart_receiver = restart_handle.subscribe();
+        if !*restart_receiver.borrow() {
+            tokio::time::timeout(Duration::from_secs(2), restart_receiver.changed())
+                .await
+                .expect("Timeout waiting for restart broadcast")
+                .expect("Restart broadcast stream closed");
+        }
+        assert!(
+            *restart_receiver.borrow(),
+            "Expected restart handle to be requested via persistent DBus service"
+        );
+
+        shutdown_handle.request();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_broadcast_partial_failure_reports_per_daemon() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        // Daemon A: full registration that responds to Pause.
+        let server = MockKanataServer::start();
+        let status = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            server.port(),
+            Some("default".to_string()),
+            true,
+            status.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&server, Duration::from_millis(100));
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let pause_a = PauseBroadcaster::new();
+        let mut pause_a_rx = pause_a.subscribe();
+        let (_conn_a, _reg_a) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_A,
+            pause_a.clone(),
+            handler,
+            kanata,
+            status,
+            RestartHandle::new(),
+        )
+        .await;
+
+        // Daemon B: own the well-known name but expose no object at the daemon
+        // path. Method calls return a DBus error → per-entry Err in the report.
+        let broken_connection = Builder::address(address.clone())
+            .expect("Failed to build broken daemon connection")
+            .name(TEST_DAEMON_DBUS_NAME_B)
+            .expect("Failed to claim broken daemon name")
+            .build()
+            .await
+            .expect("Failed to register broken daemon name");
+
+        let client = Builder::address(address.clone())
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_A.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon A");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_B.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon B (broken)");
+
+        let started = std::time::Instant::now();
+        let report = send_control_command_broadcast(&client, ControlCommand::Pause)
+            .await
+            .expect("Broadcast should aggregate per-daemon outcomes, not fail when at least one daemon responds");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "broadcast should complete within bounded time, took {:?}",
+            started.elapsed()
+        );
+
+        let mut by_name: std::collections::HashMap<&str, &BroadcastEntryReport> =
+            std::collections::HashMap::new();
+        for entry in &report.results {
+            by_name.insert(entry.bus_name.as_str(), entry);
+        }
+        let a_entry = by_name
+            .get(TEST_DAEMON_DBUS_NAME_A)
+            .expect("Report must include daemon A");
+        let b_entry = by_name
+            .get(TEST_DAEMON_DBUS_NAME_B)
+            .expect("Report must include daemon B");
+        assert!(
+            a_entry.outcome.is_ok(),
+            "Daemon A should succeed, got: {:?}",
+            a_entry.outcome
+        );
+        assert!(
+            b_entry.outcome.is_err(),
+            "Daemon B (no object server) should error, got: {:?}",
+            b_entry.outcome
+        );
+
+        // Daemon A should have actually paused.
+        tokio::time::timeout(Duration::from_secs(2), pause_a_rx.changed())
+            .await
+            .expect("Daemon A did not flip paused")
+            .expect("Daemon A pause channel closed");
+        assert!(*pause_a_rx.borrow(), "Daemon A should be paused");
+
+        drop(broken_connection);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_focus_changed_signal_filters_by_path() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        // Mock extension owns org.gnome.Shell and serves the FocusService at the
+        // correct path; we'll emit signals from a *different* path with the
+        // same interface+member, and verify the daemon ignores them.
+        let mock_extension_connection = Builder::address(address.clone())
+            .expect("Failed to build extension connection builder")
+            .name(GNOME_SHELL_BUS_NAME)
+            .expect("Failed to claim org.gnome.Shell")
+            .serve_at(
+                GNOME_FOCUS_OBJECT_PATH,
+                FocusService {
+                    call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    class: "firefox".to_string(),
+                    title: "".to_string(),
+                },
+            )
+            .expect("Failed to mount extensions.GNOME at correct path")
+            .serve_at(
+                "/com/github/kanata/Switcher/extensions/UNKNOWN",
+                FocusService {
+                    call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    class: "firefox".to_string(),
+                    title: "".to_string(),
+                },
+            )
+            .expect("Failed to mount extensions.GNOME at wrong path for the test")
+            .build()
+            .await
+            .expect("Failed to build mock extension connection");
+
+        let mock_server = MockKanataServer::start();
+        let rules = vec![Rule {
+            class: Some("firefox".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("browser".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let pause_broadcaster = PauseBroadcaster::new();
+
+        let signal_connection = Builder::address(address.clone())
+            .expect("Failed to build signal connection")
+            .build()
+            .await
+            .expect("Failed to connect signal listener");
+        let _subscription = subscribe_to_gnome_focus_signal(
+            &signal_connection,
+            kanata.clone(),
+            handler.clone(),
+            status_broadcaster.clone(),
+            pause_broadcaster.clone(),
+        )
+        .await
+        .expect("Failed to subscribe to FocusChanged signal");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Emit a FocusChanged signal on the WRONG path. Daemon's MatchRule
+        // pins `path=/com/github/kanata/Switcher/extensions/GNOME`, so this
+        // signal must be ignored.
+        let wrong_path_emitter = zbus::object_server::SignalEmitter::new(
+            &mock_extension_connection,
+            "/com/github/kanata/Switcher/extensions/UNKNOWN",
+        )
+        .expect("Failed to create wrong-path signal emitter");
+        FocusService::focus_changed(&wrong_path_emitter, "firefox", "")
+            .await
+            .expect("Failed to emit FocusChanged from wrong path");
+
+        // Give zbus a chance to deliver — daemon must NOT act.
+        let unexpected = mock_server.recv_timeout(Duration::from_millis(500));
+        assert!(
+            unexpected.is_none(),
+            "Daemon must ignore FocusChanged on wrong path, but got: {:?}",
+            unexpected
+        );
+
+        // Sanity: emit on the CORRECT path and verify the daemon does react.
+        // This guards against a false-positive (the daemon ignoring everything
+        // would also make the negative assertion pass).
+        let correct_emitter =
+            zbus::object_server::SignalEmitter::new(&mock_extension_connection, GNOME_FOCUS_OBJECT_PATH)
+                .expect("Failed to create correct-path signal emitter");
+        FocusService::focus_changed(&correct_emitter, "firefox", "")
+            .await
+            .expect("Failed to emit FocusChanged from correct path");
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "browser".to_string(),
+            },
+            Duration::from_secs(3),
+        );
+    })
+    .await;
+}
+
+#[test]
+fn test_kde_focus_push_script_targets_per_instance_name() {
+    let script = build_kde_focus_push_script(
+        "com.github.kanata.Switcher.instances.kinesis",
+        "windowActivated",
+        "activeWindow",
+    );
+    assert!(
+        script.contains("\"com.github.kanata.Switcher.instances.kinesis\""),
+        "expected per-instance bus name in script body, got: {}",
+        script
+    );
+    // The KWin script's `callDBus` puts the bus name on the first line and the
+    // interface (constant `com.github.kanata.Switcher`) on the third. We assert
+    // that the *bus-name* argument — the first quoted token inside `callDBus(`
+    // — is the per-instance name.
+    let body_after_call = script
+        .split_once("callDBus(")
+        .expect("script must contain callDBus(")
+        .1;
+    let first_arg = body_after_call
+        .lines()
+        .map(|line| line.trim())
+        .find(|line| line.starts_with('"'))
+        .expect("first callDBus arg should be a quoted string");
+    assert!(
+        first_arg.starts_with("\"com.github.kanata.Switcher.instances.kinesis\""),
+        "first callDBus arg should be the per-instance bus name, got: {}",
+        first_arg
+    );
 }
