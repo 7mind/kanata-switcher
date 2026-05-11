@@ -28,7 +28,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 
 - [x] **PR-00** — Pre-flight: toolchain probe (`async fn` in trait + `wayland_scanner` macro path resolution).
 - [x] **PR-01** — Extract `constants.rs`, `errors.rs`, `environ.rs` (plan-prose renamed from `env.rs`; see PR-01-D01).
-- [ ] **PR-02** — Extract `dbus_naming.rs` (+ `DbusSuffixError` into `errors.rs`).
+- [x] **PR-02** — Extract `dbus_naming.rs` (+ `DbusSuffixError` into `errors.rs`).
 - [ ] **PR-03** — Extract `config.rs` and `focus.rs`.
 - [ ] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (splittable 4a/4b/4c).
 - [ ] **PR-05** — Extract `control/{mod,client}.rs`.
@@ -63,6 +63,13 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-02** (2026-05-11) — Extracted `src/daemon/dbus_naming.rs` from `src/daemon/main.rs` and appended `DbusSuffixError` to `src/daemon/errors.rs`. Behaviour-preserving move.
+  - **`errors.rs`** (+23 LOC, now 24 LOC total): added `enum DbusSuffixError` + `impl Display` + `impl Error`.
+  - **`dbus_naming.rs`** (83 LOC, new): `sanitize_dbus_suffix`, `derive_default_dbus_suffix`, `resolve_dbus_suffix`, `effective_dbus_name`, `is_daemon_bus_name`. All `pub(crate)`.
+  - **`main.rs`**: 7743 → 7642 LOC. Added `mod dbus_naming;` + `use dbus_naming::*;`, extended the `#[cfg(test)] pub(crate) use crate::{...}` re-export glob with `dbus_naming::*`.
+  - **Verification**: `cargo build --bin kanata-switcher` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
+  - **Notes**: Mechanical PR. No adversarial-review subagent dispatched — sanity-check (grep for left-behind references + build + tests pass) is sufficient for a 105-LOC self-contained move with no visibility surprises. Full review reserved for higher-risk PRs (PR-03 focus engine, PR-08 supervisor, PR-09 wayland, PR-11 backend split, PR-12 trait, PR-14 SNI).
 
 - **PR-01** (2026-05-11) — Extracted `src/daemon/{constants,errors,environ}.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
   - **`constants.rs`** (53 LOC): the opening 91–125 constant block + `GNOME_EXTENSION_SRC_PATH`/`GNOME_EXTENSION_SCHEMA_FILE`/`GNOME_EXTENSION_SCHEMA_COMPILED` + `DCONF_FOCUS_ONLY_KEY` + `GNOME_SHELL_BUS_NAME`/`GNOME_SHELL_OBJECT_PATH`/`GNOME_SHELL_EXTENSIONS_INTERFACE`/`DBUS_ERROR_SERVICE_UNKNOWN`/`DBUS_ERROR_NAME_HAS_NO_OWNER`/`DBUS_ERROR_UNKNOWN_METHOD`.
