@@ -51,6 +51,7 @@
 47. **DBus namespaces are partitioned by subtree** - `…instances.*` for daemon bus names (the discovery filter), `…extensions.*` for DE-bridge interface names + object paths (the GNOME extension does not own a bus name in our namespace; it piggybacks on `org.gnome.Shell`). Disjoint by construction, so daemon enumeration via `ListNames` cannot pick up an extension impostor.
 48. **Control CLI broadcasts by default, unicasts on suffix** - `--restart`/`--pause`/`--unpause` without `--dbus-suffix` enumerates `com.github.kanata.Switcher.instances.*` and fans out (per-call timeout 2s; empty enumeration is an error). With `--dbus-suffix kinesis` it targets `…instances.kinesis` only. The SNI Dbus control mode passes the daemon's own effective name into its menu callbacks, so the indicator never accidentally unicasts to a wrong daemon when multiple are present.
 49. **GNOME extension is multi-indicator** - extension keeps a `Map<busName, IndicatorEntry>` keyed on the daemon's per-instance name. It enumerates `instances.*` at enable via `ListNames` and watches `NameOwnerChanged` with `arg0namespace=com.github.kanata.Switcher.instances` to track owners appearing/disappearing at runtime. Panel labels show only `formatLayerLetter` + `formatVirtualKeys` (no keyboard prefix); the keyboard name (parsed from the suffix) lives in `set_accessible_name` (used by GNOME Shell as the indicator tooltip). Helpers (`parseKeyboardName`, `filterDaemonNames`, `composeTooltip`) live in `src/gnome-extension/extension-multiplex.js` for GJS test coverage.
+50. **SNI Quit is local-only and in-process** - SNI tray menu's Quit item triggers `ShutdownHandle::request()` directly on the daemon process. Both `SniLocalControl` and `SniDbusControl` carry the daemon's `ShutdownHandle`; no new DBus `Quit` method is exposed since the SNI runs in-process with the daemon for both control modes. Effect is equivalent to SIGTERM/SIGINT.
 
 ## Lifecycle Design Note
 
@@ -249,7 +250,7 @@ Top bar indicator:
 - GJS test also validates focus-only selection logic via `selectStatus()`
 
 SNI indicator (non-GNOME):
-- Optional StatusNotifier item for KDE/wlroots/COSMIC/X11; menu includes Pause/Restart and “Show app layer only”
+- Optional StatusNotifier item for KDE/wlroots/COSMIC/X11; menu includes Pause, "Show app layer only", Restart, and Quit. Quit calls `ShutdownHandle::request()` directly on the daemon process (in-process for both Local and Dbus SNI control modes — no new DBus method is exposed); same effect as SIGTERM/SIGINT.
 - Uses the same layer + virtual key formatting as GNOME for counts 0–9; VK overflow renders as "9+" due to bitmap glyph limits
 - Icon colors match GNOME: layer glyph white, VK glyph cyan
 - Icon glyphs use Noto Sans Mono bitmap (size 32, basic Latin only); pause toggles through local handlers on non-DBus backends

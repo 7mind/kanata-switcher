@@ -802,6 +802,7 @@ struct MockSniControlCounts {
     restart: usize,
     pause: usize,
     unpause: usize,
+    quit: usize,
 }
 
 #[derive(Clone)]
@@ -832,6 +833,10 @@ impl SniControlOps for MockSniControl {
 
     fn unpause(&self) {
         self.counts.lock().unwrap().unpause += 1;
+    }
+
+    fn quit(&self) {
+        self.counts.lock().unwrap().quit += 1;
     }
 }
 
@@ -1088,6 +1093,7 @@ fn test_sni_menu_actions_dispatch_control() {
     let menu = indicator.menu();
     let mut found_pause = false;
     let mut found_restart = false;
+    let mut found_quit = false;
     for item in menu {
         match item {
             MenuItem::Checkmark(check) if check.label == "Pause" => {
@@ -1098,15 +1104,21 @@ fn test_sni_menu_actions_dispatch_control() {
                 found_restart = true;
                 (standard.activate)(&mut indicator);
             }
+            MenuItem::Standard(standard) if standard.label == "Quit" => {
+                found_quit = true;
+                (standard.activate)(&mut indicator);
+            }
             _ => {}
         }
     }
 
     assert!(found_pause);
     assert!(found_restart);
+    assert!(found_quit);
     let counts = control_counts.counts();
     assert_eq!(counts.pause, 1);
     assert_eq!(counts.restart, 1);
+    assert_eq!(counts.quit, 1);
 }
 
 #[test]
@@ -3306,6 +3318,36 @@ fn test_plan_sni_runtime_transition_restarts_on_environment_change() {
 }
 
 #[tokio::test]
+async fn test_sni_local_control_quit_triggers_shutdown_handle() {
+    with_test_timeout(async {
+        let status_broadcaster = StatusBroadcaster::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let mut shutdown_receiver = shutdown_handle.subscribe();
+        assert!(!*shutdown_receiver.borrow());
+
+        let control = SniLocalControl {
+            runtime_handle: tokio::runtime::Handle::current(),
+            kanata: KanataClient::new("127.0.0.1", 10000, None, true, status_broadcaster.clone()),
+            handler: Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true))),
+            status_broadcaster,
+            pause_broadcaster: PauseBroadcaster::new(),
+            restart_handle: RestartHandle::new(),
+            shutdown_handle,
+            unpause_context: local_sni_unpause_context(Environment::Wayland),
+        };
+        let control = SniControl::Local(control);
+
+        control.quit();
+
+        assert!(
+            *shutdown_receiver.borrow_and_update(),
+            "SNI Local quit must trigger the daemon shutdown handle"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_sni_local_control_unpause_uses_creation_environment_during_transition_race() {
     with_test_timeout(async {
         let status_broadcaster = StatusBroadcaster::new();
@@ -3317,6 +3359,7 @@ async fn test_sni_local_control_unpause_uses_creation_environment_during_transit
             status_broadcaster,
             pause_broadcaster: PauseBroadcaster::new(),
             restart_handle: RestartHandle::new(),
+            shutdown_handle: ShutdownHandle::new(),
             unpause_context: local_sni_unpause_context(Environment::Wayland),
         };
         let control = SniControl::Local(control);
@@ -3375,6 +3418,7 @@ async fn test_sni_runtime_managed_transitions_do_not_leak_watcher_tasks() {
             status_broadcaster,
             pause_broadcaster,
             restart_handle,
+            ShutdownHandle::new(),
             None,
             effective_dbus_name(&derive_default_dbus_suffix("127.0.0.1", 10000)),
         );
@@ -3443,6 +3487,7 @@ async fn test_sni_runtime_managed_retries_after_transient_start_failure() {
             status_broadcaster,
             pause_broadcaster,
             restart_handle,
+            ShutdownHandle::new(),
             None,
             std::time::Duration::from_millis(20),
             move |mode,
@@ -3452,6 +3497,7 @@ async fn test_sni_runtime_managed_retries_after_transient_start_failure() {
                   status_broadcaster,
                   pause_broadcaster,
                   restart_handle,
+                  shutdown_handle,
                   control_environment,
                   daemon_bus_name| {
                 let build_attempts = build_attempts_for_builder.clone();
@@ -3468,6 +3514,7 @@ async fn test_sni_runtime_managed_retries_after_transient_start_failure() {
                             status_broadcaster,
                             pause_broadcaster,
                             restart_handle,
+                            shutdown_handle,
                             control_environment,
                             daemon_bus_name,
                         )

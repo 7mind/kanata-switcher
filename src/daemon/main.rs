@@ -1624,6 +1624,7 @@ struct SniLocalControl {
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
+    shutdown_handle: ShutdownHandle,
     unpause_context: UnpauseContext,
 }
 
@@ -1632,6 +1633,7 @@ struct SniDbusControl {
     runtime_handle: tokio::runtime::Handle,
     connection: Connection,
     restart_handle: RestartHandle,
+    shutdown_handle: ShutdownHandle,
     /// Per-instance daemon bus name to target with DBus control calls.
     daemon_bus_name: String,
 }
@@ -1739,6 +1741,7 @@ trait SniControlOps: Send + Sync {
     fn restart(&self);
     fn pause(&self);
     fn unpause(&self);
+    fn quit(&self);
 }
 
 impl SniControlOps for SniControl {
@@ -1826,6 +1829,18 @@ impl SniControlOps for SniControl {
             }
         }
     }
+
+    fn quit(&self) {
+        println!("[SNI] Quit requested");
+        match self {
+            SniControl::Local(control) => {
+                control.shutdown_handle.request();
+            }
+            SniControl::Dbus(control) => {
+                control.shutdown_handle.request();
+            }
+        }
+    }
 }
 
 struct SniIndicator {
@@ -1861,6 +1876,10 @@ impl SniIndicator {
 
     fn request_restart(&self) {
         self.control.restart();
+    }
+
+    fn request_quit(&self) {
+        self.control.quit();
     }
 
     fn format_layer_letter(layer_name: &str) -> String {
@@ -2074,6 +2093,13 @@ impl Tray for SniIndicator {
                 label: "Restart".to_string(),
                 activate: Box::new(|this| {
                     this.request_restart();
+                }),
+                ..StandardItem::default()
+            }),
+            MenuItem::Standard(StandardItem {
+                label: "Quit".to_string(),
+                activate: Box::new(|this| {
+                    this.request_quit();
                 }),
                 ..StandardItem::default()
             }),
@@ -5717,6 +5743,7 @@ async fn build_sni_control_for_mode(
     status_broadcaster: StatusBroadcaster,
     pause_broadcaster: PauseBroadcaster,
     restart_handle: RestartHandle,
+    shutdown_handle: ShutdownHandle,
     control_environment: Environment,
     daemon_bus_name: String,
 ) -> Option<SniControl> {
@@ -5728,6 +5755,7 @@ async fn build_sni_control_for_mode(
             status_broadcaster,
             pause_broadcaster,
             restart_handle,
+            shutdown_handle,
             unpause_context: local_sni_unpause_context(control_environment),
         })),
         SniControlMode::Dbus => match Connection::session().await {
@@ -5735,6 +5763,7 @@ async fn build_sni_control_for_mode(
                 runtime_handle,
                 connection,
                 restart_handle,
+                shutdown_handle,
                 daemon_bus_name,
             })),
             Err(error) => {
@@ -5814,6 +5843,7 @@ impl SniGuard {
         status_broadcaster: StatusBroadcaster,
         pause_broadcaster: PauseBroadcaster,
         restart_handle: RestartHandle,
+        shutdown_handle: ShutdownHandle,
         indicator_focus_only: Option<TrayFocusOnly>,
         daemon_bus_name: String,
     ) -> Self {
@@ -5825,6 +5855,7 @@ impl SniGuard {
             status_broadcaster,
             pause_broadcaster,
             restart_handle,
+            shutdown_handle,
             indicator_focus_only,
             SNI_RUNTIME_RETRY_INTERVAL,
             build_sni_control_for_mode,
@@ -5840,6 +5871,7 @@ impl SniGuard {
         status_broadcaster: StatusBroadcaster,
         pause_broadcaster: PauseBroadcaster,
         restart_handle: RestartHandle,
+        shutdown_handle: ShutdownHandle,
         indicator_focus_only: Option<TrayFocusOnly>,
         retry_delay: Duration,
         control_builder: B,
@@ -5854,6 +5886,7 @@ impl SniGuard {
                 StatusBroadcaster,
                 PauseBroadcaster,
                 RestartHandle,
+                ShutdownHandle,
                 Environment,
                 String,
             ) -> BFut
@@ -5897,6 +5930,7 @@ impl SniGuard {
                             status_broadcaster.clone(),
                             pause_broadcaster.clone(),
                             restart_handle.clone(),
+                            shutdown_handle.clone(),
                             env,
                             daemon_bus_name.clone(),
                         )
@@ -7910,6 +7944,7 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
             status_broadcaster.clone(),
             pause_broadcaster.clone(),
             restart_handle.clone(),
+            shutdown_handle.clone(),
             args.indicator_focus_only,
             effective_name.clone(),
         )

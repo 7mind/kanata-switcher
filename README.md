@@ -217,6 +217,8 @@ On GNOME, the indicator is provided by the (auto-)installed GNOME extension, on 
 
 The tray menu's "Show app layer only" setting is persisted via dconf, both on GNOME and non-GNOME desktops. Use `--indicator-focus-only <true|false>` to override it at startup.
 
+The SNI tray menu (non-GNOME desktops) exposes Pause/Unpause, "Show app layer only", Restart, and Quit. "Quit" shuts the daemon process down — same effect as sending SIGTERM/SIGINT — and bypasses any restart supervisor.
+
 ### Running Without Installing
 
 #### Nix
