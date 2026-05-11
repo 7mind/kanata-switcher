@@ -233,7 +233,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
   **Complete `const` inventory and module assignments** (constants defined outside the 91–125 opening block):
   - `AUTOSTART_DESKTOP_FILENAME` (line 346), `AUTOSTART_PASSTHROUGH_OPTIONS` (347), `AUTOSTART_ONESHOT_OPTIONS` (359) → `autostart.rs` (used only by autostart code).
   - `BROADCAST_PER_CALL_TIMEOUT` (line 648) → `control/client.rs` (used only by broadcast dispatch).
-  - `NATIVE_TERMINAL_RULE_INDEX` (line 946) → `config.rs` (used only by config/matching).
+  - `NATIVE_TERMINAL_RULE_INDEX` (originally at line 821 of pre-refactor main.rs) → `focus.rs` (used by `FocusHandler::handle` as a sentinel matched-index for native-terminal pseudo-rules; not used by config code). PR-03 executor placed it correctly; original plan claim of "used only by config/matching" was wrong.
   - `SNI_*` constants (lines 1453–1464, eight constants) → `sni/` (used only by SNI code).
   - `WAYLAND_CAPABILITY_RECHECK_INTERVAL` (line 3345) → `supervisor/mod.rs` (used only by the lifecycle supervisor).
   - `GNOME_SHELL_BUS_NAME` (line 6187), `GNOME_SHELL_OBJECT_PATH` (6188), `GNOME_SHELL_EXTENSIONS_INTERFACE` (6189), `DBUS_ERROR_SERVICE_UNKNOWN` (6190), `DBUS_ERROR_NAME_HAS_NO_OWNER` (6191), `DBUS_ERROR_UNKNOWN_METHOD` (6192) → `constants.rs`. Rationale: `GNOME_SHELL_BUS_NAME` is used by `detect_desktop_capabilities` in `supervisor/capabilities.rs`, making it cross-cluster; the three `DBUS_ERROR_*` constants are generic DBus error strings also usable cross-cluster.

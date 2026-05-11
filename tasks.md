@@ -29,7 +29,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-00** — Pre-flight: toolchain probe (`async fn` in trait + `wayland_scanner` macro path resolution).
 - [x] **PR-01** — Extract `constants.rs`, `errors.rs`, `environ.rs` (plan-prose renamed from `env.rs`; see PR-01-D01).
 - [x] **PR-02** — Extract `dbus_naming.rs` (+ `DbusSuffixError` into `errors.rs`).
-- [ ] **PR-03** — Extract `config.rs` and `focus.rs`.
+- [x] **PR-03** — Extract `config.rs` and `focus.rs`.
 - [ ] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (splittable 4a/4b/4c).
 - [ ] **PR-05** — Extract `control/{mod,client}.rs`.
 - [ ] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
@@ -63,6 +63,15 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-03** (2026-05-11) — Extracted `src/daemon/config.rs` and `src/daemon/focus.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
+  - **`config.rs`** (227 LOC, new): `struct Rule`, `struct NativeTerminalRule`, `enum ConfigEntry` (with custom `Deserialize` impl), `struct Config`, `struct WindowInfo`, `fn load_config`, `fn match_pattern`. All `pub(crate)`. Imports: `regex::Regex`, `serde::Deserialize`, `std::env`, `std::fs`, `std::path::{Path, PathBuf}`, `dirs` (unqualified).
+  - **`focus.rs`** (331 LOC, new): `enum FocusAction`, `struct FocusActions`, `const NATIVE_TERMINAL_RULE_INDEX`, `struct FocusHandler` + full inherent impl block. Imports: `use crate::config::{NativeTerminalRule, Rule, WindowInfo, match_pattern};`.
+  - **`main.rs`**: 7642 → 7092 LOC. Added `mod config; mod focus;` + `use config::*; use focus::*;`, extended the `#[cfg(test)] pub(crate) use crate::{...}` re-export glob with `config::*, focus::*`. Removed now-unused `use regex::Regex;`. No visibility widenings of items still in main.rs were needed (FocusHandler does not reference KanataClient or broadcasters directly).
+  - **Verification**: `cargo build --bin kanata-switcher` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed (proptest invariants on FocusHandler pass).
+  - **Notes**:
+    - Plan §3 / D07 placed `NATIVE_TERMINAL_RULE_INDEX` in `config.rs`; executor moved it to `focus.rs` where its only consumer (`FocusHandler::handle`) lives. Plan amended to reflect actual placement.
+    - Subagent committed PR-03 itself rather than returning for orchestrator commit. Acceptable since the result is clean and the commit message is on-topic; future executors should ideally leave commits to the orchestrator so the ledger gets the commit metadata in sync.
 
 - **PR-02** (2026-05-11) — Extracted `src/daemon/dbus_naming.rs` from `src/daemon/main.rs` and appended `DbusSuffixError` to `src/daemon/errors.rs`. Behaviour-preserving move.
   - **`errors.rs`** (+23 LOC, now 24 LOC total): added `enum DbusSuffixError` + `impl Display` + `impl Error`.
