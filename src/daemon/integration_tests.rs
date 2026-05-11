@@ -6545,6 +6545,277 @@ async fn test_persistent_dbus_service_reconnect_uses_effective_name() {
     .await;
 }
 
+/// Stand-in for a daemon whose control methods take forever. Used to exercise
+/// `send_control_command_broadcast`'s per-call `tokio::time::timeout` cap.
+struct HangingControlService;
+
+#[zbus::interface(name = "com.github.kanata.Switcher")]
+impl HangingControlService {
+    async fn pause(&self) {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+    async fn unpause(&self) {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+    async fn restart(&self) {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_control_command_broadcast_times_out_hanging_daemon_per_call() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        // Daemon A: full registration that responds to Pause quickly.
+        let server = MockKanataServer::start();
+        let status = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            server.port(),
+            Some("default".to_string()),
+            true,
+            status.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&server, Duration::from_millis(100));
+        let handler = Arc::new(Mutex::new(FocusHandler::new(Vec::new(), None, true)));
+        let pause_a = PauseBroadcaster::new();
+        let mut pause_a_rx = pause_a.subscribe();
+        let (_conn_a, _reg_a) = register_test_daemon_with_name(
+            &address,
+            TEST_DAEMON_DBUS_NAME_A,
+            pause_a.clone(),
+            handler,
+            kanata,
+            status,
+            RestartHandle::new(),
+        )
+        .await;
+
+        // Daemon B: claims the well-known name and serves the control interface
+        // at the daemon object path, but every method handler sleeps for 60s.
+        // The broadcast's per-call timeout must cut this off.
+        let hanging_connection = Builder::address(address.clone())
+            .expect("Failed to build hanging daemon connection")
+            .name(TEST_DAEMON_DBUS_NAME_B)
+            .expect("Failed to claim hanging daemon name")
+            .serve_at("/com/github/kanata/Switcher", HangingControlService)
+            .expect("Failed to mount hanging service")
+            .build()
+            .await
+            .expect("Failed to register hanging daemon");
+
+        let client = Builder::address(address.clone())
+            .expect("Failed to build client")
+            .build()
+            .await
+            .expect("Failed to connect client");
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&client)
+            .await
+            .expect("Failed to create dbus proxy");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_A.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon A");
+        wait_for_async(|| {
+            let proxy = dbus_proxy.clone();
+            async move {
+                proxy
+                    .name_has_owner(TEST_DAEMON_DBUS_NAME_B.try_into().unwrap())
+                    .await
+                    .ok()
+                    .filter(|&owned| owned)
+            }
+        })
+        .await
+        .expect("Timeout waiting for daemon B (hanging)");
+
+        let started = std::time::Instant::now();
+        let report = send_control_command_broadcast(&client, ControlCommand::Pause)
+            .await
+            .expect("Broadcast should aggregate, not propagate the timeout");
+        let elapsed = started.elapsed();
+        // Total time should be roughly bounded by `BROADCAST_PER_CALL_TIMEOUT`
+        // (2s) plus daemon A's near-zero call time. Generous slack avoids
+        // flake while still proving the cap is enforced (a missing timeout
+        // would run for 60s and the outer `with_test_timeout(5s)` would fire).
+        assert!(
+            elapsed < Duration::from_millis(3500),
+            "broadcast must respect per-call timeout; took {:?}",
+            elapsed
+        );
+
+        let mut by_name: std::collections::HashMap<&str, &BroadcastEntryReport> =
+            std::collections::HashMap::new();
+        for entry in &report.results {
+            by_name.insert(entry.bus_name.as_str(), entry);
+        }
+        let a_entry = by_name
+            .get(TEST_DAEMON_DBUS_NAME_A)
+            .expect("Report must include daemon A");
+        let b_entry = by_name
+            .get(TEST_DAEMON_DBUS_NAME_B)
+            .expect("Report must include daemon B");
+        assert!(
+            a_entry.outcome.is_ok(),
+            "Daemon A should succeed, got: {:?}",
+            a_entry.outcome
+        );
+        let b_error = b_entry
+            .outcome
+            .as_ref()
+            .err()
+            .expect("Daemon B (hanging) must time out");
+        assert!(
+            b_error.to_string().contains("timed out"),
+            "Daemon B error must mention timeout, got: {}",
+            b_error
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), pause_a_rx.changed())
+            .await
+            .expect("Daemon A did not flip paused")
+            .expect("Daemon A pause channel closed");
+        assert!(*pause_a_rx.borrow(), "Daemon A should be paused");
+
+        drop(hanging_connection);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_focus_changed_signal_ignores_unrelated_sender() {
+    with_test_timeout(async {
+        use zbus::connection::Builder;
+        let dbus = DbusSessionGuard::start()
+            .expect("Failed to start dbus-daemon. Run `nix run .#test` or install dbus.");
+        let address: zbus::Address = dbus.address().parse().expect("Invalid bus address");
+
+        // Correct GNOME Shell stand-in (owns `org.gnome.Shell`).
+        let mock_gshell_connection = Builder::address(address.clone())
+            .expect("Failed to build GShell mock connection")
+            .name(GNOME_SHELL_BUS_NAME)
+            .expect("Failed to claim org.gnome.Shell")
+            .serve_at(
+                GNOME_FOCUS_OBJECT_PATH,
+                FocusService {
+                    call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    class: "firefox".to_string(),
+                    title: "".to_string(),
+                },
+            )
+            .expect("Failed to mount correct GShell mock")
+            .build()
+            .await
+            .expect("Failed to build GShell mock connection");
+
+        // Impostor: owns a *different* well-known name but serves the same
+        // interface + path. Signals emitted from this connection have a
+        // different sender bus name and must be rejected by the daemon's
+        // `sender=org.gnome.Shell` MatchRule filter.
+        let impostor_connection = Builder::address(address.clone())
+            .expect("Failed to build impostor connection")
+            .name("org.example.NotGnomeShell")
+            .expect("Failed to claim impostor name")
+            .serve_at(
+                GNOME_FOCUS_OBJECT_PATH,
+                FocusService {
+                    call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    class: "firefox".to_string(),
+                    title: "".to_string(),
+                },
+            )
+            .expect("Failed to mount impostor")
+            .build()
+            .await
+            .expect("Failed to build impostor connection");
+
+        let mock_server = MockKanataServer::start();
+        let rules = vec![Rule {
+            class: Some("firefox".to_string()),
+            title: None,
+            on_native_terminal: None,
+            layer: Some("browser".to_string()),
+            virtual_key: None,
+            raw_vk_action: None,
+            fallthrough: false,
+        }];
+        let status_broadcaster = StatusBroadcaster::new();
+        let kanata = KanataClient::new(
+            "127.0.0.1",
+            mock_server.port(),
+            Some("default".to_string()),
+            true,
+            status_broadcaster.clone(),
+        );
+        kanata.connect_with_retry().await;
+        drain_kanata_messages(&mock_server, Duration::from_millis(100));
+
+        let handler = Arc::new(Mutex::new(FocusHandler::new(rules, None, true)));
+        let pause_broadcaster = PauseBroadcaster::new();
+
+        let signal_connection = Builder::address(address.clone())
+            .expect("Failed to build signal connection")
+            .build()
+            .await
+            .expect("Failed to connect signal listener");
+        let _subscription = subscribe_to_gnome_focus_signal(
+            &signal_connection,
+            kanata.clone(),
+            handler.clone(),
+            status_broadcaster.clone(),
+            pause_broadcaster.clone(),
+        )
+        .await
+        .expect("Failed to subscribe to FocusChanged signal");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Emit FocusChanged from the impostor — must be ignored by the daemon.
+        let impostor_emitter =
+            zbus::object_server::SignalEmitter::new(&impostor_connection, GNOME_FOCUS_OBJECT_PATH)
+                .expect("Failed to create impostor signal emitter");
+        FocusService::focus_changed(&impostor_emitter, "firefox", "")
+            .await
+            .expect("Failed to emit FocusChanged from impostor");
+        let unexpected = mock_server.recv_timeout(Duration::from_millis(500));
+        assert!(
+            unexpected.is_none(),
+            "Daemon must ignore FocusChanged from non-org.gnome.Shell sender, but got: {:?}",
+            unexpected
+        );
+
+        // Sanity: emit from the legitimate `org.gnome.Shell` owner and verify
+        // the daemon reacts. Without this, a daemon that ignored *every*
+        // signal would also pass the negative assertion above.
+        let legit_emitter =
+            zbus::object_server::SignalEmitter::new(&mock_gshell_connection, GNOME_FOCUS_OBJECT_PATH)
+                .expect("Failed to create legit signal emitter");
+        FocusService::focus_changed(&legit_emitter, "firefox", "")
+            .await
+            .expect("Failed to emit FocusChanged from legit sender");
+        wait_for_kanata_message(
+            &mock_server,
+            KanataMessage::ChangeLayer {
+                new: "browser".to_string(),
+            },
+            Duration::from_secs(3),
+        );
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_control_command_broadcast_partial_failure_reports_per_daemon() {
     with_test_timeout(async {
