@@ -153,28 +153,36 @@ The four `async fn run_{gnome,kde,wayland,x11}` functions and the linux-console 
 
 ```rust
 // src/daemon/backends/mod.rs
-pub(crate) trait FocusBackend: Send + ‘static {
+use std::future::Future;
+use std::pin::Pin;
+
+pub(crate) trait FocusBackend: Send + 'static {
     fn kind(&self) -> BackendKind;
-    fn run(self: Box<Self>, ctx: BackendRunContext) -> impl Future<Output = Result<BackendExit, DynError>> + Send;
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>>;
 }
 ```
 
 Where `BackendRunContext` is just the existing argument tuple (`KanataClient`, `Arc<Mutex<FocusHandler>>`, `StatusBroadcaster`, `PauseBroadcaster`, `RestartHandle`, `ShutdownHandle`, `effective_dbus_name`, plus the per-backend optional display override). One concrete impl per file: `GnomeBackend`, `KdeBackend`, `WaylandBackend`, `X11Backend`, `LinuxConsoleBackend`. **Earns its keep**: it removes the five-arm `match RuntimeTarget` inside `start_backend` and makes the “add another DE” story (hypothetical) one-file. It also gives integration tests a clean place to inject a stub backend without going through the supervisor’s closure-injection variant `run_lifecycle_supervisor_with_starter` (which exists today because there is no seam — the test seam is currently a closure parameter; the trait formalizes that).
 
-**Async-in-trait**: The project pins `rust-bin.stable.latest.default` in `flake.nix` (line 32); the installed toolchain is rustc 1.92.0, which supports RPIT-in-traits (stable since 1.75). The trait method uses `fn run(...) -> impl Future<Output = Result<BackendExit, DynError>> + Send` — explicit `+ Send` is required because stable AFIT does not propagate `Send` from a `Send + ‘static` supertrait to the returned future, and `tokio::spawn` requires `Send`. Do NOT use `#[async_trait]` — that would add the `async-trait` crate as a new dependency, which is banned per §1 non-goals. The `async fn run(...)` sugar is NOT used in the trait definition for this reason. **PR-00 verification step**: compile a one-line trait `pub trait Probe { fn run() -> impl Future<Output = ()> + Send; }` inside a temporary `mod _probe;` in `src/daemon/` and confirm rustc 1.92.0 accepts it. Remove the temporary module after confirming.
+**Trait shape — `Pin<Box<dyn Future>>`, not RPIT-in-traits (PR-00 finding, 2026-05-11)**: The project pins `rust-bin.stable.latest.default` in `flake.nix`; the installed toolchain is rustc 1.92.0. The supervisor's `start_backend` dispatches via `Box<dyn FocusBackend>`, so `FocusBackend` **must be dyn-compatible**. RPIT-in-traits (`fn run(...) -> impl Future<...> + Send`) is NOT dyn-compatible on rustc 1.92.0 — PR-00's probe confirmed E0038 ("the trait `FocusBackend` is not dyn compatible … because method `run` references an `impl Trait` type in its return type"). The trait therefore uses the boxed-future shape: `fn run(self: Box<Self>, ctx: BackendRunContext) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>>`. Each `impl` body wraps its async block in `Box::pin(async move { ... })`. This costs one allocation per backend start (the daemon starts a backend on session transitions — sub-second-frequency events), which is negligible. Do NOT use `#[async_trait]` — that would add the `async-trait` crate as a new dependency, which is banned per §1 non-goals; the boxed-future shape achieves the same dyn-compatibility manually.
 
-**Impl-side signature (D22)**: The `impl` must explicitly repeat the `-> impl Future<...> + Send` return form — writing `async fn run(...)` in the impl yields an opaque future whose `Send`-ness depends on all captured types and is not guaranteed to satisfy the `+ Send` trait bound. Use this skeleton for every backend:
+**Impl-side skeleton**: Every backend impl uses this form:
 
 ```rust
 impl FocusBackend for GnomeBackend {
-    fn run(self: Box<Self>, ctx: BackendRunContext)
-        -> impl Future<Output = Result<BackendExit, DynError>> + Send {
-        async move { /* unpack ctx and call run_gnome(...).await */ }
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> {
+        Box::pin(async move { /* unpack ctx and call run_gnome(...).await */ })
     }
 }
 ```
 
-**PR-00 sub-probe for impl shape (D22)**: In the same temporary `mod _probe;` module, also compile a one-line impl matching the trait to confirm `+ Send` propagation from the `async move` block to the return type is accepted by rustc 1.92.0. Only remove the temporary module once both the trait declaration and the impl shape compile successfully.
+PR-00 confirmed: trait declaration compiles, dyn-dispatch via `Box<dyn FocusBackend>` compiles, and `tokio::spawn(b.run(ctx))` compiles (Send propagation verified).
 
 **`RunOutcome` vs `BackendExit`**: `RunOutcome` is the per-backend exit reason returned by the individual `run_gnome`/`run_kde`/etc. free functions. It is mapped to `BackendExit` by `map_run_outcome_to_backend_exit`, which lives in `backends/mod.rs` alongside `BackendExit` and the `FocusBackend` trait (moved there in PR-12 step 0). The trait method returns `Result<BackendExit, DynError>`, which is consistent with the current semantics — each `XxxBackend::run` impl calls the free function and maps its result via `map_run_outcome_to_backend_exit`.
 
@@ -203,20 +211,21 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 15 PRs. Each is independently revertable. Verification baseline `cargo build && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check && nix build && nix run .#test` — abbreviated below as **V0**.
 
 ### PR-00: pre-flight — toolchain sanity, no-op refactor scaffold
-- **Scope**: No code moves. Three mandatory smoke tests before any subsequent PR proceeds:
 
-  1. **Toolchain version**: confirm `rustc --version` shows 1.75 or later (the project pins `rust-bin.stable.latest.default` in `flake.nix` line 32; should show 1.92.0). Compile a one-line trait `pub trait Probe { fn run() -> impl Future<Output = ()> + Send; }` inside a temporary `mod _probe;` placed in `src/daemon/`. If rustc accepts it, delete the module and proceed — RPIT-in-traits with explicit `+ Send` is confirmed available. If rustc rejects it, stop and report: the plan must be revised before any PR proceeds.
+**Executed 2026-05-11.** Findings recorded below; subsequent PRs assume these outcomes.
 
-  2. **`wayland_scanner` macro path resolution** (mandatory, not optional): inside a temporary `mod _scanner_probe;` placed under `src/daemon/`, compile `wayland_scanner::generate_interfaces!("src/protocols/cosmic-workspace-unstable-v1.xml");`. **Branch decision:**
-     - If it **compiles**: the macro resolves paths relative to `CARGO_MANIFEST_DIR`. Proceed with PR-09 using the original path strings unchanged.
-     - If it **fails** with a file-not-found error: the macro is source-file-relative. Before PR-09 begins, amend PR-09's scope to use `concat!(env!("CARGO_MANIFEST_DIR"), "/src/protocols/cosmic-workspace-unstable-v1.xml")` and `concat!(env!("CARGO_MANIFEST_DIR"), "/src/protocols/cosmic-toplevel-info-unstable-v1.xml")` in place of the bare string arguments. Do not proceed with PR-09 until this path form is confirmed working.
-     - Delete the temporary module after the probe.
+- **Scope**: No code moves. Two mandatory smoke probes whose outcomes decide downstream PR-09 / PR-12 details.
 
-  3. **Re-export round-trip**: add an empty `mod _refactor_smoke;` to `src/daemon/`, add `#[cfg(test)] pub(crate) use crate::_refactor_smoke::*;` to `main.rs`, build with `cargo build`, then remove both. Confirms `use super::*` in test modules sees re-exported items.
+  1. **`wayland_scanner` macro path resolution from a nested module** — inside a temporary `mod _pr00_probe;` placed under `src/daemon/`, compile both `wayland_scanner::generate_interfaces!("src/protocols/cosmic-workspace-unstable-v1.xml")` AND `wayland_scanner::generate_client_code!("src/protocols/cosmic-workspace-unstable-v1.xml")` inside a deeply-nested `pub mod probe_cosmic_workspace { pub mod __interfaces { ... } ... }`. **Result (rustc 1.92.0, wayland-scanner 0.31.8): COMPILES.** The macros resolve XML paths relative to `CARGO_MANIFEST_DIR`. PR-09 proceeds with the original path strings unchanged.
 
-- **Import changes**: none (all additions are temporary and deleted before commit).
-- **Verification**: V0.
-- **Risk**: zero. Rollback: drop branch.
+  2. **`FocusBackend` trait shape** — compile a probe trait `pub trait FocusBackend: Send + 'static { fn run(self: Box<Self>, ctx: BackendRunContext) -> RETURN; }` with two candidate `RETURN` types and verify three properties: (a) the trait declaration compiles; (b) `Box<dyn FocusBackend>` dispatch compiles (dyn-compatibility); (c) `tokio::spawn(b.run(ctx))` compiles (Send propagation).
+     - **Candidate 1: RPIT-in-traits, `impl Future<Output = ...> + Send` — REJECTED.** Trait declares fine, but `Box<dyn FocusBackend>` fails with E0038 ("not dyn compatible … because method `run` references an `impl Trait` type in its return type"). RPIT-in-traits is not dyn-compatible on rustc 1.92.0.
+     - **Candidate 2: boxed-future, `Pin<Box<dyn Future<Output = ...> + Send + 'static>>` — ACCEPTED.** All three checks pass. The trait is dyn-compatible, dispatch via `Box<dyn FocusBackend>` works, and the returned future spawn-s cleanly.
+     - **Decision**: §4.1 and PR-12 step 2 use the `Pin<Box<dyn Future ...>>` shape. Each impl uses `Box::pin(async move { ... })`.
+
+- **Import changes**: none (probe module added and removed atomically in this PR).
+- **Verification**: `cargo check --bin kanata-switcher` (both probe variants); full V0 with the probe removed.
+- **Risk**: zero — purely additive temporary code. Rollback: delete probe module, revert main.rs `mod _pr00_probe;` line.
 
 ### PR-01: extract `constants.rs`, `errors.rs`, `env.rs`
 - **Scope, moves to `constants.rs`**: every `const` from lines 91–125 plus `GNOME_EXTENSION_SRC_PATH`, `GNOME_EXTENSION_SCHEMA_FILE`, `GNOME_EXTENSION_SCHEMA_COMPILED` from the GNOME ext block (these constants are referenced from both install and embed paths). Move `DCONF_FOCUS_ONLY_KEY` here too.
@@ -351,7 +360,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
   **Five-step procedure**:
   0. Move `BackendExit` and `map_run_outcome_to_backend_exit` (currently in `main.rs`, widened to `pub(crate)` in PR-08) into `backends/mod.rs`, and revert the temporary `pub(crate)` widening. These must live in `backends/` because `FocusBackend::run` returns `Result<BackendExit, DynError>` — placing them in `supervisor/` would force every backend impl to `use crate::supervisor::BackendExit`, creating a backends→supervisor edge that contradicts the acyclic dependency invariant (§7 risk 5). `supervisor/` imports `BackendExit` from `crate::backends::BackendExit`.
   1. Define `pub(crate) struct BackendRunContext { ... }` in `backends/mod.rs`, with fields matching the existing `BackendContext` plus `ShutdownHandle`.
-  2. For each backend, add a small struct `XxxBackend` and `impl FocusBackend for XxxBackend` whose `run` body unpacks `BackendRunContext` and delegates to the existing free `async fn run_xxx`. **Impl signature must repeat `+ Send`** (RPIT-in-traits does not auto-inherit Send from the trait bound on `Self`): `fn run(self: Box<Self>, ctx: BackendRunContext) -> impl Future<Output = Result<BackendExit, DynError>> + Send { async move { /* unpack ctx and call run_xxx(...).await */ } }`. See §4.1 for rationale; PR-00 probe confirms this form compiles.
+  2. For each backend, add a small struct `XxxBackend` and `impl FocusBackend for XxxBackend` whose `run` body unpacks `BackendRunContext` and delegates to the existing free `async fn run_xxx`. **Use the `Pin<Box<dyn Future ...>>` shape** (PR-00 finding — RPIT-in-traits is dyn-incompatible on rustc 1.92.0): `fn run(self: Box<Self>, ctx: BackendRunContext) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> { Box::pin(async move { /* unpack ctx and call run_xxx(...).await */ }) }`. See §4.1 for rationale.
   3. In `supervisor::start_backend`, replace each `RuntimeTarget::Xxx => run_xxx_backend_task(...)` arm with `RuntimeTarget::Xxx => Box::new(XxxBackend::new(...)) as Box<dyn FocusBackend>`.
   4. Delete `run_gnome_backend_task`, `run_kde_backend_task`, `run_wayland_backend_task`, `run_x11_backend_task`, `run_linux_console_backend_task`.
 
