@@ -27,7 +27,7 @@ Detail in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md`.
 Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the plan IS the breakdown). Per-PR rows below are added when M1 is opened.
 
 - [x] **PR-00** — Pre-flight: toolchain probe (`async fn` in trait + `wayland_scanner` macro path resolution).
-- [ ] **PR-01** — Extract `constants.rs`, `errors.rs`, `env.rs`.
+- [x] **PR-01** — Extract `constants.rs`, `errors.rs`, `environ.rs` (plan-prose renamed from `env.rs`; see PR-01-D01).
 - [ ] **PR-02** — Extract `dbus_naming.rs` (+ `DbusSuffixError` into `errors.rs`).
 - [ ] **PR-03** — Extract `config.rs` and `focus.rs`.
 - [ ] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (splittable 4a/4b/4c).
@@ -63,6 +63,16 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-01** (2026-05-11) — Extracted `src/daemon/{constants,errors,environ}.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
+  - **`constants.rs`** (53 LOC): the opening 91–125 constant block + `GNOME_EXTENSION_SRC_PATH`/`GNOME_EXTENSION_SCHEMA_FILE`/`GNOME_EXTENSION_SCHEMA_COMPILED` + `DCONF_FOCUS_ONLY_KEY` + `GNOME_SHELL_BUS_NAME`/`GNOME_SHELL_OBJECT_PATH`/`GNOME_SHELL_EXTENSIONS_INTERFACE`/`DBUS_ERROR_SERVICE_UNKNOWN`/`DBUS_ERROR_NAME_HAS_NO_OWNER`/`DBUS_ERROR_UNKNOWN_METHOD`.
+  - **`errors.rs`** (1 LOC): `pub(crate) type DynError = Box<dyn std::error::Error + Send + Sync>`.
+  - **`environ.rs`** (202 LOC): `enum Environment` (kept `pub`) + `RunOutcome` + `SessionKind` + `DesktopFlavor` + `BackendKind` + `RuntimeTarget` + `DesktopCapabilities` + `LifecycleSnapshot` + `impl Environment` + 8 free functions.
+  - **`main.rs`**: 7983 → 7743 LOC. Added `mod constants; mod errors; mod environ;` + `use constants::*; use errors::DynError; use environ::*;` + `#[cfg(test)] pub(crate) use crate::{constants::*, errors::*, environ::*};` re-export block for test-mod access.
+  - **Verification**: `cargo build --bin kanata-switcher` ✓; `cargo test --bin kanata-switcher` → 261 passed / 0 failed.
+  - **Notes / surprises**:
+    - Plan called the module `env.rs`; executor renamed to `environ.rs` to avoid colliding with `use std::env;` (5 call sites in main.rs use `env::var*`). Accepted the rename via PR-01-D01; plan prose updated to use `environ` consistently.
+    - Reserved-for-later constants (SNI_*, AUTOSTART_*, BROADCAST_PER_CALL_TIMEOUT, NATIVE_TERMINAL_RULE_INDEX, WAYLAND_CAPABILITY_RECHECK_INTERVAL, DBUS_RECONNECT_DELAYS_MS, SNI_RUNTIME_RETRY_INTERVAL) remain in `main.rs` and move with their respective clusters in later PRs.
 
 - **PR-00** (2026-05-11) — Pre-flight probes. Two compile-only smoke tests under a temporary `src/daemon/_pr00_probe.rs` (module added then removed atomically in this PR; no production code change).
   - **Probe A — `wayland_scanner` path resolution from a nested module**: compiled `wayland_scanner::generate_interfaces!("src/protocols/cosmic-workspace-unstable-v1.xml")` and `generate_client_code!(...)` inside `pub mod probe_cosmic_workspace { pub mod __interfaces { ... } ... }`. **Outcome: COMPILES.** `wayland-scanner 0.31.8` resolves XML paths via `CARGO_MANIFEST_DIR`. PR-09 proceeds with the original path strings unchanged.

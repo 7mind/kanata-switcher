@@ -74,7 +74,7 @@ Line ranges below from `/tmp/main_structure.txt` and direct reads. Numbers are i
 - `ControlCommand`, `effective_dbus_name`, `DBUS_BASE_NAME`/`DAEMON_BUS_NAME_PREFIX`/`DBUS_PATH`/`DBUS_INTERFACE` — referenced from CLI control dispatch, DBus server, SNI Dbus mode, persistent DBus reconnector, GNOME focus subscription path.
 - `DynError` alias — used pervasively under the lifecycle/supervisor cluster.
 
-These belong in shallow modules (`config.rs`, `focus.rs`, `kanata.rs`, `env.rs`, `broadcasters.rs`, `dbus_naming.rs`, `constants.rs`) that everyone else can `use crate::env::Environment;` against.
+These belong in shallow modules (`config.rs`, `focus.rs`, `kanata.rs`, `environ.rs`, `broadcasters.rs`, `dbus_naming.rs`, `constants.rs`) that everyone else can `use crate::environ::Environment;` against.
 
 ---
 
@@ -85,7 +85,7 @@ src/daemon/
   main.rs                     # CLI bootstrap, run_once, signal wiring, mod declarations, top-level orchestration. Re-exports for test access.
   constants.rs                # All shared string constants: DBUS_*, GNOME_FOCUS_*, KDE_*, LOGIND_*, KDE_KWIN_*, KDE_RUNTIME_QUERY_MODE_*.
   errors.rs                   # `pub(crate) type DynError = Box<dyn std::error::Error + Send + Sync>;`. Also any free-standing error enums that escape one module (`DbusSuffixError`, `LogindSessionPathResolutionError`).
-  env.rs                      # Environment, RunOutcome, SessionKind, DesktopFlavor, BackendKind, RuntimeTarget, DesktopCapabilities, LifecycleSnapshot, session_type_to_session_kind, session_type_indicates_native_terminal, resolve_desktop_flavor, resolve_runtime_target, runtime_target_from_wayland_startup_session_type_hint, target_requires_session_bus, startup_environment_to_snapshot, detect_environment.
+  environ.rs                      # Environment, RunOutcome, SessionKind, DesktopFlavor, BackendKind, RuntimeTarget, DesktopCapabilities, LifecycleSnapshot, session_type_to_session_kind, session_type_indicates_native_terminal, resolve_desktop_flavor, resolve_runtime_target, runtime_target_from_wayland_startup_session_type_hint, target_requires_session_bus, startup_environment_to_snapshot, detect_environment.
   args.rs                     # Args (clap derive), parse_dbus_suffix_arg, resolve_install_gnome_extension, resolve_control_command, TrayFocusOnly.
   dbus_naming.rs              # DbusSuffixError, sanitize_dbus_suffix, derive_default_dbus_suffix, resolve_dbus_suffix, effective_dbus_name, is_daemon_bus_name.
   autostart.rs                # resolve_binary_path, autostart_dir, autostart_desktop_path, escape_desktop_exec_arg, build_autostart_desktop_content, autostart_passthrough_args, install_autostart_desktop, uninstall_autostart_desktop.
@@ -142,7 +142,7 @@ src/daemon/
   integration_tests.rs        # unchanged.
 ```
 
-`src/daemon/main.rs` after the refactor contains, in order: top of file `use` block for the few items needed by `main`/`run_once`; `mod constants; mod errors; mod env; mod args; mod dbus_naming; mod autostart; mod config; mod focus; mod focus_pipeline; mod broadcasters; mod kanata; mod pause; mod control; mod lifecycle; mod display_override; mod supervisor; mod backends; mod sni; mod gnome_ext;`; the `#[tokio::main] async fn main` and `async fn run_once` bodies (largely identical to the current ones, just calling into modules); `#[cfg(test)] pub(crate) use ...` re-exports for test access (see §6); and finally `#[cfg(test)] mod tests; #[cfg(test)] mod integration_tests;`.
+`src/daemon/main.rs` after the refactor contains, in order: top of file `use` block for the few items needed by `main`/`run_once`; `mod constants; mod errors; mod environ; mod args; mod dbus_naming; mod autostart; mod config; mod focus; mod focus_pipeline; mod broadcasters; mod kanata; mod pause; mod control; mod lifecycle; mod display_override; mod supervisor; mod backends; mod sni; mod gnome_ext;`; the `#[tokio::main] async fn main` and `async fn run_once` bodies (largely identical to the current ones, just calling into modules); `#[cfg(test)] pub(crate) use ...` re-exports for test access (see §6); and finally `#[cfg(test)] mod tests; #[cfg(test)] mod integration_tests;`.
 
 ---
 
@@ -227,7 +227,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Verification**: `cargo check --bin kanata-switcher` (both probe variants); full V0 with the probe removed.
 - **Risk**: zero — purely additive temporary code. Rollback: delete probe module, revert main.rs `mod _pr00_probe;` line.
 
-### PR-01: extract `constants.rs`, `errors.rs`, `env.rs`
+### PR-01: extract `constants.rs`, `errors.rs`, `environ.rs`
 - **Scope, moves to `constants.rs`**: every `const` from lines 91–125 plus `GNOME_EXTENSION_SRC_PATH`, `GNOME_EXTENSION_SCHEMA_FILE`, `GNOME_EXTENSION_SCHEMA_COMPILED` from the GNOME ext block (these constants are referenced from both install and embed paths). Move `DCONF_FOCUS_ONLY_KEY` here too.
 
   **Complete `const` inventory and module assignments** (constants defined outside the 91–125 opening block):
@@ -242,10 +242,10 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 
   Spell each of these assignments out in the PR scope list so the executor does not miss them.
 - **Moves to `errors.rs`**: `type DynError = Box<dyn std::error::Error + Send + Sync>;` (line 2864).
-- **Moves to `env.rs`**: `Environment`, `RunOutcome`, `SessionKind`, `DesktopFlavor`, `BackendKind`, `RuntimeTarget`, `DesktopCapabilities`, `LifecycleSnapshot`, `session_type_to_session_kind`, `session_type_indicates_native_terminal`, `resolve_desktop_flavor`, `resolve_runtime_target`, `runtime_target_from_wayland_startup_session_type_hint`, `target_requires_session_bus`, `startup_environment_to_snapshot`, `impl Environment` (lines 4887–5086), `detect_environment` (lines 5053–5086).
+- **Moves to `environ.rs`**: `Environment`, `RunOutcome`, `SessionKind`, `DesktopFlavor`, `BackendKind`, `RuntimeTarget`, `DesktopCapabilities`, `LifecycleSnapshot`, `session_type_to_session_kind`, `session_type_indicates_native_terminal`, `resolve_desktop_flavor`, `resolve_runtime_target`, `runtime_target_from_wayland_startup_session_type_hint`, `target_requires_session_bus`, `startup_environment_to_snapshot`, `impl Environment` (lines 4887–5086), `detect_environment` (lines 5053–5086).
 - **LOC moved**: ~250.
 - **Visibility**: every item becomes `pub(crate)`. `pub enum Environment` and `pub struct KanataClient` need to **stay `pub`** because they ride on the `[[bin]]` boundary (no external consumer exists for a bin crate, but the existing `pub` is preserved for consistency).
-- **Import changes**: `main.rs` adds `mod constants; mod errors; mod env;` and `use constants::*; use errors::DynError; use env::*;` (or specific item lists). Test files: `use super::*;` continues to expose these because `main.rs` will `pub(crate) use {constants::*, errors::*, env::*};` at the top of `main.rs`. **Always re-export from `main.rs`** for `tests.rs`/`integration_tests.rs` — they `use super::*` against `main.rs`, not against the leaf modules.
+- **Import changes**: `main.rs` adds `mod constants; mod errors; mod environ;` and `use constants::*; use errors::DynError; use environ::*;` (or specific item lists). Test files: `use super::*;` continues to expose these because `main.rs` will `pub(crate) use {constants::*, errors::*, environ::*};` at the top of `main.rs`. **Always re-export from `main.rs`** for `tests.rs`/`integration_tests.rs` — they `use super::*` against `main.rs`, not against the leaf modules.
 - **Verification**: V0.
 - **Risk**: visibility leaks. Rollback: revert single commit.
 
@@ -263,7 +263,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Moves to `focus.rs`**: `FocusAction`, `FocusActions`, `impl FocusActions`, `FocusHandler` and its full impl block (lines 919–1244).
 - **LOC moved**: ~530.
 - **Visibility**: `pub(crate)`. The `Rule`, `WindowInfo`, `FocusActions`, `FocusAction`, `FocusHandler` are all heavily used in `tests.rs` — re-export from `main.rs` (`pub(crate) use crate::{config::*, focus::*};`).
-- **Import changes**: `main.rs` adds `mod config; mod focus;`. Inside the new files: `use crate::env::Environment;` is unnecessary here because focus only uses `WindowInfo` (no env). Note: `WindowInfo` has a `is_native_terminal: bool` field used by `tests.rs` (see `fn win(...)` in tests.rs at line 24).
+- **Import changes**: `main.rs` adds `mod config; mod focus;`. Inside the new files: `use crate::environ::Environment;` is unnecessary here because focus only uses `WindowInfo` (no env). Note: `WindowInfo` has a `is_native_terminal: bool` field used by `tests.rs` (see `fn win(...)` in tests.rs at line 24).
 - **Verification**: V0. `cargo test` will exercise `FocusHandler` heavily — green test run is the strongest signal this PR is correct.
 - **Risk**: medium — `FocusHandler::handle` is the daemon’s heart, touched by most tests. Behaviour-preserving move only. Rollback: revert.
 
@@ -274,7 +274,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Moves to `kanata.rs`**: all kanata protocol message structs (lines 4246–4317), `KanataClientInner`, `pub struct KanataClient`, `impl KanataClient`, `ShutdownGuard` (lines 4319–4885).
 - **LOC moved**: ~1140. Per-destination estimates: `args.rs` ≈ 122 LOC, `autostart.rs` ≈ 156 LOC, `broadcasters.rs` ≈ 219 LOC, `kanata.rs` ≈ 640 LOC — all well under the §1 budget of 1200 LOC per file.
 - **Visibility**: `pub(crate)` everywhere except `pub struct KanataClient` and `pub enum Environment` (already pub, preserved). `Args` needs to be `pub(crate)` since `tests.rs` uses `clap::Parser` to construct one (line 2 of tests.rs imports `clap::Parser`).
-- **Import changes**: each new file `use crate::{constants::*, errors::DynError, env::*, broadcasters::*, focus::FocusHandler};` as needed. `main.rs` adds four `mod` declarations and re-exports for tests.
+- **Import changes**: each new file `use crate::{constants::*, errors::DynError, environ::*, broadcasters::*, focus::FocusHandler};` as needed. `main.rs` adds four `mod` declarations and re-exports for tests.
 - **Verification**: V0. Pay particular attention to `nix run .#test` — `kanata.rs` is touched by every integration test that connects to a mock kanata TCP server.
 - **Risk**: medium-high — `KanataClient` is held by reference from every backend file we haven’t moved yet. They keep their existing call sites; we’re just relocating the definition. Rollback: revert. **Consider splitting** into 4a (args+autostart), 4b (broadcasters), 4c (kanata+ShutdownGuard) for reviewability — each sub-PR is independently understandable and reviewable.
 
@@ -293,7 +293,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **LOC moved**: ~210.
 - **Visibility**: `pub(crate)`.
 - **Visibility widening sub-step (D19)**: Before extracting `pause.rs`, widen `apply_focus_for_env` and `query_focus_for_env` to `pub(crate)` in `main.rs`. `unpause_daemon` (moving to `pause.rs`) calls `apply_focus_for_env` (main.rs line 2546), which remains private until PR-11. Without this widening the new `pause.rs` fails to compile with "function `apply_focus_for_env` is private". Revert both widenings in PR-11 when `apply_focus_for_env`/`query_focus_for_env` move to `backends/mod.rs`.
-- **Import changes**: both files `use crate::{kanata::KanataClient, focus::*, broadcasters::*, config::WindowInfo, env::Environment, pause::UnpauseContext};`. **Important**: `UnpauseContext.connection` is a `zbus::Connection` — keep the type re-exported via `pub(crate) use zbus::Connection;` from the module or just import directly in the file. **Cross-reference fix (D21)**: After moving `UnpauseContext` to `pause.rs`, the remaining call sites in `main.rs` (SNI `SniLocalControl` field at line 1628; DBus server `resolve_runtime_unpause_context` at 6871, `Unpause` method handler at 6873/6900) still reference `UnpauseContext` by name. In this same PR either add `pub(crate) use pause::UnpauseContext;` as a re-export in `main.rs` or update each remaining call site with an explicit `use crate::pause::UnpauseContext;`. These consumers move to their own modules in PR-13/PR-14; the re-export (or per-site import) can then be deleted. Apply this same pattern to every PR that extracts a type whose consumers still reside in `main.rs`.
+- **Import changes**: both files `use crate::{kanata::KanataClient, focus::*, broadcasters::*, config::WindowInfo, environ::Environment, pause::UnpauseContext};`. **Important**: `UnpauseContext.connection` is a `zbus::Connection` — keep the type re-exported via `pub(crate) use zbus::Connection;` from the module or just import directly in the file. **Cross-reference fix (D21)**: After moving `UnpauseContext` to `pause.rs`, the remaining call sites in `main.rs` (SNI `SniLocalControl` field at line 1628; DBus server `resolve_runtime_unpause_context` at 6871, `Unpause` method handler at 6873/6900) still reference `UnpauseContext` by name. In this same PR either add `pub(crate) use pause::UnpauseContext;` as a re-export in `main.rs` or update each remaining call site with an explicit `use crate::pause::UnpauseContext;`. These consumers move to their own modules in PR-13/PR-14; the re-export (or per-site import) can then be deleted. Apply this same pattern to every PR that extracts a type whose consumers still reside in `main.rs`.
 - **Verification**: V0.
 - **Risk**: low. Rollback: revert.
 
@@ -303,7 +303,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Moves to `lifecycle/logind.rs`**: everything from lines 2571–3201 *plus* logind-specific items in 2867–3201: all the parsing/decoding/resolution helpers, `LogindLifecycleProvider` + impl, `verify_logind_lifecycle_monitor_prerequisites`, `validate_active_logind_session_type`, `fail_fast_lifecycle_monitor`, `expect_some_or_fail_fast`, `expect_or_fail_fast`, `monitor_logind_lifecycle`, `open_logind_session_monitor`, `decode_logind_lifecycle_snapshot_change`, `snapshot_no_session`.
 - **LOC moved**: ~640.
 - **Visibility**: `pub(crate)` for the enum and the providers; helpers stay `pub(super)` within the module.
-- **Import changes**: `main.rs` adds `mod lifecycle;` and re-exports `LifecycleProvider` for tests. Inside `logind.rs`: `use crate::{constants::*, errors::DynError, env::*};`.
+- **Import changes**: `main.rs` adds `mod lifecycle;` and re-exports `LifecycleProvider` for tests. Inside `logind.rs`: `use crate::{constants::*, errors::DynError, environ::*};`.
 - **Verification**: V0. `nix run .#test` exercises logind paths via mock zbus where available; rest are non-tested.
 - **Risk**: medium — large move, many helper functions, but they’re internally cohesive (all logind concerns). The `wait_for_logind_display_session_path` and `monitor_logind_lifecycle` are the hairiest. Rollback: revert single commit.
 
@@ -314,7 +314,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Visibility widening sub-step**: Before moving the supervisor body, change `run_gnome`, `run_kde`, `run_wayland`, `run_x11`, `BackendExit`, `map_run_outcome_to_backend_exit` in `main.rs` from private to `pub(crate)` (so `crate::run_gnome` and `crate::BackendExit` resolve from the new `supervisor/mod.rs`). Similarly widen to `pub(crate)` any `query_*_focus` / `query_*_active_window` functions that remain in `main.rs` when `query_focus_for_env` (also still in `main.rs`) calls them after PR-09/PR-10: specifically `query_gnome_focus`, `query_kde_focus`, `query_x11_active_window`, `query_wayland_active_window`. The `BackendExit`/`map_run_outcome_to_backend_exit` widenings are reverted in PR-12 when they move to `backends/mod.rs`. The `run_*`/`query_*` widenings are reverted when those functions move into their permanent modules in PR-09/PR-10/PR-11.
 - **LOC moved**: ~930 (≈746 to `supervisor/`, ≈183 to `display_override.rs`); the 13 LOC of `BackendExit`/`map_run_outcome_to_backend_exit` stay in `main.rs` (widened to `pub(crate)`) until PR-12 moves them.
 - **Visibility**: `pub(crate)`. The `_with_starter` and `_with_starter_and_resolver` variants are test seams — keep `pub(crate)`.
-- **Import changes**: `mod display_override; mod supervisor;` in `main.rs`. Inside `supervisor/`: heavy `use` of `crate::{kanata::KanataClient, focus::*, broadcasters::*, env::*, errors::DynError, lifecycle::*, focus_pipeline::*, control::server::*, gnome_ext::setup_gnome_extension, display_override::*}`. **Circular dep watch**: `supervisor` imports `backends::*` (the `run_*_backend_task` adapters call into `run_gnome`/`run_kde`/`run_wayland`/`run_x11` which aren’t moved yet — they still live in `main.rs` at this point). Resolution: this PR leaves `run_*_backend_task` referencing items in `main.rs` via `crate::run_gnome`, etc. **PR-09–PR-11 are sequenced after this to satisfy that.**
+- **Import changes**: `mod display_override; mod supervisor;` in `main.rs`. Inside `supervisor/`: heavy `use` of `crate::{kanata::KanataClient, focus::*, broadcasters::*, environ::*, errors::DynError, lifecycle::*, focus_pipeline::*, control::server::*, gnome_ext::setup_gnome_extension, display_override::*}`. **Circular dep watch**: `supervisor` imports `backends::*` (the `run_*_backend_task` adapters call into `run_gnome`/`run_kde`/`run_wayland`/`run_x11` which aren’t moved yet — they still live in `main.rs` at this point). Resolution: this PR leaves `run_*_backend_task` referencing items in `main.rs` via `crate::run_gnome`, etc. **PR-09–PR-11 are sequenced after this to satisfy that.**
 - **Verification**: V0.
 - **Risk**: high — supervisor is the most central module. Strongly consider splitting into 8a (capabilities + display_override) and 8b (the rest). Rollback: revert.
 
@@ -375,7 +375,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Moves to `control/persistent.rs`**: `dbus_reconnect_delay` (7565), `wait_for_dbus_reconnect_retry` (7570), `PersistentDbusServiceGuard` + Drop (7587), `start_persistent_dbus_service` (7597), `start_persistent_dbus_service_with_connector` (7624), `run_persistent_dbus_service_with_connector` (7656).
 - **LOC moved**: ~700.
 - **Visibility**: `pub(crate)`.
-- **Import changes**: `control/server.rs` heavily uses `crate::{kanata::*, focus::*, broadcasters::*, env::*, pause::*, backends::kde::probe::*}`. `control/persistent.rs` uses `crate::{control::server::*, broadcasters::*}`.
+- **Import changes**: `control/server.rs` heavily uses `crate::{kanata::*, focus::*, broadcasters::*, environ::*, pause::*, backends::kde::probe::*}`. `control/persistent.rs` uses `crate::{control::server::*, broadcasters::*}`.
 - **Verification**: V0.
 - **Risk**: medium — the zbus `#[interface]` macro is sensitive to imports. Keep the `impl` block in the same file as the struct (we are). Rollback: revert.
 
@@ -383,7 +383,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Scope** (split across files per §3): all SNI items: trait, settings, state, indicator, control_local, control_dbus, control_ops, guard. Move `dconf_get_bool`/`dconf_set_bool`/`is_dconf_unavailable` into `sni/settings.rs` (they’re only used by SNI). Move `SNI_RUNTIME_RETRY_INTERVAL` (currently in main.rs near SNI guard) into `sni/guard.rs`.
 - **LOC moved**: ~1100. **Recommend splitting** into 14a (`sni/settings.rs` + `sni/state.rs` + dconf helpers), 14b (`sni/control_{local,dbus,ops}.rs`), 14c (`sni/indicator.rs` + `sni/guard.rs` + transitions).
 - **Visibility**: `pub(crate)` for everything used by `tests.rs` (the test file at lines 12–13 declares `SNI_WATCHER_TEST_LOCK` and uses `SniWatcherTaskGuard`, `ACTIVE_SNI_WATCHER_TASKS`, etc.). Re-export from `main.rs` for `use super::*` to keep working.
-- **Import changes**: `mod sni;` in `main.rs`. SNI files import `crate::{kanata::KanataClient, focus::*, broadcasters::*, pause::*, control::client::send_control_command_with_connection, env::Environment, constants::*}`.
+- **Import changes**: `mod sni;` in `main.rs`. SNI files import `crate::{kanata::KanataClient, focus::*, broadcasters::*, pause::*, control::client::send_control_command_with_connection, environ::Environment, constants::*}`.
 - **Verification**: V0. SNI tests are particularly numerous in `tests.rs`.
 - **Risk**: medium-high (touch surface, but cohesive). Rollback: revert each sub-PR.
 
@@ -394,7 +394,7 @@ Rationale matches the global CLAUDE.md “no abstractions for single-use code”
 - **Moves to `gnome_ext/mod.rs`**: `setup_gnome_extension` (6660), `ensure_gnome_extension` (6588), `print_gnome_extension_status` (6619), `print_gnome_extension_install_instructions` (6420).
 - **LOC moved**: ~700.
 - **Visibility**: `pub(crate)`.
-- **Import changes**: `mod gnome_ext;` in `main.rs`. Inside `gnome_ext/`: `use crate::{constants::*, env::Environment};`.
+- **Import changes**: `mod gnome_ext;` in `main.rs`. Inside `gnome_ext/`: `use crate::{constants::*, environ::Environment};`.
 - **Verification**: V0. **Specifically verify the `embed-gnome-extension` feature**: `cargo build --features embed-gnome-extension` and `cargo build --no-default-features`. The relative-path update is the single highest-risk item in this PR.
 - **Risk**: high (relative-path resolution). Rollback: revert.
 
@@ -428,7 +428,7 @@ pub(crate) use crate::{
     control::{self, client::*, server::*, persistent::*, *},
     dbus_naming::*,
     display_override::*,
-    env::*,
+    environ::*,
     errors::*,
     focus::*,
     focus_pipeline::*,
