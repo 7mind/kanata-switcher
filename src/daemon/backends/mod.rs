@@ -4,8 +4,6 @@ pub(crate) mod wayland;
 pub(crate) mod x11;
 pub(crate) mod linux_console;
 
-pub(crate) use gnome::*;
-pub(crate) use kde::*;
 pub(crate) use wayland::*;
 pub(crate) use x11::*;
 
