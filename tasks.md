@@ -10,7 +10,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 ## Milestones (high-level)
 
 - [x] **M0** — Produce a refactor plan for `src/daemon/main.rs` into a trait-based multi-file architecture.
-- [ ] **M1** — Execute PR-00..PR-15 from the plan, one PR at a time, behaviour-preserving. Not commissioned this session.
+- [x] **M1** — Execute PR-00..PR-15 from the plan, one PR at a time, behaviour-preserving. Completed 2026-05-12. main.rs: 7983 → 250 LOC.
 
 ---
 
@@ -44,7 +44,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
 - [x] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
 - [x] **PR-14** — Extract `sni/` (single-PR; not split).
-- [ ] **PR-15** — Extract `gnome_ext/` (with `embed.rs` relative-path bump).
+- [x] **PR-15** — Extract `gnome_ext/` (with `embed.rs` relative-path bump).
 
 ---
 
@@ -66,6 +66,15 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-15** (2026-05-12) — Extracted `src/daemon/gnome_ext/` (4 files). FINAL PR. Behaviour-preserving move; 722 LOC moved.
+  - **`gnome_ext/embed.rs`** (58 LOC, new, `#[cfg(feature = "embed-gnome-extension")]`): the `gnome_ext_file!` macro with **the critical relative-path bump from `concat!("../../", ...)` to `concat!("../../../", ...)`** (one level deeper because the file moved from `src/daemon/main.rs` to `src/daemon/gnome_ext/embed.rs`). All 9 `EMBEDDED_*` `include_str!` consts. `compile_gnome_schemas`, `write_embedded_extension_to_dir`.
+  - **`gnome_ext/detection.rs`** (290 LOC, new): `GnomeDetectionMethod`, `GnomeExtensionStatus`, `GnomeDbusProbeResult`, `gnome_state_name`, `parse_gnome_extension_state`, `is_dbus_service_unavailable`, `gnome_extension_dbus_probe`, `gnome_extension_dbus_probe_with_connection`, `gnome_extension_status`, `wait_for_session_bus_name_owner`, `session_bus_name_has_owner` (the PR-08 widening's final home).
+  - **`gnome_ext/install.rs`** (150 LOC, new): `get_gnome_extension_fs_path`, `gnome_extension_fs_exists`, `pack_and_install_from_dir`, `install_gnome_extension`, `enable_gnome_extension`.
+  - **`gnome_ext/mod.rs`** (224 LOC, new): submodule declarations + `pub(crate) use` re-exports, plus orchestration fns `print_gnome_extension_install_instructions`, `print_gnome_extension_status`, `ensure_gnome_extension`, `setup_gnome_extension`.
+  - **`main.rs`**: 958 → 250 LOC. **96.9% reduction from the pre-refactor 7983 LOC.** Well below the §1 plan target of ≤400 LOC.
+  - **`supervisor/capabilities.rs`**: two call sites updated `crate::session_bus_name_has_owner` → `crate::gnome_ext::detection::session_bus_name_has_owner`.
+  - **Verification**: `cargo build` (default features = `embed-gnome-extension`) ✓ — confirms the relative-path bump worked; `cargo build --no-default-features` ✓ — confirms the `#[cfg]` gating is clean; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-14** (2026-05-12) — Extracted `src/daemon/sni/` directory module (8 files). Largest single-PR extraction yet (~1015 LOC moved). Behaviour-preserving.
   - **`sni/mod.rs`** (97 LOC, new): `SniControl`, `SniControlMode`, `SniRuntimeTransitionPlan`, `SniRuntimeWakeReason`, `sni_control_mode_for_environment`, `plan_sni_runtime_transition`, `wait_for_sni_runtime_wake_with_delay`. `pub(crate) use` re-exports of all 7 submodules.
