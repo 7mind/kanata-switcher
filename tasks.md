@@ -36,7 +36,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
   - [x] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
 - [x] **PR-05** — Extract `control/{mod,client}.rs`.
 - [x] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
-- [ ] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
+- [x] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
 - [ ] **PR-08** — Extract `supervisor/` (mod, capabilities, display_override) — splittable 8a/8b.
 - [ ] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
 - [ ] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
@@ -66,6 +66,15 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-07** (2026-05-12) — Extracted `src/daemon/lifecycle/` directory module (mod.rs + logind.rs + startup.rs + snapshot.rs). Behaviour-preserving move of the entire lifecycle-provider cluster.
+  - **`lifecycle/mod.rs`** (55 LOC, new): `pub(crate) mod {logind, startup, snapshot};` + `pub(crate) use {logind::*, startup::*, snapshot::*};` (so the bare `lifecycle::*` re-export in main.rs reaches submodule items per D13). `enum LifecycleProvider` + `impl`.
+  - **`lifecycle/logind.rs`** (612 LOC, new): all logind parse/decode helpers (`resolve_logind_session_path` through `wait_for_logind_display_session_path`), `LogindSessionPathResolutionError`, `LogindDisplayPathChange`, `LogindDisplayChangeAction`, `LogindLifecycleProvider` + impl, monitor task helpers, `verify_logind_lifecycle_monitor_prerequisites`, `validate_active_logind_session_type`, `fail_fast_lifecycle_monitor`, `expect_some_or_fail_fast`, `expect_or_fail_fast`, `monitor_logind_lifecycle`, `open_logind_session_monitor`, `decode_logind_lifecycle_snapshot_change`.
+  - **`lifecycle/startup.rs`** (18 LOC, new): `StartupSnapshotProvider` + impl.
+  - **`lifecycle/snapshot.rs`** (9 LOC, new): `snapshot_no_session`.
+  - **`main.rs`**: 5579 → 4911 LOC. Added `mod lifecycle;` + `use lifecycle::*; use lifecycle::logind::*; use lifecycle::startup::*;`. Extended `#[cfg(test)] pub(crate) use crate::{...}` with `lifecycle::*, lifecycle::logind::*, lifecycle::startup::*`.
+  - **Visibility widenings**: `resolve_logind_session_path` and two helpers widened to `pub(crate)` because `resolve_display_override_from_logind` (still in main.rs until PR-08) calls `resolve_logind_session_path` directly.
+  - **Verification**: `cargo build` ✓ (warning count went 1 → 7, all unused-import warnings from incomplete cleanup in main.rs — follow-up tracked); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-06** (2026-05-12) — Extracted `src/daemon/pause.rs` and `src/daemon/focus_pipeline.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
   - **`pause.rs`** (131 LOC, new): `UnpauseContext`, `local_sni_unpause_context`, `pause_daemon`, `unpause_daemon`, plus the test-only `TEST_LAST_UNPAUSE_REQUEST_ENV` static + `record_unpause_request_environment_for_test` + `take_unpause_request_environment_for_test`.
