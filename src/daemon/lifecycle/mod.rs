@@ -2,9 +2,6 @@ pub(crate) mod logind;
 pub(crate) mod startup;
 pub(crate) mod snapshot;
 
-pub(crate) use logind::*;
-pub(crate) use startup::*;
-pub(crate) use snapshot::*;
 
 use crate::environ::{Environment, LifecycleSnapshot};
 use crate::errors::DynError;

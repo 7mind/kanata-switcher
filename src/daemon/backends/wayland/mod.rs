@@ -3,10 +3,6 @@ pub(crate) mod dispatch_common;
 pub(crate) mod dispatch_wlr;
 pub(crate) mod dispatch_cosmic;
 
-pub(crate) use protocols::*;
-pub(crate) use dispatch_common::*;
-pub(crate) use dispatch_wlr::*;
-pub(crate) use dispatch_cosmic::*;
 
 use std::collections::HashMap;
 use std::env;
@@ -22,12 +18,10 @@ use std::sync::atomic::AtomicUsize;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::watch;
 use wayland_client::{
-    Connection as WaylandConnection, Proxy,
+    Connection as WaylandConnection,
     backend::{ObjectId, WaylandError},
     globals::registry_queue_init,
-    protocol::wl_registry,
 };
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,

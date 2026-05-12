@@ -1,7 +1,6 @@
 pub(crate) mod client;
 pub(crate) mod server;
 pub(crate) mod persistent;
-pub(crate) use server::*;
 pub(crate) use persistent::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

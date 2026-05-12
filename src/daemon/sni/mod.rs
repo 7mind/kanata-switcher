@@ -7,11 +7,9 @@ pub(crate) mod control_ops;
 pub(crate) mod guard;
 
 pub(crate) use settings::*;
-pub(crate) use state::*;
 pub(crate) use indicator::*;
 pub(crate) use control_local::*;
 pub(crate) use control_dbus::*;
-pub(crate) use control_ops::*;
 pub(crate) use guard::*;
 
 use std::time::Duration;

@@ -5,8 +5,6 @@ pub(crate) mod embed;
 
 pub(crate) use detection::*;
 pub(crate) use install::*;
-#[cfg(feature = "embed-gnome-extension")]
-pub(crate) use embed::*;
 
 use std::time::Duration;
 use crate::constants::*;
