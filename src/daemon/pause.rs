@@ -6,7 +6,7 @@ use crate::{
     focus::FocusHandler,
     broadcasters::{PauseBroadcaster, StatusBroadcaster},
 };
-use crate::apply_focus_for_env;
+use crate::backends::apply_focus_for_env;
 
 #[derive(Clone)]
 pub(crate) struct UnpauseContext {
