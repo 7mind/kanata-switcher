@@ -13,10 +13,11 @@ use crate::focus::FocusHandler;
 use crate::kanata::KanataClient;
 use crate::lifecycle::*;
 use crate::{
-    run_gnome, run_kde, run_x11,
+    run_gnome, run_kde,
     apply_focus_for_env, BackendExit, map_run_outcome_to_backend_exit,
 };
 use crate::backends::wayland::run_wayland;
+use crate::backends::x11::run_x11;
 
 pub(crate) const WAYLAND_CAPABILITY_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 
