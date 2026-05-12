@@ -43,7 +43,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
 - [x] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
 - [x] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
-- [ ] **PR-14** — Extract `sni/` (splittable 14a/14b/14c).
+- [x] **PR-14** — Extract `sni/` (single-PR; not split).
 - [ ] **PR-15** — Extract `gnome_ext/` (with `embed.rs` relative-path bump).
 
 ---
@@ -66,6 +66,18 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-14** (2026-05-12) — Extracted `src/daemon/sni/` directory module (8 files). Largest single-PR extraction yet (~1015 LOC moved). Behaviour-preserving.
+  - **`sni/mod.rs`** (97 LOC, new): `SniControl`, `SniControlMode`, `SniRuntimeTransitionPlan`, `SniRuntimeWakeReason`, `sni_control_mode_for_environment`, `plan_sni_runtime_transition`, `wait_for_sni_runtime_wake_with_delay`. `pub(crate) use` re-exports of all 7 submodules.
+  - **`sni/settings.rs`** (119 LOC, new): `DconfBackend` trait, `ShellDconfBackend`, `SniSettingsStore`, `dconf_get_bool`, `dconf_set_bool`, `is_dconf_unavailable`. `SniSettingsStore.available` widened to `pub(crate)` for integration test access.
+  - **`sni/state.rs`** (73 LOC, new): `MenuRefresh`, `SniIndicatorState`.
+  - **`sni/indicator.rs`** (428 LOC, new): `SniIndicator` + `impl Tray`, `start_sni_indicator`, `SniIndicatorRuntimeHandle` + Drop, `ACTIVE_SNI_WATCHER_TASKS` static + `SniWatcherTaskGuard` + `sni_watcher_task_count` (all `#[cfg(test)]`). Re-exports `ksni::{Icon as SniIcon, MenuItem, Status as SniStatus, ToolTip, Tray, TrayService}` for test access.
+  - **`sni/control_local.rs`** (19 LOC, new): `SniLocalControl` struct (fields `pub(crate)` so `control_ops.rs` can pattern-match).
+  - **`sni/control_dbus.rs`** (12 LOC, new): `SniDbusControl` struct (fields `pub(crate)` same reason).
+  - **`sni/control_ops.rs`** (110 LOC, new): `SniControlOps` trait + `impl SniControlOps for SniControl` (dispatches via `match self { SniControl::Local(c) => c.field, SniControl::Dbus(c) => c.field }`).
+  - **`sni/guard.rs`** (222 LOC, new): `SniGuard` + impl (`disabled`, `runtime_managed`, `runtime_managed_with_builder`), `build_sni_control_for_mode`, `SNI_RUNTIME_RETRY_INTERVAL` constant.
+  - **`main.rs`**: 1979 → 958 LOC. Added `mod sni;` + `use sni::*;`. Removed `ksni::*` and `noto_sans_mono_bitmap::*` imports (now in submodules). Extended `#[cfg(test)] pub(crate) use crate::{...}` with `sni::*` plus all submodule globs per D24 discipline.
+  - **Verification**: `cargo build` ✓ (31 warnings — accumulation; cleanup deferred); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed. SNI tests are numerous; green run confirms behaviour-preserving move.
 
 - **PR-13** (2026-05-12) — Extracted `src/daemon/control/server.rs` and `src/daemon/control/persistent.rs` from `src/daemon/main.rs`. Behaviour-preserving move of the DBus control surface and persistent-reconnect manager.
   - **`control/server.rs`** (297 LOC, new): `DbusWindowFocusService` + its full `#[zbus::interface]` impl (WindowFocus, GetStatus, GetPaused, Pause, Unpause, Restart, signal emitters) kept colocated (zbus macro requires same file), `resolve_runtime_unpause_context`, `DbusServiceRegistration` + Drop, `register_dbus_service` (cfg-test), `register_dbus_service_with_runtime_environment`.
