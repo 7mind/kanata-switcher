@@ -38,7 +38,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
 - [x] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
 - [x] **PR-08** — Extract `supervisor/` (mod, capabilities) + top-level `display_override.rs` (D01).
-- [ ] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
+- [x] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
 - [ ] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
 - [ ] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
 - [ ] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
@@ -66,6 +66,18 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-09** (2026-05-12) — Extracted `src/daemon/backends/` and `src/daemon/backends/wayland/` directory modules. Highest-macro-risk PR (wayland_scanner generators in a nested module).
+  - **`backends/mod.rs`** (22 LOC, new): `RawFdWatcher` (shared by wayland and x11 per D05); `pub(crate) mod wayland; pub(crate) use wayland::*;`.
+  - **`backends/wayland/mod.rs`** (271 LOC, new): `ToplevelWindow`, `WaylandState` + inherent impl, `WaylandProtocol`, `run_wayland`, `resolve_wayland_socket_path`, `connect_wayland_with_display_override`, `query_wayland_active_window`, `wayland_query_count` + `WAYLAND_QUERY_COUNTER` static. `pub(crate) mod protocols; pub(crate) mod dispatch_common; pub(crate) mod dispatch_wlr; pub(crate) mod dispatch_cosmic; pub(crate) use {protocols::*, dispatch_common::*, dispatch_wlr::*, dispatch_cosmic::*};` (per D24).
+  - **`backends/wayland/protocols.rs`** (30 LOC, new): `pub(crate) mod cosmic_workspace { wayland_scanner::generate_interfaces!(...); generate_client_code!(...); }` and `pub(crate) mod cosmic_toplevel { ... }`. Per D03, intra-module paths fixed: `crate::cosmic_workspace::__interfaces::*` → `super::super::cosmic_workspace::__interfaces::*` and `crate::cosmic_workspace::*` → `super::cosmic_workspace::*`.
+  - **`backends/wayland/dispatch_common.rs`** (31 LOC, new): `wl_registry::WlRegistry` + `wl_output::WlOutput` Dispatch impls.
+  - **`backends/wayland/dispatch_wlr.rs`** (69 LOC, new): `ZwlrForeignToplevelManagerV1` + `ZwlrForeignToplevelHandleV1` Dispatch impls.
+  - **`backends/wayland/dispatch_cosmic.rs`** (124 LOC, new): all 5 cosmic Dispatch impls.
+  - **`main.rs`**: 4026 → 3526 LOC. Added `mod backends;` + `use backends::*; use backends::wayland::*;`, extended `#[cfg(test)] pub(crate) use crate::{...}` with `backends::*, backends::wayland::*`. Removed top-level `mod cosmic_workspace;` / `mod cosmic_toplevel;` and the orphaned `use cosmic_*::{...}` lines.
+  - **`supervisor/mod.rs`**: updated `crate::run_wayland` to `crate::backends::wayland::run_wayland`. Other widened items (`run_gnome`, `run_kde`, `run_x11`) still come from crate root until PR-10/PR-11.
+  - **Other fixes mid-extraction**: `ShutdownHandle` import path corrected from `crate::pause::ShutdownHandle` to `crate::ShutdownHandle`; added `Proxy` trait import to `dispatch_wlr.rs` and `dispatch_cosmic.rs` for `.id()` resolution; `ToplevelWindow` and `WaylandState` widened to `pub(crate)` for cross-module access.
+  - **Verification**: `cargo build` ✓ (8 → 18 warnings; all unused-import accumulation from PR-07/08/09; clippy audit on dispatch_cosmic.rs per D14 found no real lint hits); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-08** (2026-05-12) — Extracted top-level `src/daemon/display_override.rs` (per D01) and `src/daemon/supervisor/{mod,capabilities}.rs` from `src/daemon/main.rs`. Largest single-PR extraction yet (~920 LOC moved).
   - **`display_override.rs`** (190 LOC, new, top-level — NOT under `supervisor/` per D01): `display_override_expected_session_type`, `is_valid_wayland_display_override`, `normalize_display_override`, `resolve_display_override_from_logind`, `display_override_backend_kind_for_environment`, `resolve_display_override_for_backend_kind`, `resolve_display_override_for_environment`, plus test-only `TEST_X11_FOCUS_QUERY_DISPLAY_OVERRIDE`, `TEST_WAYLAND_FOCUS_QUERY_DISPLAY_OVERRIDE`, `TestFocusQueryDisplayOverrideGuard`, `display_override_test_slot`, `set/resolve_test_focus_query_display_override` (cfg-test + cfg-not(test) variants). Top-level placement breaks the backends → supervisor cycle that `query_focus_for_env` would otherwise create in PR-11.
