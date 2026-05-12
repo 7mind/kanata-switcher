@@ -1,6 +1,9 @@
 pub(crate) mod wayland;
+pub(crate) mod x11;
+pub(crate) mod linux_console;
 
 pub(crate) use wayland::*;
+pub(crate) use x11::*;
 
 use std::os::unix::io::{AsRawFd, RawFd};
 

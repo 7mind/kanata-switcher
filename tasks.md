@@ -39,7 +39,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
 - [x] **PR-08** — Extract `supervisor/` (mod, capabilities) + top-level `display_override.rs` (D01).
 - [x] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
-- [ ] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
+- [x] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
 - [ ] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
 - [ ] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
 - [ ] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
@@ -66,6 +66,14 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-10** (2026-05-12) — Extracted `src/daemon/backends/x11.rs` from `main.rs`; created placeholder `backends/linux_console.rs`. Behaviour-preserving move.
+  - **`backends/x11.rs`** (233 LOC, new): `x11rb::atom_manager!` block (per D11), `X11State` + impl, `run_x11`, `query_x11_active_window`. All `pub(crate)`.
+  - **`backends/linux_console.rs`** (5 LOC, placeholder): comment-only. `run_linux_console_backend_task` stays in `supervisor/mod.rs` — moving it would create a backends → supervisor cycle because it takes `BackendContext` (a supervisor type). PR-12 will absorb it into a `FocusBackend` impl alongside the other backend_task adapters.
+  - **`backends/mod.rs`**: added `pub(crate) mod x11; pub(crate) mod linux_console;` and `pub(crate) use x11::*;`.
+  - **`main.rs`**: 3526 → 3300 LOC. Removed atom_manager block + X11State + impl + run_x11 + query_x11_active_window + orphaned x11rb/AsyncFd/AsRawFd imports.
+  - **`supervisor/mod.rs`**: updated `crate::run_x11` import line to `use crate::backends::x11::run_x11;`.
+  - **Verification**: `cargo build` ✓ (17 warnings — minor accumulation continues; deferred cleanup); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-09** (2026-05-12) — Extracted `src/daemon/backends/` and `src/daemon/backends/wayland/` directory modules. Highest-macro-risk PR (wayland_scanner generators in a nested module).
   - **`backends/mod.rs`** (22 LOC, new): `RawFdWatcher` (shared by wayland and x11 per D05); `pub(crate) mod wayland; pub(crate) use wayland::*;`.
