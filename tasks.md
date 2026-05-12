@@ -34,7 +34,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
   - [x] **PR-04a** — `args.rs` + `autostart.rs`.
   - [x] **PR-04b** — `broadcasters.rs`.
   - [x] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
-- [ ] **PR-05** — Extract `control/{mod,client}.rs`.
+- [x] **PR-05** — Extract `control/{mod,client}.rs`.
 - [ ] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
 - [ ] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
 - [ ] **PR-08** — Extract `supervisor/` (mod, capabilities, display_override) — splittable 8a/8b.
@@ -66,6 +66,13 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-05** (2026-05-12) — Extracted `src/daemon/control/` (first nested-directory module). Behaviour-preserving move.
+  - **`control/mod.rs`** (33 LOC, new): `enum ControlCommand` + `impl`, `enum ControlDispatch`, `pub(crate) mod client;`. All `pub(crate)`.
+  - **`control/client.rs`** (130 LOC, new): `BROADCAST_PER_CALL_TIMEOUT` constant (PR-01 D07 — used only by broadcast dispatch), `send_control_command`, `send_control_command_with_connection`, `BroadcastEntryReport`, `BroadcastReport`, `enumerate_daemon_names`, `send_control_command_broadcast`.
+  - **`main.rs`**: 5945 → 5791 LOC. Added `mod control;` + `use control::{ControlCommand, ControlDispatch}; use control::client::*;`. Extended `#[cfg(test)] pub(crate) use crate::{...}` with `control::*, control::client::*`.
+  - **`args.rs`**: changed `use super::ControlCommand;` to `use crate::control::ControlCommand;` (now that `ControlCommand` has moved out of main.rs).
+  - **Verification**: `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-04c** (2026-05-12) — Extracted `src/daemon/kanata.rs` from `src/daemon/main.rs`. Behaviour-preserving move of the daemon's kanata TCP client. Highest-coupling extraction so far — every backend consumes `KanataClient`.
   - **`kanata.rs`** (650 LOC, new): all kanata wire types (`*Msg`/`*Payload` for ChangeLayer, LayerChange, RequestLayerNames, ActOnFakeKey, LayerNames, RequestFakeKeyNames, FakeKeyNames), `KanataClientInner`, `pub struct KanataClient` (kept `pub` per plan §1 lock), the full `impl KanataClient` block, `struct ShutdownGuard` + `Drop` impl. Imports: `std::sync::Arc`, `std::time::Duration`, `tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader}`, `tokio::net::{TcpStream as TokioTcpStream, tcp::OwnedWriteHalf}`, `tokio::sync::Mutex as TokioMutex`, `serde::{Deserialize, Serialize}`, `crate::broadcasters::{LayerSource, StatusBroadcaster}`.
