@@ -22,16 +22,6 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot, watch};
 use uuid::Uuid;
-use wayland_client::{
-    Connection as WaylandConnection, Dispatch, Proxy, QueueHandle,
-    backend::{ObjectId, WaylandError},
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::wl_registry,
-};
-use wayland_protocols_wlr::foreign_toplevel::v1::client::{
-    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
-    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
-};
 use x11rb::connection::Connection as X11Connection;
 use x11rb::protocol::Event as X11Event;
 use x11rb::protocol::xproto::{
@@ -41,47 +31,6 @@ use x11rb::rust_connection::RustConnection;
 use zbus::Connection;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Structure, Value};
-
-// Generated COSMIC protocols
-mod cosmic_workspace {
-    #![allow(dead_code, non_camel_case_types, unused_unsafe, unused_variables)]
-    #![allow(non_upper_case_globals, non_snake_case, unused_imports)]
-    #![allow(missing_docs, clippy::all)]
-    use wayland_client;
-    use wayland_client::protocol::*;
-    pub mod __interfaces {
-        use wayland_client::protocol::__interfaces::*;
-        wayland_scanner::generate_interfaces!("src/protocols/cosmic-workspace-unstable-v1.xml");
-    }
-    use self::__interfaces::*;
-    wayland_scanner::generate_client_code!("src/protocols/cosmic-workspace-unstable-v1.xml");
-}
-
-mod cosmic_toplevel {
-    #![allow(dead_code, non_camel_case_types, unused_unsafe, unused_variables)]
-    #![allow(non_upper_case_globals, non_snake_case, unused_imports)]
-    #![allow(missing_docs, clippy::all)]
-    use wayland_client;
-    use wayland_client::protocol::*;
-    pub mod __interfaces {
-        use crate::cosmic_workspace::__interfaces::*;
-        use wayland_client::protocol::__interfaces::*;
-        wayland_scanner::generate_interfaces!("src/protocols/cosmic-toplevel-info-unstable-v1.xml");
-    }
-    use self::__interfaces::*;
-    use crate::cosmic_workspace::*;
-    wayland_scanner::generate_client_code!("src/protocols/cosmic-toplevel-info-unstable-v1.xml");
-}
-
-use cosmic_toplevel::{
-    zcosmic_toplevel_handle_v1::{self, ZcosmicToplevelHandleV1},
-    zcosmic_toplevel_info_v1::{self, ZcosmicToplevelInfoV1},
-};
-use cosmic_workspace::{
-    zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1,
-    zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1,
-    zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
-};
 
 mod constants;
 mod errors;
@@ -99,6 +48,7 @@ mod focus_pipeline;
 mod lifecycle;
 mod display_override;
 mod supervisor;
+mod backends;
 
 use constants::*;
 use errors::DynError;
@@ -119,10 +69,12 @@ use lifecycle::logind::*;
 use lifecycle::startup::*;
 use display_override::*;
 use supervisor::*;
+use backends::*;
+use backends::wayland::*;
 
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::{constants::*, errors::*, environ::*, dbus_naming::*, config::*, focus::*, args::*, autostart::*, broadcasters::*, kanata::*, control::*, control::client::*, pause::*, focus_pipeline::*, lifecycle::*, lifecycle::logind::*, lifecycle::startup::*, display_override::*, supervisor::*, supervisor::capabilities::*};
+pub(crate) use crate::{constants::*, errors::*, environ::*, dbus_naming::*, config::*, focus::*, args::*, autostart::*, broadcasters::*, kanata::*, control::*, control::client::*, pause::*, focus_pipeline::*, lifecycle::*, lifecycle::logind::*, lifecycle::startup::*, display_override::*, supervisor::*, supervisor::capabilities::*, backends::*, backends::wayland::*};
 
 
 // === SNI Indicator ===
@@ -767,91 +719,6 @@ impl Tray for SniIndicator {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct RawFdWatcher {
-    fd: RawFd,
-}
-
-impl RawFdWatcher {
-    fn new(fd: RawFd) -> Self {
-        Self { fd }
-    }
-}
-
-impl AsRawFd for RawFdWatcher {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd
-    }
-}
-
-fn resolve_wayland_socket_path(
-    wayland_display: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    let socket_name = PathBuf::from(wayland_display);
-    if socket_name.is_absolute() {
-        return Ok(socket_name);
-    }
-
-    let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or("XDG_RUNTIME_DIR is not set")?;
-    if !runtime_dir.is_absolute() {
-        return Err("XDG_RUNTIME_DIR must be an absolute path".into());
-    }
-
-    Ok(runtime_dir.join(socket_name))
-}
-
-fn connect_wayland_with_display_override(
-    wayland_display_override: Option<&str>,
-) -> Result<WaylandConnection, Box<dyn std::error::Error + Send + Sync>> {
-    match wayland_display_override {
-        Some(display) => {
-            let socket_path = resolve_wayland_socket_path(display)?;
-            let socket = UnixStream::connect(socket_path)?;
-            Ok(WaylandConnection::from_socket(socket)?)
-        }
-        None => Ok(WaylandConnection::connect_to_env()?),
-    }
-}
-
-pub(crate) fn query_wayland_active_window(
-    wayland_display_override: Option<&str>,
-) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(test)]
-    {
-        WAYLAND_QUERY_COUNTER.fetch_add(1, Ordering::SeqCst);
-    }
-    let connection = connect_wayland_with_display_override(wayland_display_override)?;
-    let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
-    let mut state = WaylandState::default();
-
-    if globals
-        .bind::<ZwlrForeignToplevelManagerV1, _, _>(&queue.handle(), 1..=3, ())
-        .is_err()
-        && globals
-            .bind::<ZcosmicToplevelInfoV1, _, _>(&queue.handle(), 1..=1, ())
-            .is_err()
-    {
-        return Err(
-            "No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into(),
-        );
-    }
-
-    for _ in 0..5 {
-        queue.roundtrip(&mut state)?;
-        if state.active_window.is_some() {
-            break;
-        }
-    }
-    Ok(state.get_active_window())
-}
-
-#[cfg(test)]
-fn wayland_query_count() -> usize {
-    WAYLAND_QUERY_COUNTER.load(Ordering::SeqCst)
-}
-
 pub(crate) fn query_x11_active_window(
     x11_display_override: Option<&str>,
 ) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
@@ -860,8 +727,6 @@ pub(crate) fn query_x11_active_window(
 }
 
 static KDE_QUERY_COUNTER: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static WAYLAND_QUERY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn kwin_query_script_path(query_id: u64) -> String {
     let uid = unsafe { libc::getuid() };
@@ -1137,371 +1002,6 @@ pub(crate) fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExi
 pub(crate) enum BackendExit {
     Restart,
     Exit,
-}
-
-// === Wayland Toplevel State ===
-
-#[derive(Default)]
-struct ToplevelWindow {
-    app_id: String,
-    title: String,
-}
-
-#[derive(Default)]
-struct WaylandState {
-    windows: HashMap<ObjectId, ToplevelWindow>,
-    active_window: Option<ObjectId>,
-}
-
-impl WaylandState {
-    fn get_active_window(&self) -> WindowInfo {
-        self.active_window
-            .as_ref()
-            .and_then(|id| self.windows.get(id))
-            .map(|w| WindowInfo {
-                class: w.app_id.clone(),
-                title: w.title.clone(),
-                is_native_terminal: false,
-            })
-            .unwrap_or_default()
-    }
-}
-
-// === WLR Protocol Dispatch ===
-
-impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandState {
-    fn event(
-        _: &mut Self,
-        _: &wl_registry::WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        _: &ZwlrForeignToplevelManagerV1,
-        event: zwlr_foreign_toplevel_manager_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } = event {
-            state
-                .windows
-                .insert(toplevel.id(), ToplevelWindow::default());
-        }
-    }
-
-    wayland_client::event_created_child!(WaylandState, ZwlrForeignToplevelManagerV1, [
-        zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (ZwlrForeignToplevelHandleV1, ())
-    ]);
-}
-
-impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        handle: &ZwlrForeignToplevelHandleV1,
-        event: zwlr_foreign_toplevel_handle_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
-                if let Some(w) = state.windows.get_mut(&handle.id()) {
-                    w.app_id = app_id;
-                }
-            }
-            zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
-                if let Some(w) = state.windows.get_mut(&handle.id()) {
-                    w.title = title;
-                }
-            }
-            zwlr_foreign_toplevel_handle_v1::Event::State {
-                state: handle_state,
-            } => {
-                let activated = zwlr_foreign_toplevel_handle_v1::State::Activated as u8;
-                if handle_state.contains(&activated) {
-                    state.active_window = Some(handle.id());
-                } else if state.active_window.as_ref() == Some(&handle.id()) {
-                    // Window lost activation - clear active_window
-                    state.active_window = None;
-                }
-            }
-            zwlr_foreign_toplevel_handle_v1::Event::Closed => {
-                state.windows.remove(&handle.id());
-                if state.active_window.as_ref() == Some(&handle.id()) {
-                    state.active_window = None;
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// === COSMIC Protocol Dispatch ===
-
-impl Dispatch<ZcosmicToplevelInfoV1, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        _: &ZcosmicToplevelInfoV1,
-        event: zcosmic_toplevel_info_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let zcosmic_toplevel_info_v1::Event::Toplevel { toplevel } = event {
-            state
-                .windows
-                .insert(toplevel.id(), ToplevelWindow::default());
-        }
-    }
-
-    wayland_client::event_created_child!(WaylandState, ZcosmicToplevelInfoV1, [
-        zcosmic_toplevel_info_v1::EVT_TOPLEVEL_OPCODE => (ZcosmicToplevelHandleV1, ())
-    ]);
-}
-
-impl Dispatch<ZcosmicToplevelHandleV1, ()> for WaylandState {
-    fn event(
-        state: &mut Self,
-        handle: &ZcosmicToplevelHandleV1,
-        event: zcosmic_toplevel_handle_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            zcosmic_toplevel_handle_v1::Event::AppId { app_id } => {
-                if let Some(w) = state.windows.get_mut(&handle.id()) {
-                    w.app_id = app_id;
-                }
-            }
-            zcosmic_toplevel_handle_v1::Event::Title { title } => {
-                if let Some(w) = state.windows.get_mut(&handle.id()) {
-                    w.title = title;
-                }
-            }
-            zcosmic_toplevel_handle_v1::Event::State {
-                state: handle_state,
-            } => {
-                // COSMIC: activated = 2
-                let (chunks, _) = handle_state.as_chunks::<4>();
-                let activated = chunks
-                    .iter()
-                    .map(|&chunk| u32::from_ne_bytes(chunk))
-                    .any(|s| s == zcosmic_toplevel_handle_v1::State::Activated as u32);
-                if activated {
-                    state.active_window = Some(handle.id());
-                } else if state.active_window.as_ref() == Some(&handle.id()) {
-                    // Window lost activation - clear active_window
-                    state.active_window = None;
-                }
-            }
-            zcosmic_toplevel_handle_v1::Event::Closed => {
-                state.windows.remove(&handle.id());
-                if state.active_window.as_ref() == Some(&handle.id()) {
-                    state.active_window = None;
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// Dispatch for workspace types (we ignore these events but need to handle them)
-impl Dispatch<ZcosmicWorkspaceManagerV1, ()> for WaylandState {
-    fn event(
-        _: &mut Self,
-        _: &ZcosmicWorkspaceManagerV1,
-        _: cosmic_workspace::zcosmic_workspace_manager_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-
-    wayland_client::event_created_child!(WaylandState, ZcosmicWorkspaceManagerV1, [
-        cosmic_workspace::zcosmic_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE => (ZcosmicWorkspaceGroupHandleV1, ())
-    ]);
-}
-
-impl Dispatch<ZcosmicWorkspaceGroupHandleV1, ()> for WaylandState {
-    fn event(
-        _: &mut Self,
-        _: &ZcosmicWorkspaceGroupHandleV1,
-        _: cosmic_workspace::zcosmic_workspace_group_handle_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-
-    wayland_client::event_created_child!(WaylandState, ZcosmicWorkspaceGroupHandleV1, [
-        cosmic_workspace::zcosmic_workspace_group_handle_v1::EVT_WORKSPACE_OPCODE => (ZcosmicWorkspaceHandleV1, ())
-    ]);
-}
-
-impl Dispatch<ZcosmicWorkspaceHandleV1, ()> for WaylandState {
-    fn event(
-        _: &mut Self,
-        _: &ZcosmicWorkspaceHandleV1,
-        _: cosmic_workspace::zcosmic_workspace_handle_v1::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-// Dispatch for wl_output (referenced by toplevel protocol)
-impl Dispatch<wayland_client::protocol::wl_output::WlOutput, ()> for WaylandState {
-    fn event(
-        _: &mut Self,
-        _: &wayland_client::protocol::wl_output::WlOutput,
-        _: wayland_client::protocol::wl_output::Event,
-        _: &(),
-        _: &WaylandConnection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-// === Wayland Backend ===
-
-#[derive(Debug, Clone, Copy)]
-enum WaylandProtocol {
-    Wlr,
-    Cosmic,
-}
-
-pub(crate) async fn run_wayland(
-    kanata: KanataClient,
-    handler: Arc<Mutex<FocusHandler>>,
-    status_broadcaster: StatusBroadcaster,
-    pause_broadcaster: PauseBroadcaster,
-    wayland_display_override: Option<String>,
-    shutdown_handle: ShutdownHandle,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let connection = connect_wayland_with_display_override(wayland_display_override.as_deref())?;
-    let (globals, mut queue) = registry_queue_init::<WaylandState>(&connection)?;
-
-    let mut state = WaylandState::default();
-
-    // Try wlr protocol first, fall back to cosmic
-    let protocol = if globals
-        .bind::<ZwlrForeignToplevelManagerV1, _, _>(&queue.handle(), 1..=3, ())
-        .is_ok()
-    {
-        WaylandProtocol::Wlr
-    } else if globals
-        .bind::<ZcosmicToplevelInfoV1, _, _>(&queue.handle(), 1..=1, ())
-        .is_ok()
-    {
-        WaylandProtocol::Cosmic
-    } else {
-        return Err(
-            "No supported toplevel protocol (wlr-foreign-toplevel or cosmic-toplevel-info)".into(),
-        );
-    };
-
-    println!("[Wayland] Using {:?} toplevel protocol", protocol);
-
-    // Initial roundtrip to populate state
-    queue.roundtrip(&mut state)?;
-
-    println!("[Wayland] Listening for focus events...");
-
-    let raw_fd = connection.as_fd().as_raw_fd();
-    let async_fd = AsyncFd::new(RawFdWatcher::new(raw_fd))?;
-    let mut shutdown_receiver = shutdown_handle.subscribe();
-
-    let win = state.get_active_window();
-    let default_layer = kanata.default_layer_sync();
-    if let Some(actions) = handle_focus_event(
-        &handler,
-        &status_broadcaster,
-        &pause_broadcaster,
-        &win,
-        &kanata,
-        &default_layer,
-    )
-    .await
-    {
-        execute_focus_actions(&kanata, actions).await;
-    }
-
-    loop {
-        if *shutdown_receiver.borrow() {
-            return Ok(());
-        }
-
-        let dispatched = queue.dispatch_pending(&mut state)?;
-        if dispatched > 0 {
-            let win = state.get_active_window();
-            let default_layer = kanata.default_layer_sync();
-            if let Some(actions) = handle_focus_event(
-                &handler,
-                &status_broadcaster,
-                &pause_broadcaster,
-                &win,
-                &kanata,
-                &default_layer,
-            )
-            .await
-            {
-                execute_focus_actions(&kanata, actions).await;
-            }
-            continue;
-        }
-
-        connection.flush()?;
-        let guard = match queue.prepare_read() {
-            Some(guard) => guard,
-            None => continue,
-        };
-
-        let mut readiness = tokio::select! {
-            _ = shutdown_receiver.changed() => {
-                return Ok(());
-            }
-            readiness = async_fd.readable() => readiness?,
-        };
-
-        let read_result = guard.read();
-        readiness.clear_ready();
-
-        match read_result {
-            Ok(_) => {}
-            Err(WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => {
-                eprintln!("[Wayland] Read error: {}", error);
-                return Err(error.into());
-            }
-        }
-
-        let _ = queue.dispatch_pending(&mut state)?;
-        let win = state.get_active_window();
-        let default_layer = kanata.default_layer_sync();
-
-        if let Some(actions) = handle_focus_event(
-            &handler,
-            &status_broadcaster,
-            &pause_broadcaster,
-            &win,
-            &kanata,
-            &default_layer,
-        )
-        .await
-        {
-            execute_focus_actions(&kanata, actions).await;
-        }
-    }
 }
 
 // === X11 Backend ===
