@@ -42,7 +42,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
 - [x] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
 - [x] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
-- [ ] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
+- [x] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
 - [ ] **PR-14** — Extract `sni/` (splittable 14a/14b/14c).
 - [ ] **PR-15** — Extract `gnome_ext/` (with `embed.rs` relative-path bump).
 
@@ -66,6 +66,13 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-13** (2026-05-12) — Extracted `src/daemon/control/server.rs` and `src/daemon/control/persistent.rs` from `src/daemon/main.rs`. Behaviour-preserving move of the DBus control surface and persistent-reconnect manager.
+  - **`control/server.rs`** (297 LOC, new): `DbusWindowFocusService` + its full `#[zbus::interface]` impl (WindowFocus, GetStatus, GetPaused, Pause, Unpause, Restart, signal emitters) kept colocated (zbus macro requires same file), `resolve_runtime_unpause_context`, `DbusServiceRegistration` + Drop, `register_dbus_service` (cfg-test), `register_dbus_service_with_runtime_environment`.
+  - **`control/persistent.rs`** (248 LOC, new): `DBUS_RECONNECT_DELAYS_MS` constant (per PR-01 D07), `dbus_reconnect_delay`, `wait_for_dbus_reconnect_retry`, `PersistentDbusServiceGuard` + Drop, `start_persistent_dbus_service`, `start_persistent_dbus_service_with_connector` (generic), `run_persistent_dbus_service_with_connector` (generic).
+  - **`control/mod.rs`**: added `pub(crate) mod server; pub(crate) mod persistent;` and `pub(crate) use {server::*, persistent::*};` so test re-exports through `control::*` reach submodule items.
+  - **`main.rs`**: 2501 → 1979 LOC. No supervisor or other call-site updates needed — all consumers were in main.rs itself.
+  - **Verification**: `cargo build` ✓ (25 warnings — minor uptick from unused imports; cleanup deferred); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed. DBus interface tests pass — confirms zbus macro relocation was clean.
 
 - **PR-12** (2026-05-12) — Introduced the `FocusBackend` trait and replaced supervisor's 5-way `RuntimeTarget` match arm with trait dispatch. First semantic-shaped change; behaviour identical (same backends, same calls, dispatched via `Box<dyn FocusBackend>`). PR-00 finding (boxed-future shape, not RPIT-in-traits) honoured throughout.
   - **`backends/mod.rs`** (+38 LOC, now 129 LOC total): moved `BackendExit` and `map_run_outcome_to_backend_exit` from `main.rs` (they had been widened to `pub(crate)` since PR-08; widening reverted because they no longer live in main.rs). Added `pub(crate) struct BackendRunContext { kanata, focus_handler, status_broadcaster, pause_broadcaster, restart_handle, shutdown_handle, effective_bus_name, display_override }` — note the plan's `environment` field was dropped (no impl reads it; the per-backend `run_xxx` knows its environment implicitly). Added `pub(crate) trait FocusBackend: Send + 'static { fn run(self: Box<Self>, ctx: BackendRunContext) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>>; }`.
