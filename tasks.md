@@ -32,7 +32,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-03** — Extract `config.rs` and `focus.rs`.
 - [~] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (split into 4a/4b/4c).
   - [x] **PR-04a** — `args.rs` + `autostart.rs`.
-  - [ ] **PR-04b** — `broadcasters.rs`.
+  - [x] **PR-04b** — `broadcasters.rs`.
   - [ ] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
 - [ ] **PR-05** — Extract `control/{mod,client}.rs`.
 - [ ] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
@@ -66,6 +66,11 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-04b** (2026-05-12) — Extracted `src/daemon/broadcasters.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
+  - **`broadcasters.rs`** (209 LOC, new): `StatusSnapshot`, `LayerSource`, `StatusBroadcaster`, `RestartHandle`, `PauseBroadcaster`, `RuntimeEnvironmentBroadcaster`, `ShutdownHandle`, `wait_for_restart_or_shutdown`. All `pub(crate)`.
+  - **`main.rs`**: 6788 → 6588 LOC. Added `mod broadcasters;` + `use broadcasters::*;`, extended `#[cfg(test)] pub(crate) use crate::{...}` with `broadcasters::*`.
+  - **Verification**: `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-04a** (2026-05-11) — Extracted `src/daemon/args.rs` and `src/daemon/autostart.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
   - **`args.rs`** (130 LOC, new): `enum TrayFocusOnly` + `impl`, `struct Args` (clap derive), `parse_dbus_suffix_arg`, `resolve_install_gnome_extension`, `resolve_control_command`. Imports: `clap::{ArgMatches, Parser, ValueEnum}`, `std::path::PathBuf`, `crate::dbus_naming::sanitize_dbus_suffix`, `super::ControlCommand` (still in main.rs at this PR — moves out in PR-05).
