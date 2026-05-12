@@ -94,6 +94,8 @@ mod autostart;
 mod broadcasters;
 mod kanata;
 mod control;
+mod pause;
+mod focus_pipeline;
 
 use constants::*;
 use errors::DynError;
@@ -107,15 +109,17 @@ use broadcasters::*;
 use kanata::*;
 use control::{ControlCommand, ControlDispatch};
 use control::client::*;
+use pause::*;
+use focus_pipeline::*;
 
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::{constants::*, errors::*, environ::*, dbus_naming::*, config::*, focus::*, args::*, autostart::*, broadcasters::*, kanata::*, control::*, control::client::*};
+pub(crate) use crate::{constants::*, errors::*, environ::*, dbus_naming::*, config::*, focus::*, args::*, autostart::*, broadcasters::*, kanata::*, control::*, control::client::*, pause::*, focus_pipeline::*};
 
 
 // === SNI Indicator ===
 
-const SNI_DEFAULT_SHOW_FOCUS_ONLY: bool = true;
+pub(crate) const SNI_DEFAULT_SHOW_FOCUS_ONLY: bool = true;
 const SNI_FONT_WEIGHT: FontWeight = FontWeight::Regular;
 const SNI_RASTER_HEIGHT: RasterHeight = RasterHeight::Size32;
 const SNI_GLYPH_WIDTH: usize = get_raster_width(SNI_FONT_WEIGHT, SNI_RASTER_HEIGHT);
@@ -145,7 +149,7 @@ impl DconfBackend for ShellDconfBackend {
     }
 }
 
-struct SniSettingsStore {
+pub(crate) struct SniSettingsStore {
     available: bool,
     backend: Box<dyn DconfBackend>,
 }
@@ -275,13 +279,6 @@ impl SniIndicatorState {
 }
 
 #[derive(Clone)]
-struct UnpauseContext {
-    env: Environment,
-    connection: Option<Connection>,
-    is_kde6: bool,
-}
-
-#[derive(Clone)]
 struct SniLocalControl {
     runtime_handle: tokio::runtime::Handle,
     kanata: KanataClient,
@@ -328,25 +325,6 @@ fn sni_control_mode_for_environment(env: Environment) -> Option<SniControlMode> 
         Environment::Wayland | Environment::X11 => Some(SniControlMode::Local),
         Environment::Kde => Some(SniControlMode::Dbus),
         Environment::Gnome | Environment::LinuxConsoleWithLogind | Environment::Unknown => None,
-    }
-}
-
-fn local_sni_unpause_context(env: Environment) -> UnpauseContext {
-    match env {
-        Environment::Wayland | Environment::X11 => UnpauseContext {
-            env,
-            connection: None,
-            is_kde6: false,
-        },
-        Environment::Gnome
-        | Environment::Kde
-        | Environment::LinuxConsoleWithLogind
-        | Environment::Unknown => {
-            panic!(
-                "[SNI] Local control created for unsupported environment: {:?}",
-                env
-            )
-        }
     }
 }
 
@@ -781,100 +759,6 @@ impl Tray for SniIndicator {
     }
 }
 
-fn resolve_sni_focus_only(
-    override_value: Option<TrayFocusOnly>,
-    settings: &mut SniSettingsStore,
-) -> bool {
-    if let Some(value) = override_value {
-        return value.as_bool();
-    }
-    settings
-        .read_focus_only()
-        .unwrap_or(SNI_DEFAULT_SHOW_FOCUS_ONLY)
-}
-
-/// Execute focus actions in order
-async fn execute_focus_actions(kanata: &KanataClient, actions: FocusActions) {
-    for action in actions.actions {
-        match action {
-            FocusAction::ReleaseVk(vk) => {
-                kanata.act_on_fake_key(&vk, "Release").await;
-            }
-            FocusAction::ChangeLayer(layer) => {
-                kanata.change_layer(&layer).await;
-            }
-            FocusAction::PressVk(vk) => {
-                kanata.act_on_fake_key(&vk, "Press").await;
-            }
-            FocusAction::RawVkAction(name, action) => {
-                kanata.act_on_fake_key(&name, &action).await;
-            }
-        }
-    }
-}
-
-fn extract_focus_layer(actions: &FocusActions) -> Option<String> {
-    actions.actions.iter().fold(None, |last, action| {
-        if let FocusAction::ChangeLayer(layer) = action {
-            Some(layer.clone())
-        } else {
-            last
-        }
-    })
-}
-
-async fn update_status_for_focus(
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    win: &WindowInfo,
-    kanata: &KanataClient,
-    default_layer: &str,
-) -> Option<FocusActions> {
-    let (actions, virtual_keys, focus_layer) = {
-        let mut handler = handler.lock().unwrap();
-        let actions = handler.handle(win, default_layer);
-        let virtual_keys = handler.current_virtual_keys();
-        let focus_layer = actions
-            .as_ref()
-            .and_then(|focus_actions| extract_focus_layer(focus_actions));
-        (actions, virtual_keys, focus_layer)
-    };
-
-    // Filter out invalid VKs before updating indicator
-    let known_vks = kanata.known_virtual_keys().await;
-    let valid_virtual_keys = KanataClient::filter_valid_virtual_keys(&known_vks, virtual_keys);
-    status_broadcaster.update_virtual_keys(valid_virtual_keys);
-    if let Some(layer) = focus_layer {
-        if let Some(resolved_layer) = kanata.resolve_layer_name(&layer, false).await {
-            status_broadcaster.update_focus_layer(resolved_layer);
-        }
-    }
-
-    actions
-}
-
-async fn handle_focus_event(
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    pause_broadcaster: &PauseBroadcaster,
-    win: &WindowInfo,
-    kanata: &KanataClient,
-    default_layer: &str,
-) -> Option<FocusActions> {
-    if pause_broadcaster.is_paused() {
-        return None;
-    }
-    update_status_for_focus(handler, status_broadcaster, win, kanata, default_layer).await
-}
-
-fn native_terminal_window() -> WindowInfo {
-    WindowInfo {
-        class: String::new(),
-        title: String::new(),
-        is_native_terminal: true,
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct RawFdWatcher {
     fd: RawFd,
@@ -1177,7 +1061,7 @@ async fn query_gnome_focus(
     })
 }
 
-async fn query_focus_for_env(
+pub(crate) async fn query_focus_for_env(
     env: Environment,
     connection: Option<&Connection>,
     is_kde6: bool,
@@ -1208,7 +1092,7 @@ async fn query_focus_for_env(
     }
 }
 
-async fn apply_focus_for_env(
+pub(crate) async fn apply_focus_for_env(
     env: Environment,
     connection: Option<&Connection>,
     is_kde6: bool,
@@ -2806,102 +2690,6 @@ async fn poll_finished_backend_outcome(
             Err(format!("[Lifecycle] backend {:?} exited unexpectedly", kind).into())
         }
     }
-}
-
-fn pause_daemon(
-    pause_broadcaster: &PauseBroadcaster,
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    kanata: &KanataClient,
-    runtime_handle: &tokio::runtime::Handle,
-    request_label: &str,
-) {
-    if !pause_broadcaster.set_paused(true) {
-        println!("[Pause] Pause requested {} (already paused)", request_label);
-        return;
-    }
-    println!("[Pause] Pausing daemon");
-    let virtual_keys = {
-        let mut handler = handler.lock().unwrap();
-        let keys = handler.current_virtual_keys();
-        handler.reset();
-        keys
-    };
-    let status_broadcaster = status_broadcaster.clone();
-    let kanata = kanata.clone();
-    runtime_handle.block_on(async move {
-        let default_layer = kanata.default_layer().await.unwrap_or_default();
-
-        for vk in virtual_keys.iter().rev() {
-            kanata.act_on_fake_key(vk, "Release").await;
-        }
-
-        if !default_layer.is_empty() {
-            let _ = kanata.change_layer(&default_layer).await;
-        }
-
-        status_broadcaster.set_paused_status(default_layer);
-        kanata.pause_disconnect().await;
-    });
-}
-
-fn unpause_daemon(
-    env: Environment,
-    connection: Option<Connection>,
-    is_kde6: bool,
-    pause_broadcaster: &PauseBroadcaster,
-    handler: &Arc<Mutex<FocusHandler>>,
-    status_broadcaster: &StatusBroadcaster,
-    kanata: &KanataClient,
-    runtime_handle: &tokio::runtime::Handle,
-    request_label: &str,
-) {
-    record_unpause_request_environment_for_test(env);
-    if !pause_broadcaster.set_paused(false) {
-        println!(
-            "[Pause] Unpause requested {} (already running)",
-            request_label
-        );
-        return;
-    }
-    println!("[Pause] Resuming daemon");
-    let pause_broadcaster = pause_broadcaster.clone();
-    let handler = handler.clone();
-    let status_broadcaster = status_broadcaster.clone();
-    let kanata = kanata.clone();
-    runtime_handle.block_on(async move {
-        kanata.unpause_connect().await;
-        if let Err(error) = apply_focus_for_env(
-            env,
-            connection.as_ref(),
-            is_kde6,
-            &handler,
-            &status_broadcaster,
-            &pause_broadcaster,
-            &kanata,
-        )
-        .await
-        {
-            panic!("[Pause] Failed to refresh focus after unpause: {}", error);
-        }
-    });
-}
-
-#[cfg(test)]
-static TEST_LAST_UNPAUSE_REQUEST_ENV: std::sync::Mutex<Option<Environment>> =
-    std::sync::Mutex::new(None);
-
-#[cfg(test)]
-fn record_unpause_request_environment_for_test(env: Environment) {
-    *TEST_LAST_UNPAUSE_REQUEST_ENV.lock().unwrap() = Some(env);
-}
-
-#[cfg(not(test))]
-fn record_unpause_request_environment_for_test(_env: Environment) {}
-
-#[cfg(test)]
-fn take_unpause_request_environment_for_test() -> Option<Environment> {
-    TEST_LAST_UNPAUSE_REQUEST_ENV.lock().unwrap().take()
 }
 
 // === Wayland Toplevel State ===
