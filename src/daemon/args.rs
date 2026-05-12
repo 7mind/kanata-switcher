@@ -1,7 +1,7 @@
 use clap::{ArgMatches, Parser, ValueEnum};
 use std::path::PathBuf;
 use crate::dbus_naming::sanitize_dbus_suffix;
-use super::ControlCommand;
+use crate::control::ControlCommand;
 
 // === CLI ===
 
