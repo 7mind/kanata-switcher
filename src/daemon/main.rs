@@ -97,6 +97,8 @@ mod control;
 mod pause;
 mod focus_pipeline;
 mod lifecycle;
+mod display_override;
+mod supervisor;
 
 use constants::*;
 use errors::DynError;
@@ -115,10 +117,12 @@ use focus_pipeline::*;
 use lifecycle::*;
 use lifecycle::logind::*;
 use lifecycle::startup::*;
+use display_override::*;
+use supervisor::*;
 
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::{constants::*, errors::*, environ::*, dbus_naming::*, config::*, focus::*, args::*, autostart::*, broadcasters::*, kanata::*, control::*, control::client::*, pause::*, focus_pipeline::*, lifecycle::*, lifecycle::logind::*, lifecycle::startup::*};
+pub(crate) use crate::{constants::*, errors::*, environ::*, dbus_naming::*, config::*, focus::*, args::*, autostart::*, broadcasters::*, kanata::*, control::*, control::client::*, pause::*, focus_pipeline::*, lifecycle::*, lifecycle::logind::*, lifecycle::startup::*, display_override::*, supervisor::*, supervisor::capabilities::*};
 
 
 // === SNI Indicator ===
@@ -811,7 +815,7 @@ fn connect_wayland_with_display_override(
     }
 }
 
-fn query_wayland_active_window(
+pub(crate) fn query_wayland_active_window(
     wayland_display_override: Option<&str>,
 ) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(test)]
@@ -848,7 +852,7 @@ fn wayland_query_count() -> usize {
     WAYLAND_QUERY_COUNTER.load(Ordering::SeqCst)
 }
 
-fn query_x11_active_window(
+pub(crate) fn query_x11_active_window(
     x11_display_override: Option<&str>,
 ) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
     let state = X11State::new(x11_display_override)?;
@@ -994,7 +998,7 @@ reportFocus(workspace.{active});
     )
 }
 
-async fn query_kde_focus(
+pub(crate) async fn query_kde_focus(
     connection: &Connection,
     is_kde6: bool,
 ) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
@@ -1045,7 +1049,7 @@ async fn query_kde_focus(
     Ok(win)
 }
 
-async fn query_gnome_focus(
+pub(crate) async fn query_gnome_focus(
     connection: &Connection,
 ) -> Result<WindowInfo, Box<dyn std::error::Error + Send + Sync>> {
     let reply = connection
@@ -1122,7 +1126,7 @@ pub(crate) async fn apply_focus_for_env(
     Ok(())
 }
 
-fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExit {
+pub(crate) fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExit {
     match outcome {
         RunOutcome::Restart => BackendExit::Restart,
         RunOutcome::Exit => BackendExit::Exit,
@@ -1130,898 +1134,9 @@ fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackendExit {
+pub(crate) enum BackendExit {
     Restart,
     Exit,
-}
-
-#[derive(Clone)]
-struct BackendContext {
-    kanata: KanataClient,
-    handler: Arc<Mutex<FocusHandler>>,
-    status_broadcaster: StatusBroadcaster,
-    restart_handle: RestartHandle,
-    pause_broadcaster: PauseBroadcaster,
-    runtime_environment: RuntimeEnvironmentBroadcaster,
-    install_gnome_extension: bool,
-    gnome_setup_completed: Arc<AtomicBool>,
-    gnome_setup_hook: Arc<dyn Fn(bool) + Send + Sync>,
-    /// Effective per-instance well-known DBus name owned by this daemon.
-    /// Threaded into the GNOME signal-match filter and the KWin script template.
-    effective_dbus_name: String,
-}
-
-struct BackendHandle {
-    kind: BackendKind,
-    shutdown_handle: ShutdownHandle,
-    join_handle: Option<tokio::task::JoinHandle<Result<BackendExit, DynError>>>,
-    finished_rx: watch::Receiver<bool>,
-}
-
-impl BackendHandle {
-    fn is_finished(&self) -> bool {
-        match &self.join_handle {
-            Some(join_handle) => join_handle.is_finished(),
-            None => true,
-        }
-    }
-
-    async fn take_join_result(&mut self) -> Result<BackendExit, DynError> {
-        let join_handle = self
-            .join_handle
-            .take()
-            .expect("backend join handle missing");
-        let result = join_handle.await.map_err(|error| {
-            let message = format!("[Lifecycle] Backend task join failure: {}", error);
-            Box::<dyn std::error::Error + Send + Sync>::from(message)
-        })?;
-        result
-    }
-
-    async fn stop(&mut self) -> Result<BackendExit, DynError> {
-        if self.join_handle.is_none() {
-            return Ok(BackendExit::Exit);
-        }
-        self.shutdown_handle.request();
-        self.take_join_result().await
-    }
-
-    fn finished_receiver(&self) -> watch::Receiver<bool> {
-        self.finished_rx.clone()
-    }
-}
-
-fn runtime_target_label(target: RuntimeTarget) -> &'static str {
-    match target {
-        RuntimeTarget::Idle => "idle",
-        RuntimeTarget::Backend(BackendKind::Gnome) => "gnome",
-        RuntimeTarget::Backend(BackendKind::Kde) => "kde",
-        RuntimeTarget::Backend(BackendKind::Wayland) => "wayland",
-        RuntimeTarget::Backend(BackendKind::X11) => "x11",
-        RuntimeTarget::Backend(BackendKind::LinuxConsole) => "linux-console",
-    }
-}
-
-fn runtime_target_is_wayland_family(target: RuntimeTarget) -> bool {
-    matches!(
-        target,
-        RuntimeTarget::Backend(BackendKind::Gnome)
-            | RuntimeTarget::Backend(BackendKind::Kde)
-            | RuntimeTarget::Backend(BackendKind::Wayland)
-    )
-}
-
-fn runtime_target_to_environment(target: RuntimeTarget) -> Environment {
-    match target {
-        RuntimeTarget::Backend(BackendKind::Gnome) => Environment::Gnome,
-        RuntimeTarget::Backend(BackendKind::Kde) => Environment::Kde,
-        RuntimeTarget::Backend(BackendKind::Wayland) => Environment::Wayland,
-        RuntimeTarget::Backend(BackendKind::X11) => Environment::X11,
-        RuntimeTarget::Backend(BackendKind::LinuxConsole) => Environment::LinuxConsoleWithLogind,
-        RuntimeTarget::Idle => Environment::Unknown,
-    }
-}
-
-const WAYLAND_CAPABILITY_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
-
-async fn detect_desktop_capabilities() -> Result<DesktopCapabilities, DynError> {
-    let connection = Connection::session().await?;
-    let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
-    let gnome_owner = session_bus_name_has_owner(&dbus, GNOME_SHELL_BUS_NAME).await;
-    let kde_owner = session_bus_name_has_owner(&dbus, KDE_KWIN_BUS_NAME).await;
-    Ok(DesktopCapabilities {
-        gnome_owner,
-        kde_owner,
-    })
-}
-
-async fn resolve_runtime_target_for_snapshot(
-    snapshot: &LifecycleSnapshot,
-) -> Result<RuntimeTarget, DynError> {
-    let capabilities = if snapshot.session_kind == SessionKind::GraphicalWayland {
-        if let Some(hinted_target) =
-            runtime_target_from_wayland_startup_session_type_hint(snapshot.session_type.as_str())
-        {
-            return Ok(hinted_target);
-        }
-        detect_desktop_capabilities().await?
-    } else {
-        DesktopCapabilities {
-            gnome_owner: false,
-            kde_owner: false,
-        }
-    };
-    Ok(resolve_runtime_target(snapshot.session_kind, capabilities))
-}
-
-async fn run_gnome_backend_task(
-    context: BackendContext,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    let outcome = run_gnome(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.restart_handle,
-        context.pause_broadcaster,
-        shutdown_handle,
-    )
-    .await?;
-    Ok(map_run_outcome_to_backend_exit(outcome))
-}
-
-async fn run_kde_backend_task(
-    context: BackendContext,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    let outcome = run_kde(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.restart_handle,
-        context.pause_broadcaster,
-        shutdown_handle,
-        context.effective_dbus_name,
-    )
-    .await?;
-    Ok(map_run_outcome_to_backend_exit(outcome))
-}
-
-async fn run_wayland_backend_task(
-    context: BackendContext,
-    wayland_display_override: Option<String>,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    run_wayland(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.pause_broadcaster,
-        wayland_display_override,
-        shutdown_handle,
-    )
-    .await?;
-    Ok(BackendExit::Exit)
-}
-
-async fn run_x11_backend_task(
-    context: BackendContext,
-    x11_display_override: Option<String>,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    run_x11(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.pause_broadcaster,
-        x11_display_override,
-        shutdown_handle,
-    )
-    .await?;
-    Ok(BackendExit::Exit)
-}
-
-async fn run_linux_console_backend_task(
-    context: BackendContext,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    apply_focus_for_env(
-        Environment::LinuxConsoleWithLogind,
-        None,
-        false,
-        &context.handler,
-        &context.status_broadcaster,
-        &context.pause_broadcaster,
-        &context.kanata,
-    )
-    .await?;
-    let outcome = wait_for_restart_or_shutdown(&context.restart_handle, &shutdown_handle).await;
-    Ok(map_run_outcome_to_backend_exit(outcome))
-}
-
-async fn ensure_runtime_gnome_extension_setup(context: &BackendContext) -> Result<(), DynError> {
-    if context.gnome_setup_completed.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-
-    let setup_hook = context.gnome_setup_hook.clone();
-    let install_gnome_extension = context.install_gnome_extension;
-    tokio::task::spawn_blocking(move || (setup_hook)(install_gnome_extension))
-        .await
-        .map_err(|error| -> DynError {
-            format!("[GNOME] Extension setup task failed: {}", error).into()
-        })?;
-
-    context.gnome_setup_completed.store(true, Ordering::SeqCst);
-    Ok(())
-}
-
-fn display_override_expected_session_type(kind: BackendKind) -> Option<&'static str> {
-    match kind {
-        BackendKind::Wayland => Some("wayland"),
-        BackendKind::X11 => Some("x11"),
-        BackendKind::Gnome | BackendKind::Kde | BackendKind::LinuxConsole => None,
-    }
-}
-
-fn is_valid_wayland_display_override(display: &str) -> bool {
-    if Path::new(display).is_absolute() {
-        return true;
-    }
-    if display.starts_with(':') {
-        return false;
-    }
-    if display.contains('/') {
-        return false;
-    }
-    true
-}
-
-fn normalize_display_override(kind: BackendKind, display: &str) -> Option<String> {
-    let trimmed = display.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if kind == BackendKind::Wayland && !is_valid_wayland_display_override(trimmed) {
-        return None;
-    }
-    Some(trimmed.to_string())
-}
-
-async fn resolve_display_override_from_logind(
-    kind: BackendKind,
-) -> Result<Option<String>, DynError> {
-    let expected_type = match display_override_expected_session_type(kind) {
-        Some(value) => value,
-        None => return Ok(None),
-    };
-
-    let system_connection = Connection::system().await?;
-    let session_path = match resolve_logind_session_path(&system_connection).await {
-        Ok(path) => path,
-        Err(LogindSessionPathResolutionError::DisplayNotReady) => return Ok(None),
-        Err(LogindSessionPathResolutionError::Fatal(error)) => return Err(error),
-    };
-    let session_proxy = zbus::Proxy::new(
-        &system_connection,
-        LOGIND_BUS_NAME,
-        session_path.as_str(),
-        LOGIND_SESSION_INTERFACE,
-    )
-    .await?;
-    let session_type: String = session_proxy.get_property("Type").await?;
-    if session_type != expected_type {
-        return Ok(None);
-    }
-
-    let display: String = session_proxy.get_property("Display").await?;
-    let normalized = normalize_display_override(kind, &display);
-    if kind == BackendKind::Wayland && normalized.is_none() && !display.trim().is_empty() {
-        eprintln!(
-            "[Lifecycle] Ignoring logind Wayland Display override '{}': not a valid Wayland socket value",
-            display.trim()
-        );
-    }
-    Ok(normalized)
-}
-
-fn display_override_backend_kind_for_environment(env: Environment) -> Option<BackendKind> {
-    match env {
-        Environment::Wayland => Some(BackendKind::Wayland),
-        Environment::X11 => Some(BackendKind::X11),
-        Environment::Gnome
-        | Environment::Kde
-        | Environment::LinuxConsoleWithLogind
-        | Environment::Unknown => None,
-    }
-}
-
-#[cfg(test)]
-static TEST_X11_FOCUS_QUERY_DISPLAY_OVERRIDE: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
-#[cfg(test)]
-static TEST_WAYLAND_FOCUS_QUERY_DISPLAY_OVERRIDE: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
-
-#[cfg(test)]
-struct TestFocusQueryDisplayOverrideGuard {
-    env: Environment,
-    previous: Option<String>,
-}
-
-#[cfg(test)]
-impl Drop for TestFocusQueryDisplayOverrideGuard {
-    fn drop(&mut self) {
-        if let Some(slot) = display_override_test_slot(self.env) {
-            *slot.lock().unwrap() = self.previous.clone();
-        }
-    }
-}
-
-#[cfg(test)]
-fn display_override_test_slot(
-    env: Environment,
-) -> Option<&'static std::sync::Mutex<Option<String>>> {
-    match env {
-        Environment::X11 => Some(&TEST_X11_FOCUS_QUERY_DISPLAY_OVERRIDE),
-        Environment::Wayland => Some(&TEST_WAYLAND_FOCUS_QUERY_DISPLAY_OVERRIDE),
-        Environment::Gnome
-        | Environment::Kde
-        | Environment::LinuxConsoleWithLogind
-        | Environment::Unknown => None,
-    }
-}
-
-#[cfg(test)]
-fn set_test_focus_query_display_override(
-    env: Environment,
-    override_value: Option<&str>,
-) -> TestFocusQueryDisplayOverrideGuard {
-    let slot = display_override_test_slot(env)
-        .expect("focus-query test display override is only valid for X11/Wayland");
-    let mut guard = slot.lock().unwrap();
-    let previous = guard.clone();
-    *guard = override_value.map(str::to_string);
-    TestFocusQueryDisplayOverrideGuard { env, previous }
-}
-
-#[cfg(test)]
-fn resolve_test_focus_query_display_override(env: Environment) -> Option<String> {
-    let slot = match display_override_test_slot(env) {
-        Some(slot) => slot,
-        None => return None,
-    };
-    slot.lock().unwrap().clone()
-}
-
-#[cfg(not(test))]
-fn resolve_test_focus_query_display_override(_env: Environment) -> Option<String> {
-    None
-}
-
-async fn resolve_display_override_for_backend_kind(
-    kind: BackendKind,
-    context_label: &str,
-) -> Option<String> {
-    let expected_type = match display_override_expected_session_type(kind) {
-        Some(value) => value,
-        None => return None,
-    };
-    match resolve_display_override_from_logind(kind).await {
-        Ok(Some(display)) => {
-            println!(
-                "[{}] Refreshed {} display endpoint from logind: {}",
-                context_label, expected_type, display
-            );
-            Some(display)
-        }
-        Ok(None) => None,
-        Err(error) => {
-            eprintln!(
-                "[{}] Failed to refresh {} display endpoint from logind: {}",
-                context_label, expected_type, error
-            );
-            None
-        }
-    }
-}
-
-async fn resolve_display_override_for_environment(
-    env: Environment,
-    context_label: &str,
-) -> Option<String> {
-    if let Some(display) = resolve_test_focus_query_display_override(env) {
-        return Some(display);
-    }
-    let kind = match display_override_backend_kind_for_environment(env) {
-        Some(kind) => kind,
-        None => return None,
-    };
-    resolve_display_override_for_backend_kind(kind, context_label).await
-}
-
-async fn start_backend(
-    kind: BackendKind,
-    context: &BackendContext,
-) -> Result<BackendHandle, DynError> {
-    let shutdown_handle = ShutdownHandle::new();
-    let (finished_tx, finished_rx) = watch::channel(false);
-    let join_handle = match kind {
-        BackendKind::Gnome => {
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result = run_gnome_backend_task(task_context, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::Kde => {
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result = run_kde_backend_task(task_context, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::Wayland => {
-            let wayland_display_override =
-                resolve_display_override_for_backend_kind(kind, "Lifecycle").await;
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result =
-                    run_wayland_backend_task(task_context, wayland_display_override, task_shutdown)
-                        .await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::X11 => {
-            let x11_display_override =
-                resolve_display_override_for_backend_kind(kind, "Lifecycle").await;
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result =
-                    run_x11_backend_task(task_context, x11_display_override, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::LinuxConsole => {
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result = run_linux_console_backend_task(task_context, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-    };
-
-    Ok(BackendHandle {
-        kind,
-        shutdown_handle,
-        join_handle: Some(join_handle),
-        finished_rx,
-    })
-}
-
-struct SupervisorState {
-    current_target: RuntimeTarget,
-    backend: Option<BackendHandle>,
-}
-
-impl SupervisorState {
-    fn new() -> Self {
-        Self {
-            current_target: RuntimeTarget::Idle,
-            backend: None,
-        }
-    }
-}
-
-#[cfg(test)]
-async fn transition_runtime_target(
-    state: &mut SupervisorState,
-    desired_target: RuntimeTarget,
-    context: &BackendContext,
-    reason: &str,
-) -> Result<(), DynError> {
-    transition_runtime_target_with_starter(
-        state,
-        desired_target,
-        context,
-        reason,
-        |kind, context| async move { start_backend(kind, &context).await },
-    )
-    .await
-}
-
-async fn transition_runtime_target_with_starter<F, Fut>(
-    state: &mut SupervisorState,
-    desired_target: RuntimeTarget,
-    context: &BackendContext,
-    reason: &str,
-    starter: F,
-) -> Result<(), DynError>
-where
-    F: Fn(BackendKind, BackendContext) -> Fut,
-    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
-{
-    if state.current_target == desired_target {
-        return Ok(());
-    }
-    let requires_session_bus = target_requires_session_bus(desired_target);
-
-    println!(
-        "[LifecycleTransition] from={} to={} session_bus_required={} reason={}",
-        runtime_target_label(state.current_target),
-        runtime_target_label(desired_target),
-        requires_session_bus,
-        reason
-    );
-
-    if let Some(mut backend) = state.backend.take() {
-        let exit = backend.stop().await?;
-        if exit == BackendExit::Restart {
-            context.restart_handle.request();
-        }
-    }
-
-    if desired_target == RuntimeTarget::Backend(BackendKind::Gnome) {
-        ensure_runtime_gnome_extension_setup(context).await?;
-    }
-
-    if let RuntimeTarget::Backend(kind) = desired_target {
-        let backend = starter(kind, context.clone()).await?;
-        state.backend = Some(backend);
-    }
-
-    state.current_target = desired_target;
-    context
-        .runtime_environment
-        .set_current(runtime_target_to_environment(desired_target));
-    Ok(())
-}
-
-async fn stop_current_backend(
-    state: &mut SupervisorState,
-    context: &BackendContext,
-) -> Result<(), DynError> {
-    if let Some(mut backend) = state.backend.take() {
-        let exit = backend.stop().await?;
-        if exit == BackendExit::Restart {
-            context.restart_handle.request();
-        }
-    }
-    state.current_target = RuntimeTarget::Idle;
-    context
-        .runtime_environment
-        .set_current(Environment::Unknown);
-    Ok(())
-}
-
-async fn run_lifecycle_supervisor(
-    provider: LifecycleProvider,
-    context: BackendContext,
-    restart_handle: RestartHandle,
-    shutdown_handle: ShutdownHandle,
-) -> Result<RunOutcome, DynError> {
-    run_lifecycle_supervisor_with_starter(
-        provider,
-        context,
-        restart_handle,
-        shutdown_handle,
-        |kind, context| async move { start_backend(kind, &context).await },
-    )
-    .await
-}
-
-async fn run_lifecycle_supervisor_with_starter<F, Fut>(
-    provider: LifecycleProvider,
-    context: BackendContext,
-    restart_handle: RestartHandle,
-    shutdown_handle: ShutdownHandle,
-    starter: F,
-) -> Result<RunOutcome, DynError>
-where
-    F: Fn(BackendKind, BackendContext) -> Fut,
-    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
-{
-    run_lifecycle_supervisor_with_starter_and_resolver(
-        provider,
-        context,
-        restart_handle,
-        shutdown_handle,
-        starter,
-        |snapshot| async move { resolve_runtime_target_for_snapshot(&snapshot).await },
-        WAYLAND_CAPABILITY_RECHECK_INTERVAL,
-    )
-    .await
-}
-
-async fn run_lifecycle_supervisor_with_starter_and_resolver<F, Fut, R, RFut>(
-    mut provider: LifecycleProvider,
-    context: BackendContext,
-    restart_handle: RestartHandle,
-    shutdown_handle: ShutdownHandle,
-    starter: F,
-    resolver: R,
-    wayland_capability_recheck_interval: Duration,
-) -> Result<RunOutcome, DynError>
-where
-    F: Fn(BackendKind, BackendContext) -> Fut,
-    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
-    R: Fn(LifecycleSnapshot) -> RFut,
-    RFut: std::future::Future<Output = Result<RuntimeTarget, DynError>>,
-{
-    let mut state = SupervisorState::new();
-    let allow_wayland_capability_recheck = provider.is_continuous();
-    context
-        .runtime_environment
-        .set_current(runtime_target_to_environment(state.current_target));
-    let mut restart_receiver = restart_handle.subscribe();
-    let mut shutdown_receiver = shutdown_handle.subscribe();
-    let mut provider_open = true;
-    let mut last_snapshot: Option<LifecycleSnapshot> = None;
-
-    loop {
-        if *shutdown_receiver.borrow() {
-            stop_current_backend(&mut state, &context).await?;
-            return Ok(RunOutcome::Exit);
-        }
-        if *restart_receiver.borrow() {
-            stop_current_backend(&mut state, &context).await?;
-            return Ok(RunOutcome::Restart);
-        }
-
-        if let Some(outcome) = poll_finished_backend_outcome(&mut state).await? {
-            return Ok(outcome);
-        }
-
-        let mut backend_finished = state
-            .backend
-            .as_ref()
-            .map(|backend| backend.finished_receiver());
-        if provider_open {
-            tokio::select! {
-                _ = shutdown_receiver.changed() => {}
-                _ = restart_receiver.changed() => {}
-                _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
-                _ = wait_for_wayland_capability_recheck(
-                    allow_wayland_capability_recheck,
-                    last_snapshot.as_ref(),
-                    wayland_capability_recheck_interval,
-                ) => {
-                    let snapshot = last_snapshot
-                        .clone()
-                        .expect("capability recheck requires last snapshot");
-                    match resolver(snapshot).await {
-                        Ok(desired_target) => {
-                            transition_runtime_target_with_starter(
-                                &mut state,
-                                desired_target,
-                                &context,
-                                "wayland-capability-recheck",
-                                &starter,
-                            )
-                            .await?;
-                        }
-                        Err(error) => {
-                            if runtime_target_is_wayland_family(state.current_target) {
-                                eprintln!(
-                                    "[Lifecycle] Keeping {} backend after capability recheck resolver error: {}",
-                                    runtime_target_label(state.current_target),
-                                    error
-                                );
-                            } else {
-                                eprintln!(
-                                    "[Lifecycle] Falling back to generic Wayland after capability recheck resolver error: {}",
-                                    error
-                                );
-                                transition_runtime_target_with_starter(
-                                    &mut state,
-                                    RuntimeTarget::Backend(BackendKind::Wayland),
-                                    &context,
-                                    "wayland-capability-recheck-fallback-after-resolver-error",
-                                    &starter,
-                                )
-                                .await?;
-                            }
-                        }
-                    }
-                }
-                next_snapshot = provider.next_snapshot() => {
-                    match next_snapshot {
-                        Some(snapshot) => {
-                            last_snapshot = Some(snapshot.clone());
-                            match resolver(snapshot.clone()).await {
-                                Ok(desired_target) => {
-                                    let reason = format!(
-                                        "active={} type={} kind={:?}",
-                                        snapshot.active,
-                                        snapshot.session_type,
-                                        snapshot.session_kind
-                                    );
-                                    transition_runtime_target_with_starter(
-                                        &mut state,
-                                        desired_target,
-                                        &context,
-                                        &reason,
-                                        &starter,
-                                    )
-                                    .await?;
-                                }
-                                Err(error) => {
-                                    if snapshot.session_kind == SessionKind::GraphicalWayland {
-                                        if allow_wayland_capability_recheck {
-                                            if runtime_target_is_wayland_family(state.current_target) {
-                                                eprintln!(
-                                                    "[Lifecycle] Keeping {} backend after continuous wayland resolver error: {}",
-                                                    runtime_target_label(state.current_target),
-                                                    error
-                                                );
-                                            } else {
-                                                eprintln!(
-                                                    "[Lifecycle] Falling back to generic Wayland after continuous resolver error: {}",
-                                                    error
-                                                );
-                                                transition_runtime_target_with_starter(
-                                                    &mut state,
-                                                    RuntimeTarget::Backend(BackendKind::Wayland),
-                                                    &context,
-                                                    "continuous-wayland-fallback-after-resolver-error",
-                                                    &starter,
-                                                )
-                                                .await?;
-                                            }
-                                        } else {
-                                            eprintln!(
-                                                "[Lifecycle] Falling back to generic Wayland after startup resolver error: {}",
-                                                error
-                                            );
-                                            transition_runtime_target_with_starter(
-                                                &mut state,
-                                                RuntimeTarget::Backend(BackendKind::Wayland),
-                                                &context,
-                                                "startup-wayland-fallback-after-resolver-error",
-                                                &starter,
-                                            )
-                                            .await?;
-                                        }
-                                    } else if allow_wayland_capability_recheck {
-                                        eprintln!(
-                                            "[Lifecycle] Skipping transition after resolver error: {}",
-                                            error
-                                        );
-                                    } else {
-                                        return Err(format!(
-                                            "[Lifecycle] Startup lifecycle target resolution failed: {}",
-                                            error
-                                        )
-                                        .into());
-                                    }
-                                }
-                            }
-                        }
-                        None => {
-                            provider_open = false;
-                        }
-                    }
-                }
-            }
-        } else {
-            tokio::select! {
-                _ = shutdown_receiver.changed() => {}
-                _ = restart_receiver.changed() => {}
-                _ = wait_for_backend_completion_signal(&mut backend_finished) => {}
-                _ = wait_for_wayland_capability_recheck(
-                    allow_wayland_capability_recheck,
-                    last_snapshot.as_ref(),
-                    wayland_capability_recheck_interval,
-                ) => {
-                    let snapshot = last_snapshot
-                        .clone()
-                        .expect("capability recheck requires last snapshot");
-                    match resolver(snapshot).await {
-                        Ok(desired_target) => {
-                            transition_runtime_target_with_starter(
-                                &mut state,
-                                desired_target,
-                                &context,
-                                "wayland-capability-recheck",
-                                &starter,
-                            )
-                            .await?;
-                        }
-                        Err(error) => {
-                            if runtime_target_is_wayland_family(state.current_target) {
-                                eprintln!(
-                                    "[Lifecycle] Keeping {} backend after capability recheck resolver error: {}",
-                                    runtime_target_label(state.current_target),
-                                    error
-                                );
-                            } else {
-                                eprintln!(
-                                    "[Lifecycle] Falling back to generic Wayland after capability recheck resolver error: {}",
-                                    error
-                                );
-                                transition_runtime_target_with_starter(
-                                    &mut state,
-                                    RuntimeTarget::Backend(BackendKind::Wayland),
-                                    &context,
-                                    "wayland-capability-recheck-fallback-after-resolver-error",
-                                    &starter,
-                                )
-                                .await?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-async fn wait_for_wayland_capability_recheck(
-    enabled: bool,
-    last_snapshot: Option<&LifecycleSnapshot>,
-    interval: Duration,
-) {
-    if !enabled {
-        std::future::pending::<()>().await;
-        return;
-    }
-    let Some(snapshot) = last_snapshot else {
-        std::future::pending::<()>().await;
-        return;
-    };
-    if snapshot.session_kind != SessionKind::GraphicalWayland {
-        std::future::pending::<()>().await;
-        return;
-    }
-    tokio::time::sleep(interval).await;
-}
-
-async fn wait_for_backend_completion_signal(backend_finished: &mut Option<watch::Receiver<bool>>) {
-    let Some(receiver) = backend_finished.as_mut() else {
-        std::future::pending::<()>().await;
-        return;
-    };
-    if *receiver.borrow() {
-        return;
-    }
-    let _ = receiver.changed().await;
-}
-
-async fn poll_finished_backend_outcome(
-    state: &mut SupervisorState,
-) -> Result<Option<RunOutcome>, DynError> {
-    let Some(backend) = state.backend.as_mut() else {
-        return Ok(None);
-    };
-    if !backend.is_finished() {
-        return Ok(None);
-    }
-
-    let exit = backend.take_join_result().await?;
-    let kind = backend.kind;
-    state.backend = None;
-    state.current_target = RuntimeTarget::Idle;
-    match exit {
-        BackendExit::Restart => Ok(Some(RunOutcome::Restart)),
-        BackendExit::Exit => {
-            Err(format!("[Lifecycle] backend {:?} exited unexpectedly", kind).into())
-        }
-    }
 }
 
 // === Wayland Toplevel State ===
@@ -2265,7 +1380,7 @@ enum WaylandProtocol {
     Cosmic,
 }
 
-async fn run_wayland(
+pub(crate) async fn run_wayland(
     kanata: KanataClient,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
@@ -2528,7 +1643,7 @@ impl X11State {
     }
 }
 
-async fn run_x11(
+pub(crate) async fn run_x11(
     kanata: KanataClient,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
@@ -3332,7 +2447,7 @@ fn wait_for_session_bus_name_owner(name: &'static str, timeout: Duration) -> boo
     })
 }
 
-async fn session_bus_name_has_owner(proxy: &zbus::fdo::DBusProxy<'_>, name: &str) -> bool {
+pub(crate) async fn session_bus_name_has_owner(proxy: &zbus::fdo::DBusProxy<'_>, name: &str) -> bool {
     match proxy.name_has_owner(name.try_into().unwrap()).await {
         Ok(has_owner) => has_owner,
         Err(error) => {
@@ -4150,7 +3265,7 @@ async fn register_dbus_service_with_runtime_environment(
 
 // === GNOME Backend ===
 
-async fn run_gnome(
+pub(crate) async fn run_gnome(
     kanata: KanataClient,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,
@@ -4370,7 +3485,7 @@ notifyFocus(workspace.{active});
     )
 }
 
-async fn run_kde(
+pub(crate) async fn run_kde(
     kanata: KanataClient,
     handler: Arc<Mutex<FocusHandler>>,
     status_broadcaster: StatusBroadcaster,

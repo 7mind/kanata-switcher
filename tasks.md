@@ -37,7 +37,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-05** — Extract `control/{mod,client}.rs`.
 - [x] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
 - [x] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
-- [ ] **PR-08** — Extract `supervisor/` (mod, capabilities, display_override) — splittable 8a/8b.
+- [x] **PR-08** — Extract `supervisor/` (mod, capabilities) + top-level `display_override.rs` (D01).
 - [ ] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
 - [ ] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
 - [ ] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
@@ -66,6 +66,15 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-08** (2026-05-12) — Extracted top-level `src/daemon/display_override.rs` (per D01) and `src/daemon/supervisor/{mod,capabilities}.rs` from `src/daemon/main.rs`. Largest single-PR extraction yet (~920 LOC moved).
+  - **`display_override.rs`** (190 LOC, new, top-level — NOT under `supervisor/` per D01): `display_override_expected_session_type`, `is_valid_wayland_display_override`, `normalize_display_override`, `resolve_display_override_from_logind`, `display_override_backend_kind_for_environment`, `resolve_display_override_for_backend_kind`, `resolve_display_override_for_environment`, plus test-only `TEST_X11_FOCUS_QUERY_DISPLAY_OVERRIDE`, `TEST_WAYLAND_FOCUS_QUERY_DISPLAY_OVERRIDE`, `TestFocusQueryDisplayOverrideGuard`, `display_override_test_slot`, `set/resolve_test_focus_query_display_override` (cfg-test + cfg-not(test) variants). Top-level placement breaks the backends → supervisor cycle that `query_focus_for_env` would otherwise create in PR-11.
+  - **`supervisor/capabilities.rs`** (34 LOC, new): `detect_desktop_capabilities`, `resolve_runtime_target_for_snapshot`.
+  - **`supervisor/mod.rs`** (696 LOC, new): `WAYLAND_CAPABILITY_RECHECK_INTERVAL` (PR-01 D07), `BackendContext`, `BackendHandle`, runtime_target helpers, the five `run_*_backend_task` adapters, `ensure_runtime_gnome_extension_setup`, `start_backend`, `SupervisorState`, `transition_runtime_target[_with_starter]`, `stop_current_backend`, `run_lifecycle_supervisor[_with_starter][_with_starter_and_resolver]`, `wait_for_wayland_capability_recheck`, `wait_for_backend_completion_signal`, `poll_finished_backend_outcome`. `pub(crate) use capabilities::*;` at the top so test re-exports reach submodule items (D13).
+  - **`main.rs`**: 4911 → 4026 LOC. Added `mod display_override; mod supervisor;` + `use display_override::*; use supervisor::*;`. Extended `#[cfg(test)] pub(crate) use crate::{...}` with `display_override::*, supervisor::*, supervisor::capabilities::*`.
+  - **Visibility widenings** (per D06 + extras): `run_gnome`, `run_kde`, `run_wayland`, `run_x11`, `query_gnome_focus`, `query_kde_focus`, `query_wayland_active_window`, `query_x11_active_window`, `BackendExit`, `map_run_outcome_to_backend_exit` all widened to `pub(crate)` (these all stay in main.rs until PR-09/PR-10/PR-11/PR-12). Plus the unplanned `session_bus_name_has_owner` widening — needed by `capabilities.rs`; reverts when that helper moves to `gnome_ext/detection.rs` in PR-15.
+  - **Verification**: `cargo build` ✓ (8 warnings — 1 baseline + 7 from PR-07's incomplete unused-import cleanup; no new warnings from this PR); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
+  - **Notes**: Executor caught their own bug mid-extraction — initially deleted `BackendExit` and `map_run_outcome_to_backend_exit` along with the supervisor block; restored them since they stay in main.rs until PR-12 (per D23).
 
 - **PR-07** (2026-05-12) — Extracted `src/daemon/lifecycle/` directory module (mod.rs + logind.rs + startup.rs + snapshot.rs). Behaviour-preserving move of the entire lifecycle-provider cluster.
   - **`lifecycle/mod.rs`** (55 LOC, new): `pub(crate) mod {logind, startup, snapshot};` + `pub(crate) use {logind::*, startup::*, snapshot::*};` (so the bare `lifecycle::*` re-export in main.rs reaches submodule items per D13). `enum LifecycleProvider` + `impl`.
