@@ -35,7 +35,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
   - [x] **PR-04b** — `broadcasters.rs`.
   - [x] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
 - [x] **PR-05** — Extract `control/{mod,client}.rs`.
-- [ ] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
+- [x] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
 - [ ] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
 - [ ] **PR-08** — Extract `supervisor/` (mod, capabilities, display_override) — splittable 8a/8b.
 - [ ] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
@@ -66,6 +66,13 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-06** (2026-05-12) — Extracted `src/daemon/pause.rs` and `src/daemon/focus_pipeline.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
+  - **`pause.rs`** (131 LOC, new): `UnpauseContext`, `local_sni_unpause_context`, `pause_daemon`, `unpause_daemon`, plus the test-only `TEST_LAST_UNPAUSE_REQUEST_ENV` static + `record_unpause_request_environment_for_test` + `take_unpause_request_environment_for_test`.
+  - **`focus_pipeline.rs`** (103 LOC, new): `execute_focus_actions`, `extract_focus_layer`, `update_status_for_focus`, `handle_focus_event`, `native_terminal_window`, `resolve_sni_focus_only`.
+  - **`main.rs`**: 5791 → 5579 LOC. Added `mod pause; mod focus_pipeline;` + `use pause::*; use focus_pipeline::*;` (the glob from `pause::*` covers SNI + DBus server consumers of `UnpauseContext` still in main.rs per defect D21). Extended `#[cfg(test)] pub(crate) use crate::{...}` with `pause::*, focus_pipeline::*`.
+  - **Visibility widenings in main.rs** (plan D19 + extras the executor needed): `query_focus_for_env`, `apply_focus_for_env`, `SniSettingsStore`, `SNI_DEFAULT_SHOW_FOCUS_ONLY` widened to `pub(crate)`. The first two will be reverted when they move into `backends/mod.rs` in PR-11; the SNI items move in PR-14.
+  - **Verification**: `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-05** (2026-05-12) — Extracted `src/daemon/control/` (first nested-directory module). Behaviour-preserving move.
   - **`control/mod.rs`** (33 LOC, new): `enum ControlCommand` + `impl`, `enum ControlDispatch`, `pub(crate) mod client;`. All `pub(crate)`.
