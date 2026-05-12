@@ -30,10 +30,10 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-01** — Extract `constants.rs`, `errors.rs`, `environ.rs` (plan-prose renamed from `env.rs`; see PR-01-D01).
 - [x] **PR-02** — Extract `dbus_naming.rs` (+ `DbusSuffixError` into `errors.rs`).
 - [x] **PR-03** — Extract `config.rs` and `focus.rs`.
-- [~] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (split into 4a/4b/4c).
+- [x] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (split into 4a/4b/4c).
   - [x] **PR-04a** — `args.rs` + `autostart.rs`.
   - [x] **PR-04b** — `broadcasters.rs`.
-  - [ ] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
+  - [x] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
 - [ ] **PR-05** — Extract `control/{mod,client}.rs`.
 - [ ] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
 - [ ] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
@@ -66,6 +66,12 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-04c** (2026-05-12) — Extracted `src/daemon/kanata.rs` from `src/daemon/main.rs`. Behaviour-preserving move of the daemon's kanata TCP client. Highest-coupling extraction so far — every backend consumes `KanataClient`.
+  - **`kanata.rs`** (650 LOC, new): all kanata wire types (`*Msg`/`*Payload` for ChangeLayer, LayerChange, RequestLayerNames, ActOnFakeKey, LayerNames, RequestFakeKeyNames, FakeKeyNames), `KanataClientInner`, `pub struct KanataClient` (kept `pub` per plan §1 lock), the full `impl KanataClient` block, `struct ShutdownGuard` + `Drop` impl. Imports: `std::sync::Arc`, `std::time::Duration`, `tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader}`, `tokio::net::{TcpStream as TokioTcpStream, tcp::OwnedWriteHalf}`, `tokio::sync::Mutex as TokioMutex`, `serde::{Deserialize, Serialize}`, `crate::broadcasters::{LayerSource, StatusBroadcaster}`.
+  - **`main.rs`**: 6588 → 5945 LOC. Added `mod kanata;` + `use kanata::*;`, extended `#[cfg(test)] pub(crate) use crate::{...}` with `kanata::*`. Removed 4 import lines orphaned by the move (`serde::{Deserialize, Serialize}`, `tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader}`, `tokio::net::TcpStream`, `tokio::net::tcp::OwnedWriteHalf`).
+  - **Visibility widenings** (within `kanata.rs` itself, to support whitebox tests via `use super::*`): `KanataClient::new` → `pub(crate)`, `KanataClient::resolve_layer_name` → `pub(crate)`, `KanataClient::filter_valid_virtual_keys` → `pub(crate)`, `KanataClient::inner` field → `pub(crate)`, all `KanataClientInner` fields → `pub(crate)`.
+  - **Verification**: `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed. Integration tests with mock kanata TCP server pass — confirms the move was behaviour-preserving for the full client lifecycle (connect, reconnect-with-queue, layer-name resolution, VK fake-key API).
 
 - **PR-04b** (2026-05-12) — Extracted `src/daemon/broadcasters.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
   - **`broadcasters.rs`** (209 LOC, new): `StatusSnapshot`, `LayerSource`, `StatusBroadcaster`, `RestartHandle`, `PauseBroadcaster`, `RuntimeEnvironmentBroadcaster`, `ShutdownHandle`, `wait_for_restart_or_shutdown`. All `pub(crate)`.
