@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::os::unix::io::AsRawFd;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::io::unix::AsyncFd;
 use x11rb::connection::Connection as X11Connection;
@@ -10,11 +12,12 @@ use x11rb::rust_connection::RustConnection;
 
 use crate::broadcasters::{PauseBroadcaster, StatusBroadcaster};
 use crate::config::WindowInfo;
+use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::focus_pipeline::{execute_focus_actions, handle_focus_event};
 use crate::kanata::KanataClient;
 use crate::ShutdownHandle;
-use crate::backends::RawFdWatcher;
+use crate::backends::{BackendExit, BackendRunContext, FocusBackend, RawFdWatcher};
 
 x11rb::atom_manager! {
     pub X11Atoms: X11AtomsCookie {
@@ -229,5 +232,27 @@ pub(crate) async fn run_x11(
             readiness = async_fd.readable() => readiness?,
         };
         readiness.clear_ready();
+    }
+}
+
+pub(crate) struct X11Backend;
+
+impl FocusBackend for X11Backend {
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> {
+        Box::pin(async move {
+            run_x11(
+                ctx.kanata,
+                ctx.focus_handler,
+                ctx.status_broadcaster,
+                ctx.pause_broadcaster,
+                ctx.display_override,
+                ctx.shutdown_handle,
+            )
+            .await?;
+            Ok(BackendExit::Exit)
+        })
     }
 }

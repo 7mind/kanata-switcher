@@ -9,16 +9,50 @@ pub(crate) use kde::*;
 pub(crate) use wayland::*;
 pub(crate) use x11::*;
 
+use std::future::Future;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use zbus::Connection;
-use crate::broadcasters::{PauseBroadcaster, StatusBroadcaster};
+use crate::broadcasters::{PauseBroadcaster, RestartHandle, ShutdownHandle, StatusBroadcaster};
 use crate::config::WindowInfo;
 use crate::display_override::resolve_display_override_for_environment;
-use crate::environ::Environment;
+use crate::environ::{Environment, RunOutcome};
+use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::focus_pipeline::{execute_focus_actions, handle_focus_event, native_terminal_window};
 use crate::kanata::KanataClient;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendExit {
+    Restart,
+    Exit,
+}
+
+pub(crate) fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExit {
+    match outcome {
+        RunOutcome::Restart => BackendExit::Restart,
+        RunOutcome::Exit => BackendExit::Exit,
+    }
+}
+
+pub(crate) struct BackendRunContext {
+    pub(crate) kanata: KanataClient,
+    pub(crate) focus_handler: Arc<Mutex<FocusHandler>>,
+    pub(crate) status_broadcaster: StatusBroadcaster,
+    pub(crate) pause_broadcaster: PauseBroadcaster,
+    pub(crate) restart_handle: RestartHandle,
+    pub(crate) shutdown_handle: ShutdownHandle,
+    pub(crate) effective_bus_name: String,
+    pub(crate) display_override: Option<String>,
+}
+
+pub(crate) trait FocusBackend: Send + 'static {
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>>;
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RawFdWatcher {

@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use futures_util::StreamExt;
 use zbus::Connection;
@@ -5,10 +7,11 @@ use crate::broadcasters::{PauseBroadcaster, RestartHandle, ShutdownHandle, Statu
 use crate::config::WindowInfo;
 use crate::constants::*;
 use crate::environ::{Environment, RunOutcome};
+use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::focus_pipeline::{execute_focus_actions, handle_focus_event};
 use crate::kanata::KanataClient;
-use crate::backends::apply_focus_for_env;
+use crate::backends::{apply_focus_for_env, BackendExit, BackendRunContext, FocusBackend, map_run_outcome_to_backend_exit};
 
 pub(crate) async fn query_gnome_focus(
     connection: &Connection,
@@ -142,4 +145,26 @@ pub(crate) async fn subscribe_to_gnome_focus_signal(
         }
     });
     Ok(GnomeFocusSignalSubscription { task })
+}
+
+pub(crate) struct GnomeBackend;
+
+impl FocusBackend for GnomeBackend {
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> {
+        Box::pin(async move {
+            let outcome = run_gnome(
+                ctx.kanata,
+                ctx.focus_handler,
+                ctx.status_broadcaster,
+                ctx.restart_handle,
+                ctx.pause_broadcaster,
+                ctx.shutdown_handle,
+            )
+            .await?;
+            Ok(map_run_outcome_to_backend_exit(outcome))
+        })
+    }
 }

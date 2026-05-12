@@ -41,7 +41,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
 - [x] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
 - [x] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
-- [ ] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
+- [x] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
 - [ ] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
 - [ ] **PR-14** — Extract `sni/` (splittable 14a/14b/14c).
 - [ ] **PR-15** — Extract `gnome_ext/` (with `embed.rs` relative-path bump).
@@ -66,6 +66,14 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-12** (2026-05-12) — Introduced the `FocusBackend` trait and replaced supervisor's 5-way `RuntimeTarget` match arm with trait dispatch. First semantic-shaped change; behaviour identical (same backends, same calls, dispatched via `Box<dyn FocusBackend>`). PR-00 finding (boxed-future shape, not RPIT-in-traits) honoured throughout.
+  - **`backends/mod.rs`** (+38 LOC, now 129 LOC total): moved `BackendExit` and `map_run_outcome_to_backend_exit` from `main.rs` (they had been widened to `pub(crate)` since PR-08; widening reverted because they no longer live in main.rs). Added `pub(crate) struct BackendRunContext { kanata, focus_handler, status_broadcaster, pause_broadcaster, restart_handle, shutdown_handle, effective_bus_name, display_override }` — note the plan's `environment` field was dropped (no impl reads it; the per-backend `run_xxx` knows its environment implicitly). Added `pub(crate) trait FocusBackend: Send + 'static { fn run(self: Box<Self>, ctx: BackendRunContext) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>>; }`.
+  - **Per-backend impls** (one struct + one `impl FocusBackend` per file): `GnomeBackend` in `backends/gnome.rs`, `KdeBackend` in `backends/kde/mod.rs`, `WaylandBackend` in `backends/wayland/mod.rs`, `X11Backend` in `backends/x11.rs`, `LinuxConsoleBackend` in `backends/linux_console.rs`. Each `run` body just `Box::pin`-s an `async move` that unpacks `BackendRunContext`, awaits the existing free `run_xxx`, and maps the `RunOutcome` via `map_run_outcome_to_backend_exit`. `LinuxConsoleBackend` got its body inlined from the former supervisor adapter (the only one with substantive body — the other four delegate to existing free functions).
+  - **`supervisor/mod.rs`**: replaced the 5-arm `RuntimeTarget` match in `start_backend` with `Box::new(XxxBackend) as Box<dyn FocusBackend>` per arm. Deleted all five `run_*_backend_task` adapter functions (net -188 LOC).
+  - **`BackendContext`** (supervisor-level state) was kept distinct from `BackendRunContext` (backends-layer arg-bundle) — the supervisor context includes GNOME-setup fields and `runtime_environment` that backends don't need. This keeps supervisor concerns out of the backends layer.
+  - **`main.rs`**: 2514 → 2501 LOC (just the `BackendExit` + helper moved out — 13 LOC).
+  - **Verification**: `cargo build` ✓ (21 warnings — unchanged from PR-11; no new ones); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed. No `Send`-propagation issues; all impls capture only `Send` types (KanataClient, Arc<Mutex<...>>, channel broadcasters).
 
 - **PR-11** (2026-05-12) — Extracted `src/daemon/backends/gnome.rs` and `src/daemon/backends/kde/{mod,script,probe}.rs`. Plus moved the dispatch helpers `query_focus_for_env` and `apply_focus_for_env` into `backends/mod.rs`. ~800 LOC moved across 4 files.
   - **`backends/gnome.rs`** (145 LOC, new): `query_gnome_focus`, `run_gnome`, `GnomeFocusSignalSubscription` + `Drop`, `subscribe_to_gnome_focus_signal`.

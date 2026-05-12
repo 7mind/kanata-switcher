@@ -12,13 +12,12 @@ use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::kanata::KanataClient;
 use crate::lifecycle::*;
-use crate::{
-    apply_focus_for_env, BackendExit, map_run_outcome_to_backend_exit,
-};
-use crate::backends::gnome::run_gnome;
-use crate::backends::kde::run_kde;
-use crate::backends::wayland::run_wayland;
-use crate::backends::x11::run_x11;
+use crate::backends::{BackendExit, BackendRunContext, FocusBackend};
+use crate::backends::gnome::GnomeBackend;
+use crate::backends::kde::KdeBackend;
+use crate::backends::wayland::WaylandBackend;
+use crate::backends::x11::X11Backend;
+use crate::backends::linux_console::LinuxConsoleBackend;
 
 pub(crate) const WAYLAND_CAPABILITY_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -112,91 +111,6 @@ pub(crate) fn runtime_target_to_environment(target: RuntimeTarget) -> Environmen
     }
 }
 
-async fn run_gnome_backend_task(
-    context: BackendContext,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    let outcome = run_gnome(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.restart_handle,
-        context.pause_broadcaster,
-        shutdown_handle,
-    )
-    .await?;
-    Ok(map_run_outcome_to_backend_exit(outcome))
-}
-
-async fn run_kde_backend_task(
-    context: BackendContext,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    let outcome = run_kde(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.restart_handle,
-        context.pause_broadcaster,
-        shutdown_handle,
-        context.effective_dbus_name,
-    )
-    .await?;
-    Ok(map_run_outcome_to_backend_exit(outcome))
-}
-
-async fn run_wayland_backend_task(
-    context: BackendContext,
-    wayland_display_override: Option<String>,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    run_wayland(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.pause_broadcaster,
-        wayland_display_override,
-        shutdown_handle,
-    )
-    .await?;
-    Ok(BackendExit::Exit)
-}
-
-async fn run_x11_backend_task(
-    context: BackendContext,
-    x11_display_override: Option<String>,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    run_x11(
-        context.kanata,
-        context.handler,
-        context.status_broadcaster,
-        context.pause_broadcaster,
-        x11_display_override,
-        shutdown_handle,
-    )
-    .await?;
-    Ok(BackendExit::Exit)
-}
-
-async fn run_linux_console_backend_task(
-    context: BackendContext,
-    shutdown_handle: ShutdownHandle,
-) -> Result<BackendExit, DynError> {
-    apply_focus_for_env(
-        Environment::LinuxConsoleWithLogind,
-        None,
-        false,
-        &context.handler,
-        &context.status_broadcaster,
-        &context.pause_broadcaster,
-        &context.kanata,
-    )
-    .await?;
-    let outcome = wait_for_restart_or_shutdown(&context.restart_handle, &shutdown_handle).await;
-    Ok(map_run_outcome_to_backend_exit(outcome))
-}
-
 pub(crate) async fn ensure_runtime_gnome_extension_setup(context: &BackendContext) -> Result<(), DynError> {
     if context.gnome_setup_completed.load(Ordering::SeqCst) {
         return Ok(());
@@ -220,64 +134,40 @@ pub(crate) async fn start_backend(
 ) -> Result<BackendHandle, DynError> {
     let shutdown_handle = ShutdownHandle::new();
     let (finished_tx, finished_rx) = watch::channel(false);
-    let join_handle = match kind {
-        BackendKind::Gnome => {
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result = run_gnome_backend_task(task_context, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
+
+    let display_override = match kind {
+        BackendKind::Wayland | BackendKind::X11 => {
+            resolve_display_override_for_backend_kind(kind, "Lifecycle").await
         }
-        BackendKind::Kde => {
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result = run_kde_backend_task(task_context, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::Wayland => {
-            let wayland_display_override =
-                resolve_display_override_for_backend_kind(kind, "Lifecycle").await;
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result =
-                    run_wayland_backend_task(task_context, wayland_display_override, task_shutdown)
-                        .await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::X11 => {
-            let x11_display_override =
-                resolve_display_override_for_backend_kind(kind, "Lifecycle").await;
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result =
-                    run_x11_backend_task(task_context, x11_display_override, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
-        BackendKind::LinuxConsole => {
-            let task_context = context.clone();
-            let task_shutdown = shutdown_handle.clone();
-            let task_finished = finished_tx.clone();
-            tokio::spawn(async move {
-                let result = run_linux_console_backend_task(task_context, task_shutdown).await;
-                let _ = task_finished.send(true);
-                result
-            })
-        }
+        _ => None,
+    };
+
+    let backend: Box<dyn FocusBackend> = match kind {
+        BackendKind::Gnome => Box::new(GnomeBackend),
+        BackendKind::Kde => Box::new(KdeBackend),
+        BackendKind::Wayland => Box::new(WaylandBackend),
+        BackendKind::X11 => Box::new(X11Backend),
+        BackendKind::LinuxConsole => Box::new(LinuxConsoleBackend),
+    };
+
+    let run_ctx = BackendRunContext {
+        kanata: context.kanata.clone(),
+        focus_handler: context.handler.clone(),
+        status_broadcaster: context.status_broadcaster.clone(),
+        pause_broadcaster: context.pause_broadcaster.clone(),
+        restart_handle: context.restart_handle.clone(),
+        shutdown_handle: shutdown_handle.clone(),
+        effective_bus_name: context.effective_dbus_name.clone(),
+        display_override,
+    };
+
+    let join_handle = {
+        let task_finished = finished_tx.clone();
+        tokio::spawn(async move {
+            let result = backend.run(run_ctx).await;
+            let _ = task_finished.send(true);
+            result
+        })
     };
 
     Ok(BackendHandle {
