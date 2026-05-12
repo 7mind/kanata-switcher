@@ -13,9 +13,10 @@ use crate::focus::FocusHandler;
 use crate::kanata::KanataClient;
 use crate::lifecycle::*;
 use crate::{
-    run_gnome, run_kde,
     apply_focus_for_env, BackendExit, map_run_outcome_to_backend_exit,
 };
+use crate::backends::gnome::run_gnome;
+use crate::backends::kde::run_kde;
 use crate::backends::wayland::run_wayland;
 use crate::backends::x11::run_x11;
 

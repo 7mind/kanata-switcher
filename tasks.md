@@ -40,7 +40,7 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-08** — Extract `supervisor/` (mod, capabilities) + top-level `display_override.rs` (D01).
 - [x] **PR-09** — Extract `backends/wayland/` including `wayland_scanner` protocol modules.
 - [x] **PR-10** — Extract `backends/x11.rs` and `backends/linux_console.rs`.
-- [ ] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
+- [x] **PR-11** — Extract `backends/gnome.rs` and `backends/kde/`.
 - [ ] **PR-12** — Introduce `FocusBackend` trait; retire `run_*_backend_task` adapters.
 - [ ] **PR-13** — Extract `control/server.rs` and `control/persistent.rs`.
 - [ ] **PR-14** — Extract `sni/` (splittable 14a/14b/14c).
@@ -66,6 +66,17 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-11** (2026-05-12) — Extracted `src/daemon/backends/gnome.rs` and `src/daemon/backends/kde/{mod,script,probe}.rs`. Plus moved the dispatch helpers `query_focus_for_env` and `apply_focus_for_env` into `backends/mod.rs`. ~800 LOC moved across 4 files.
+  - **`backends/gnome.rs`** (145 LOC, new): `query_gnome_focus`, `run_gnome`, `GnomeFocusSignalSubscription` + `Drop`, `subscribe_to_gnome_focus_signal`.
+  - **`backends/kde/mod.rs`** (213 LOC, new): `pub(crate) mod probe; pub(crate) mod script; pub(crate) use {probe::*, script::*};` (per D24), `KwinScriptGuard` + `Drop`, `run_kde`.
+  - **`backends/kde/script.rs`** (170 LOC, new): `KDE_QUERY_COUNTER` static, `kwin_query_script_path`, `kwin_query_probe_script_path`, `kwin_runtime_script_path`, `KdeFocusQueryService` + zbus interface impl, `kwin_script_object_path`, `load_kwin_script`, `build_kde_query_script`, `build_kde_focus_push_script`.
+  - **`backends/kde/probe.rs`** (247 LOC, new): `resolve_kde_runtime_query_mode_with_retry`, `ensure_kde_scripting_ready`, `resolve_kde_runtime_query_mode`, `kwin_object_path_exists`, `unload_kwin_script_by_path`, `remove_kwin_probe_script_file`, `environment_requires_focus_query_connection`, `query_kde_focus`.
+  - **`backends/mod.rs`** (+70 LOC): added `pub(crate) mod gnome; pub(crate) mod kde;` and `pub(crate) use {gnome::*, kde::*};`. Also moved in `query_focus_for_env` and `apply_focus_for_env` dispatch helpers (these were widened to `pub(crate)` in PR-06; revert at this PR since they now live in their natural home and consumers can use `crate::backends::*` paths).
+  - **`main.rs`**: 3300 → 2514 LOC. Extended `#[cfg(test)] pub(crate) use crate::{...}` with `backends::gnome::*, backends::kde::*, backends::kde::script::*, backends::kde::probe::*`.
+  - **`supervisor/mod.rs`**: updated `crate::{run_gnome, run_kde}` imports to `crate::backends::gnome::run_gnome` and `crate::backends::kde::run_kde`.
+  - **`pause.rs`**: updated `use crate::apply_focus_for_env` → `use crate::backends::apply_focus_for_env`.
+  - **Verification**: `cargo build` ✓ (21 warnings — accumulation continues; deferred cleanup); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-10** (2026-05-12) — Extracted `src/daemon/backends/x11.rs` from `main.rs`; created placeholder `backends/linux_console.rs`. Behaviour-preserving move.
   - **`backends/x11.rs`** (233 LOC, new): `x11rb::atom_manager!` block (per D11), `X11State` + impl, `run_x11`, `query_x11_active_window`. All `pub(crate)`.
