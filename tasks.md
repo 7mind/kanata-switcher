@@ -30,7 +30,10 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 - [x] **PR-01** — Extract `constants.rs`, `errors.rs`, `environ.rs` (plan-prose renamed from `env.rs`; see PR-01-D01).
 - [x] **PR-02** — Extract `dbus_naming.rs` (+ `DbusSuffixError` into `errors.rs`).
 - [x] **PR-03** — Extract `config.rs` and `focus.rs`.
-- [ ] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (splittable 4a/4b/4c).
+- [~] **PR-04** — Extract `args.rs`, `autostart.rs`, `broadcasters.rs`, `kanata.rs` (split into 4a/4b/4c).
+  - [x] **PR-04a** — `args.rs` + `autostart.rs`.
+  - [ ] **PR-04b** — `broadcasters.rs`.
+  - [ ] **PR-04c** — `kanata.rs` (+ `ShutdownGuard`).
 - [ ] **PR-05** — Extract `control/{mod,client}.rs`.
 - [ ] **PR-06** — Extract `pause.rs` and `focus_pipeline.rs`.
 - [ ] **PR-07** — Extract `lifecycle/` (mod, startup, logind, snapshot helpers).
@@ -63,6 +66,13 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **PR-04a** (2026-05-11) — Extracted `src/daemon/args.rs` and `src/daemon/autostart.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
+  - **`args.rs`** (130 LOC, new): `enum TrayFocusOnly` + `impl`, `struct Args` (clap derive), `parse_dbus_suffix_arg`, `resolve_install_gnome_extension`, `resolve_control_command`. Imports: `clap::{ArgMatches, Parser, ValueEnum}`, `std::path::PathBuf`, `crate::dbus_naming::sanitize_dbus_suffix`, `super::ControlCommand` (still in main.rs at this PR — moves out in PR-05).
+  - **`autostart.rs`** (182 LOC, new): the 8 autostart functions plus the 3 `AUTOSTART_*` constants (PR-01 D07 — used only by autostart code). Imports: `clap::ArgMatches`, `std::env`, `std::path::{Path, PathBuf}`, `crate::args::Args`, `crate::errors::DynError`.
+  - **`main.rs`**: 7092 → 6788 LOC. Added `mod args; mod autostart;` + `use args::*; use autostart::*;`, extended `#[cfg(test)] pub(crate) use crate::{...}` with `args::*, autostart::*`.
+  - **Verification**: `cargo build --bin kanata-switcher` ✓ (1 pre-existing warning); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
+  - **Notes**: Subagent worked in a git worktree per the loop's parallel-edit discipline; orchestrator copied results back. `use super::ControlCommand` (rather than `crate::ControlCommand`) avoids a temporary crate-root re-export — `ControlCommand` lives in `main.rs` (the bin's crate root) so child modules can reach it via `super`. Acceptable; will be replaced when PR-05 moves `ControlCommand` to `control/mod.rs`.
 
 - **PR-03** (2026-05-11) — Extracted `src/daemon/config.rs` and `src/daemon/focus.rs` from `src/daemon/main.rs`. Behaviour-preserving move.
   - **`config.rs`** (227 LOC, new): `struct Rule`, `struct NativeTerminalRule`, `enum ConfigEntry` (with custom `Deserialize` impl), `struct Config`, `struct WindowInfo`, `fn load_config`, `fn match_pattern`. All `pub(crate)`. Imports: `regex::Regex`, `serde::Deserialize`, `std::env`, `std::fs`, `std::path::{Path, PathBuf}`, `dirs` (unqualified).
