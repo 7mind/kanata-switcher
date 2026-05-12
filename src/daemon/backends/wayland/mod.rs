@@ -10,10 +10,12 @@ pub(crate) use dispatch_cosmic::*;
 
 use std::collections::HashMap;
 use std::env;
+use std::future::Future;
 use std::os::fd::AsFd;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -31,8 +33,9 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
 };
 use crate::broadcasters::{PauseBroadcaster, StatusBroadcaster};
-use crate::backends::RawFdWatcher;
+use crate::backends::{BackendExit, BackendRunContext, FocusBackend, RawFdWatcher};
 use crate::config::WindowInfo;
+use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::focus_pipeline::{execute_focus_actions, handle_focus_event};
 use crate::kanata::KanataClient;
@@ -267,5 +270,27 @@ pub(crate) async fn run_wayland(
         {
             execute_focus_actions(&kanata, actions).await;
         }
+    }
+}
+
+pub(crate) struct WaylandBackend;
+
+impl FocusBackend for WaylandBackend {
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> {
+        Box::pin(async move {
+            run_wayland(
+                ctx.kanata,
+                ctx.focus_handler,
+                ctx.status_broadcaster,
+                ctx.pause_broadcaster,
+                ctx.display_override,
+                ctx.shutdown_handle,
+            )
+            .await?;
+            Ok(BackendExit::Exit)
+        })
     }
 }

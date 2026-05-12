@@ -4,6 +4,8 @@ pub(crate) use probe::*;
 pub(crate) use script::*;
 
 use std::fs;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zbus::Connection;
@@ -11,9 +13,10 @@ use zbus::zvariant::OwnedObjectPath;
 use crate::broadcasters::{PauseBroadcaster, RestartHandle, ShutdownHandle, StatusBroadcaster};
 use crate::constants::*;
 use crate::environ::{Environment, RunOutcome};
+use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::kanata::KanataClient;
-use crate::backends::apply_focus_for_env;
+use crate::backends::{apply_focus_for_env, BackendExit, BackendRunContext, FocusBackend, map_run_outcome_to_backend_exit};
 
 #[derive(Debug)]
 pub(crate) struct KwinScriptGuard {
@@ -210,4 +213,27 @@ pub(crate) async fn run_kde(
 
     let outcome = crate::broadcasters::wait_for_restart_or_shutdown(&restart_handle, &shutdown_handle).await;
     Ok(outcome)
+}
+
+pub(crate) struct KdeBackend;
+
+impl FocusBackend for KdeBackend {
+    fn run(
+        self: Box<Self>,
+        ctx: BackendRunContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> {
+        Box::pin(async move {
+            let outcome = run_kde(
+                ctx.kanata,
+                ctx.focus_handler,
+                ctx.status_broadcaster,
+                ctx.restart_handle,
+                ctx.pause_broadcaster,
+                ctx.shutdown_handle,
+                ctx.effective_bus_name,
+            )
+            .await?;
+            Ok(map_run_outcome_to_backend_exit(outcome))
+        })
+    }
 }

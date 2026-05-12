@@ -712,19 +712,6 @@ impl Tray for SniIndicator {
 }
 
 
-pub(crate) fn map_run_outcome_to_backend_exit(outcome: RunOutcome) -> BackendExit {
-    match outcome {
-        RunOutcome::Restart => BackendExit::Restart,
-        RunOutcome::Exit => BackendExit::Exit,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BackendExit {
-    Restart,
-    Exit,
-}
-
 fn start_sni_indicator(
     control: SniControl,
     status_broadcaster: StatusBroadcaster,
