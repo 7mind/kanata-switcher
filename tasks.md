@@ -21,7 +21,7 @@ Detail in `./docs/drafts/20260513-1040-test-split-plan.md`.
 
 - [x] **M2-PR-01** — Convert `tests.rs` → `tests/` directory; extract `tests/common/helpers.rs`.
 - [x] **M2-PR-02** — Split `tests/mod.rs` by section.
-- [ ] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree (fixtures, restart_or_shutdown, logind_decode, display_apply, runtime_target, persistent_dbus, sni_runtime, transition, provider, supervisor).
+- [x] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree.
 - [ ] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/` (polling, mock_kanata, focus_service, dbus_session).
 - [ ] **M2-PR-05** — Split integration tests by backend (gnome/, kde/, wayland, x11, vk_validation, dbus_control, dbus_session_tests, dbus_multiplex, dconf).
 - [ ] **M2-PR-06** — *(optional)* Further-split `dbus_session_tests.rs` if it exceeds the 1500-LOC ceiling.
@@ -80,6 +80,22 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **M2-PR-03** (2026-05-13) — Split residual Runtime Lifecycle Tests + misfiled tests from `src/daemon/tests/mod.rs` into `src/daemon/tests/lifecycle/` subtree (10 files, 2493 LOC). Behaviour-preserving. After this PR, `tests/mod.rs` is just 26 LOC of `mod` declarations + re-exports — 0 test bodies remain at the directory root.
+  - **`lifecycle/mod.rs`** (14 LOC): `mod` decls + `pub(crate) use fixtures::*;`.
+  - **`lifecycle/fixtures.rs`** (67 LOC): 4 backend-context helpers (`test_backend_context_with_gnome_setup`, `test_backend_context`, `test_running_backend_handle`, `test_finished_backend_handle`) — all `pub(crate)`.
+  - **`lifecycle/restart_or_shutdown.rs`** (47 LOC): 3 tests (rescued from the "GNOME Extension State Parsing Tests" misnomer banner).
+  - **`lifecycle/logind_decode.rs`** (388 LOC): 29 tests (9 rescued from the same misnomer + 20 logind decode/path/error tests).
+  - **`lifecycle/display_apply.rs`** (81 LOC): 5 `apply_logind_display_change_*` tests.
+  - **`lifecycle/runtime_target.rs`** (273 LOC): 10 tests — `resolve_runtime_target_*`, `startup_snapshot_*`, target labels/mappings, `resolve_desktop_flavor_wayland_precedence`, etc.
+  - **`lifecycle/persistent_dbus.rs`** (74 LOC): 2 persistent-DBus reconnect tests.
+  - **`lifecycle/sni_runtime.rs`** (311 LOC): 7 SNI runtime/control-mode/local-control/managed tests.
+  - **`lifecycle/transition.rs`** (370 LOC): 9 tests — `transition_runtime_target_*`, `stop_current_backend`, `expect_*_or_fail_fast`.
+  - **`lifecycle/provider.rs`** (98 LOC): 5 lifecycle provider tests.
+  - **`lifecycle/supervisor.rs`** (770 LOC): 16 tests — `run_lifecycle_supervisor_*` + `poll_finished_backend_outcome_*`.
+  - **`tests/mod.rs`** (residual 26 LOC): only module declarations + `pub(super) use common::*;`. Zero `#[test]` attributes remain at this level.
+  - **No daemon-side widenings.** No production source files modified.
+  - **Verification**: 86 test attrs in `lifecycle/` matches pre-PR `tests/mod.rs` test attr count. `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **M2-PR-02** (2026-05-13) — Split `src/daemon/tests/mod.rs` (4768 LOC, 189 tests) into 10 leaf files by subsystem. Behaviour-preserving. Test attributes byte-identical.
   - **`focus_flow.rs`** (711 LOC): 32 tests — focus flow + virtual keys / fallthrough + paused status reset.
