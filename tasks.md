@@ -11,7 +11,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 
 - [x] **M0** — Produce a refactor plan for `src/daemon/main.rs` into a trait-based multi-file architecture.
 - [x] **M1** — Execute PR-00..PR-15 from the plan, one PR at a time, behaviour-preserving. Completed 2026-05-12. main.rs: 7983 → 250 LOC.
-- [~] **M2** — Split `tests.rs` (4864 LOC) and `integration_tests.rs` (7176 LOC) into per-backend/per-subsystem files.
+- [x] **M2** — Split `tests.rs` (4864 LOC) and `integration_tests.rs` (7176 LOC) into per-backend/per-subsystem files. Completed 2026-05-13.
 
 ---
 
@@ -23,7 +23,7 @@ Detail in `./docs/drafts/20260513-1040-test-split-plan.md`.
 - [x] **M2-PR-02** — Split `tests/mod.rs` by section.
 - [x] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree.
 - [x] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/`.
-- [ ] **M2-PR-05** — Split integration tests by backend (gnome/, kde/, wayland, x11, vk_validation, dbus_control, dbus_session_tests, dbus_multiplex, dconf).
+- [x] **M2-PR-05** — Split integration tests by backend.
 - [ ] **M2-PR-06** — *(optional)* Further-split `dbus_session_tests.rs` if it exceeds the 1500-LOC ceiling.
 
 ---
@@ -80,6 +80,21 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **M2-PR-05** (2026-05-13) — Split `src/daemon/integration_tests/mod.rs` (6638 LOC, 65 tests) into 10 backend-grouped leaf files. After this PR `mod.rs` is 32 LOC — just module declarations + re-exports. M2 complete.
+  - **`gnome/mod.rs`** (4 LOC) + **`gnome/focus_query.rs`** (100 LOC, 1 test) + **`gnome/extension_detection.rs`** (309 LOC, 2 tests + `MockGnomeShellExtensions`).
+  - **`kde/mod.rs`** (3 LOC) + **`kde/focus_query.rs`** (742 LOC, 4 tests + `MockKwinScripting`, `MockKwinScript`, `extract_call_dbus_parts`).
+  - **`wayland.rs`** (444 LOC, 4 tests + inline `pub(super) mod wayland_mock { ... }`).
+  - **`x11.rs`** (753 LOC, 6 tests + `xvfb_available`, `XvfbGuard`).
+  - **`vk_validation.rs`** (694 LOC, 12 tests).
+  - **`dbus_control.rs`** (288 LOC, 3 tests — DBus control surface).
+  - **`dbus_session_tests.rs`** (1631 LOC, 14 tests — private-bus session tests; over the 1500-LOC soft cap but kept together since they share the `DbusSessionGuard` lifecycle pattern and the per-test setup is the bulk of each one. Optional M2-PR-06 can split if needed).
+  - **`dbus_multiplex.rs`** (1463 LOC, 15 tests + `TEST_DAEMON_DBUS_NAME_A/_B` consts and `register_test_daemon_with_name` helper).
+  - **`dconf.rs`** (201 LOC, 3 tests + `IsolatedDconfEnv`, `is_dconf_available`).
+  - **`integration_tests/mod.rs`** (residual 32 LOC): module declarations only; 0 test bodies.
+  - **Visibility fix during integration**: `mod wayland_mock` (inline child of `wayland.rs`) needed `pub(super)` modifier so `common/focus_service.rs::start_wayland_test_server` can reach `super::super::wayland::wayland_mock::WaylandMockServer`. Fixed inline by the orchestrator after the subagent's compile-check ran against a stale binary and missed the regression.
+  - **`common/focus_service.rs`**: updated path from `super::super::wayland_mock::WaylandMockServer` to `super::super::wayland::wayland_mock::WaylandMockServer` (wayland_mock moved under wayland.rs).
+  - **Verification**: pre/post `grep -cE "^(#\[tokio::test|#\[test\])" integration_tests/mod.rs` = 65 / 0; sum across 10 leaf files = 65 ✓. `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **M2-PR-04** (2026-05-13) — Converted `src/daemon/integration_tests.rs` (7176 LOC) from flat file to directory module. Extracted test infrastructure (~560 LOC) into `integration_tests/common/`. All 65 tests stay in `integration_tests/mod.rs` for this PR — splitting by backend is M2-PR-05's job.
   - **`integration_tests/common/polling.rs`** (90 LOC, new): `POLL_INTERVAL`, `POLL_TIMEOUT`, `TEST_TIMEOUT`, `LONG_TEST_TIMEOUT`, 4 env locks, `EnvVarGuard`, `wait_for`, `wait_for_async`, `with_test_timeout`, `with_long_test_timeout`.
