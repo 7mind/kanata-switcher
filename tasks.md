@@ -24,7 +24,7 @@ Detail in `./docs/drafts/20260513-1040-test-split-plan.md`.
 - [x] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree.
 - [x] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/`.
 - [x] **M2-PR-05** — Split integration tests by backend.
-- [ ] **M2-PR-06** — *(optional)* Further-split `dbus_session_tests.rs` if it exceeds the 1500-LOC ceiling.
+- [x] **M2-PR-06** — Further-split `dbus_session_tests.rs` (was 1631 LOC; now 4 files all under 1500).
 
 ---
 
@@ -80,6 +80,16 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **M2-PR-06** (2026-05-13) — Further-split `src/daemon/integration_tests/dbus_session_tests.rs` (1631 LOC, over the plan's strict 1500-LOC ceiling) into 4 leaf files by what each test exercises. M2 truly complete after this PR.
+  - **`dbus_session_status.rs`** (674 LOC, 5 tests): `test_dbus_service_real_bus`, `test_dbus_get_status_initial_layer`, `test_dbus_get_status_focus_source`, `test_dbus_paused_changed_signal`, `test_dbus_status_changed_focus_signal`.
+  - **`dbus_session_restart.rs`** (238 LOC, 3 tests): `test_dbus_restart_request`, `test_control_command_restart_private_dbus`, `test_control_command_returns_error_without_service`.
+  - **`dbus_session_pause.rs`** (627 LOC, 6 tests): `test_dbus_pause_unpause`, `test_handle_focus_event_ignored_when_paused`, `test_dbus_pause_wayland_env`, `test_unfocus_ignored_when_paused`, `test_pause_daemon_releases_virtual_keys_and_resets_layer`, `test_control_command_pause_unpause_private_dbus`.
+  - **`dbus_session_persistent.rs`** (95 LOC, 1 test): `test_persistent_dbus_service_handles_restart_in_idle_runtime`.
+  - **`integration_tests/mod.rs`**: replaced `mod dbus_session_tests;` with the 4 new submodule declarations.
+  - **`dbus_session_tests.rs`**: deleted.
+  - **Plan inventory delta**: M2-PR-05 reported 14 tests in `dbus_session_tests.rs`; actual count was 15 (the plan §2 missed `test_dbus_paused_changed_signal`). The aggregate count of 65 integration tests stays correct because the discrepancy was within the section, not against the file total.
+  - **Verification**: pre/post `grep -cE "^#\[(tokio::test|test)"` = 15 / 15 (sum across 4 leaves). `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **M2-PR-05** (2026-05-13) — Split `src/daemon/integration_tests/mod.rs` (6638 LOC, 65 tests) into 10 backend-grouped leaf files. After this PR `mod.rs` is 32 LOC — just module declarations + re-exports. M2 complete.
   - **`gnome/mod.rs`** (4 LOC) + **`gnome/focus_query.rs`** (100 LOC, 1 test) + **`gnome/extension_detection.rs`** (309 LOC, 2 tests + `MockGnomeShellExtensions`).
