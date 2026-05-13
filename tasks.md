@@ -11,6 +11,20 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 
 - [x] **M0** — Produce a refactor plan for `src/daemon/main.rs` into a trait-based multi-file architecture.
 - [x] **M1** — Execute PR-00..PR-15 from the plan, one PR at a time, behaviour-preserving. Completed 2026-05-12. main.rs: 7983 → 250 LOC.
+- [~] **M2** — Split `tests.rs` (4864 LOC) and `integration_tests.rs` (7176 LOC) into per-backend/per-subsystem files.
+
+---
+
+## Milestone 2 — PR breakdown
+
+Detail in `./docs/drafts/20260513-1040-test-split-plan.md`.
+
+- [x] **M2-PR-01** — Convert `tests.rs` → `tests/` directory; extract `tests/common/helpers.rs`.
+- [ ] **M2-PR-02** — Split `tests/mod.rs` by section (focus_flow, focus_pipeline, focus_property, autostart, dbus_naming, control_commands, kde_script_paths, sni_presentation, gnome_ext_state, config_parsing).
+- [ ] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree (fixtures, restart_or_shutdown, logind_decode, display_apply, runtime_target, persistent_dbus, sni_runtime, transition, provider, supervisor).
+- [ ] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/` (polling, mock_kanata, focus_service, dbus_session).
+- [ ] **M2-PR-05** — Split integration tests by backend (gnome/, kde/, wayland, x11, vk_validation, dbus_control, dbus_session_tests, dbus_multiplex, dconf).
+- [ ] **M2-PR-06** — *(optional)* Further-split `dbus_session_tests.rs` if it exceeds the 1500-LOC ceiling.
 
 ---
 
@@ -66,6 +80,15 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **M2-PR-01** (2026-05-13) — Converted `src/daemon/tests.rs` (4864 LOC) from flat file to directory module `src/daemon/tests/`. Extracted 11 shared helpers (1 const, 1 static, 9 fns) to `tests/common/helpers.rs`. All 189 tests stay in `tests/mod.rs` for this PR — splitting them by section is M2-PR-02's job.
+  - **`tests/common/helpers.rs`** (101 LOC, new): `TEST_TIMEOUT` const, `SNI_WATCHER_TEST_LOCK` static, `with_test_timeout`, `win`, `rule`, `rule_vk`, `rule_raw_vk`, `rule_with_fallthrough`, `has_action`, `get_layers`, `get_raw_vk_actions`.
+  - **`tests/common/mod.rs`** (3 LOC, new): `use super::*; mod helpers; pub(super) use helpers::*;`.
+  - **`tests/mod.rs`** (4768 LOC, new): all 189 tests + `mod common; pub(super) use common::*;` at the top. Old `tests.rs` deleted.
+  - **`src/daemon/main.rs`**: unchanged. `#[cfg(test)] mod tests;` resolves to the new directory module automatically.
+  - **Daemon-side check**: `KanataClient::inner` (`kanata.rs`), `pause::TEST_LAST_UNPAUSE_REQUEST_ENV`, `sni::indicator::ACTIVE_SNI_WATCHER_TASKS` all already `#[cfg(test)] pub(crate)` from M1. No daemon edits needed.
+  - **Plan deviation (no defect)**: Helper visibility is `pub(crate)` rather than the planned `pub(super)`. The executor judged `pub(super)` insufficient for the helpers → common → tests re-export chain. Acceptable: the entire `tests` module is `#[cfg(test)]`-gated, so `pub(crate)` has no production surface impact. M2-PR-02 will likely need the same visibility for newly-extracted leaf files.
+  - **Verification**: pre-move `grep -cE "^(#\[test\]|#\[tokio::test)" tests.rs` = 189; post-move on `tests/mod.rs` = 189 ✓. `cargo build` ✓ (26 baseline warnings, no new); `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **PR-15** (2026-05-12) — Extracted `src/daemon/gnome_ext/` (4 files). FINAL PR. Behaviour-preserving move; 722 LOC moved.
   - **`gnome_ext/embed.rs`** (58 LOC, new, `#[cfg(feature = "embed-gnome-extension")]`): the `gnome_ext_file!` macro with **the critical relative-path bump from `concat!("../../", ...)` to `concat!("../../../", ...)`** (one level deeper because the file moved from `src/daemon/main.rs` to `src/daemon/gnome_ext/embed.rs`). All 9 `EMBEDDED_*` `include_str!` consts. `compile_gnome_schemas`, `write_embedded_extension_to_dir`.
