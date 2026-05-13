@@ -2,10 +2,10 @@ use super::*;
 
 pub(crate) fn start_wayland_test_server() -> (
     std::sync::MutexGuard<'static, ()>,
-    super::super::wayland_mock::WaylandMockServer,
+    super::super::wayland::wayland_mock::WaylandMockServer,
 ) {
     let lock = WAYLAND_ENV_LOCK.lock().unwrap();
-    let server = super::super::wayland_mock::WaylandMockServer::start();
+    let server = super::super::wayland::wayland_mock::WaylandMockServer::start();
     (lock, server)
 }
 
