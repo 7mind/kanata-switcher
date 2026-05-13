@@ -20,7 +20,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 Detail in `./docs/drafts/20260513-1040-test-split-plan.md`.
 
 - [x] **M2-PR-01** — Convert `tests.rs` → `tests/` directory; extract `tests/common/helpers.rs`.
-- [ ] **M2-PR-02** — Split `tests/mod.rs` by section (focus_flow, focus_pipeline, focus_property, autostart, dbus_naming, control_commands, kde_script_paths, sni_presentation, gnome_ext_state, config_parsing).
+- [x] **M2-PR-02** — Split `tests/mod.rs` by section.
 - [ ] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree (fixtures, restart_or_shutdown, logind_decode, display_apply, runtime_target, persistent_dbus, sni_runtime, transition, provider, supervisor).
 - [ ] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/` (polling, mock_kanata, focus_service, dbus_session).
 - [ ] **M2-PR-05** — Split integration tests by backend (gnome/, kde/, wayland, x11, vk_validation, dbus_control, dbus_session_tests, dbus_multiplex, dconf).
@@ -80,6 +80,21 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **M2-PR-02** (2026-05-13) — Split `src/daemon/tests/mod.rs` (4768 LOC, 189 tests) into 10 leaf files by subsystem. Behaviour-preserving. Test attributes byte-identical.
+  - **`focus_flow.rs`** (711 LOC): 32 tests — focus flow + virtual keys / fallthrough + paused status reset.
+  - **`focus_pipeline.rs`** (193 LOC): 6 tests — `update_status_for_focus` (sync + async), including 2 misfiled tests rescued from the "GNOME Extension State Parsing Tests" banner.
+  - **`focus_property.rs`** (279 LOC): 1 `proptest!` block (5 prop tests) + 8 strategy helpers.
+  - **`autostart.rs`** (58 LOC): 3 autostart desktop-entry tests.
+  - **`dbus_naming.rs`** (303 LOC): 28 dbus_naming/suffix/Args tests + 1 `proptest!` block.
+  - **`control_commands.rs`** (31 LOC): 4 `resolve_control_command` tests.
+  - **`kde_script_paths.rs`** (69 LOC): 4 KWin script-path tests + `build_kde_focus_push_script` test.
+  - **`sni_presentation.rs`** (484 LOC): 17 SNI format/icon/state/settings/menu/tooltip/title tests (plan said 14; actual audit shows 17 legitimate SNI tests).
+  - **`gnome_ext_state.rs`** (46 LOC): 3 actual gnome-extension state-parsing tests (the rest of the misnamed banner relocated to focus_pipeline.rs and stay in mod.rs awaiting M2-PR-03 lifecycle split).
+  - **`config_parsing.rs`** (119 LOC): 8 config parsing tests.
+  - **`tests/mod.rs`** (residual, 2499 LOC): 86 test attributes still here — 3 `wait_for_restart_or_shutdown_*` tests + 9 logind decode tests + the entire Runtime Lifecycle block (~73 tests). All move in M2-PR-03.
+  - **No daemon-side widenings.** No production source files modified.
+  - **Verification**: `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **M2-PR-01** (2026-05-13) — Converted `src/daemon/tests.rs` (4864 LOC) from flat file to directory module `src/daemon/tests/`. Extracted 11 shared helpers (1 const, 1 static, 9 fns) to `tests/common/helpers.rs`. All 189 tests stay in `tests/mod.rs` for this PR — splitting them by section is M2-PR-02's job.
   - **`tests/common/helpers.rs`** (101 LOC, new): `TEST_TIMEOUT` const, `SNI_WATCHER_TEST_LOCK` static, `with_test_timeout`, `win`, `rule`, `rule_vk`, `rule_raw_vk`, `rule_with_fallthrough`, `has_action`, `get_layers`, `get_raw_vk_actions`.
