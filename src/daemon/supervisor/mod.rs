@@ -1,6 +1,7 @@
 pub(crate) mod capabilities;
 pub(crate) use capabilities::*;
 
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,6 +21,29 @@ use crate::backends::x11::X11Backend;
 use crate::backends::linux_console::LinuxConsoleBackend;
 
 pub(crate) const WAYLAND_CAPABILITY_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Debug)]
+pub(crate) struct BackendStartError {
+    pub(crate) target: RuntimeTarget,
+    pub(crate) source: DynError,
+}
+
+impl fmt::Display for BackendStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[Lifecycle] Failed to start {} backend: {}",
+            runtime_target_label(self.target),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for BackendStartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct BackendContext {
@@ -245,8 +269,21 @@ where
     }
 
     if let RuntimeTarget::Backend(kind) = desired_target {
-        let backend = starter(kind, context.clone()).await?;
-        state.backend = Some(backend);
+        match starter(kind, context.clone()).await {
+            Ok(backend) => {
+                state.backend = Some(backend);
+            }
+            Err(source) => {
+                state.current_target = RuntimeTarget::Idle;
+                context
+                    .runtime_environment
+                    .set_current(Environment::Unknown);
+                return Err(Box::new(BackendStartError {
+                    target: desired_target,
+                    source,
+                }));
+            }
+        }
     }
 
     state.current_target = desired_target;
@@ -254,6 +291,60 @@ where
         .runtime_environment
         .set_current(runtime_target_to_environment(desired_target));
     Ok(())
+}
+
+pub(crate) fn should_defer_generic_wayland_start_failure(
+    error: &DynError,
+    allow_wayland_capability_recheck: bool,
+    snapshot: &LifecycleSnapshot,
+) -> bool {
+    if !allow_wayland_capability_recheck || snapshot.session_kind != SessionKind::GraphicalWayland {
+        return false;
+    }
+
+    error
+        .downcast_ref::<BackendStartError>()
+        .map(|start_error| start_error.target == RuntimeTarget::Backend(BackendKind::Wayland))
+        .unwrap_or(false)
+}
+
+pub(crate) async fn transition_runtime_target_with_start_failure_policy<F, Fut>(
+    state: &mut SupervisorState,
+    desired_target: RuntimeTarget,
+    context: &BackendContext,
+    reason: &str,
+    starter: &F,
+    allow_wayland_capability_recheck: bool,
+    snapshot: &LifecycleSnapshot,
+) -> Result<(), DynError>
+where
+    F: Fn(BackendKind, BackendContext) -> Fut,
+    Fut: std::future::Future<Output = Result<BackendHandle, DynError>>,
+{
+    match transition_runtime_target_with_starter(state, desired_target, context, reason, starter)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(error)
+            if should_defer_generic_wayland_start_failure(
+                &error,
+                allow_wayland_capability_recheck,
+                snapshot,
+            ) =>
+        {
+            eprintln!(
+                "[Lifecycle] Deferring generic Wayland backend after start failure: {}",
+                error
+            );
+            state.current_target = RuntimeTarget::Idle;
+            state.backend = None;
+            context
+                .runtime_environment
+                .set_current(Environment::Unknown);
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) async fn stop_current_backend(
@@ -368,14 +459,16 @@ where
                     let snapshot = last_snapshot
                         .clone()
                         .expect("capability recheck requires last snapshot");
-                    match resolver(snapshot).await {
+                    match resolver(snapshot.clone()).await {
                         Ok(desired_target) => {
-                            transition_runtime_target_with_starter(
+                            transition_runtime_target_with_start_failure_policy(
                                 &mut state,
                                 desired_target,
                                 &context,
                                 "wayland-capability-recheck",
                                 &starter,
+                                allow_wayland_capability_recheck,
+                                &snapshot,
                             )
                             .await?;
                         }
@@ -391,12 +484,14 @@ where
                                     "[Lifecycle] Falling back to generic Wayland after capability recheck resolver error: {}",
                                     error
                                 );
-                                transition_runtime_target_with_starter(
+                                transition_runtime_target_with_start_failure_policy(
                                     &mut state,
                                     RuntimeTarget::Backend(BackendKind::Wayland),
                                     &context,
                                     "wayland-capability-recheck-fallback-after-resolver-error",
                                     &starter,
+                                    allow_wayland_capability_recheck,
+                                    &snapshot,
                                 )
                                 .await?;
                             }
@@ -415,12 +510,14 @@ where
                                         snapshot.session_type,
                                         snapshot.session_kind
                                     );
-                                    transition_runtime_target_with_starter(
+                                    transition_runtime_target_with_start_failure_policy(
                                         &mut state,
                                         desired_target,
                                         &context,
                                         &reason,
                                         &starter,
+                                        allow_wayland_capability_recheck,
+                                        &snapshot,
                                     )
                                     .await?;
                                 }
@@ -438,12 +535,14 @@ where
                                                     "[Lifecycle] Falling back to generic Wayland after continuous resolver error: {}",
                                                     error
                                                 );
-                                                transition_runtime_target_with_starter(
+                                                transition_runtime_target_with_start_failure_policy(
                                                     &mut state,
                                                     RuntimeTarget::Backend(BackendKind::Wayland),
                                                     &context,
                                                     "continuous-wayland-fallback-after-resolver-error",
                                                     &starter,
+                                                    allow_wayland_capability_recheck,
+                                                    &snapshot,
                                                 )
                                                 .await?;
                                             }
@@ -452,12 +551,14 @@ where
                                                 "[Lifecycle] Falling back to generic Wayland after startup resolver error: {}",
                                                 error
                                             );
-                                            transition_runtime_target_with_starter(
+                                            transition_runtime_target_with_start_failure_policy(
                                                 &mut state,
                                                 RuntimeTarget::Backend(BackendKind::Wayland),
                                                 &context,
                                                 "startup-wayland-fallback-after-resolver-error",
                                                 &starter,
+                                                allow_wayland_capability_recheck,
+                                                &snapshot,
                                             )
                                             .await?;
                                         }
@@ -495,14 +596,16 @@ where
                     let snapshot = last_snapshot
                         .clone()
                         .expect("capability recheck requires last snapshot");
-                    match resolver(snapshot).await {
+                    match resolver(snapshot.clone()).await {
                         Ok(desired_target) => {
-                            transition_runtime_target_with_starter(
+                            transition_runtime_target_with_start_failure_policy(
                                 &mut state,
                                 desired_target,
                                 &context,
                                 "wayland-capability-recheck",
                                 &starter,
+                                allow_wayland_capability_recheck,
+                                &snapshot,
                             )
                             .await?;
                         }
@@ -518,12 +621,14 @@ where
                                     "[Lifecycle] Falling back to generic Wayland after capability recheck resolver error: {}",
                                     error
                                 );
-                                transition_runtime_target_with_starter(
+                                transition_runtime_target_with_start_failure_policy(
                                     &mut state,
                                     RuntimeTarget::Backend(BackendKind::Wayland),
                                     &context,
                                     "wayland-capability-recheck-fallback-after-resolver-error",
                                     &starter,
+                                    allow_wayland_capability_recheck,
+                                    &snapshot,
                                 )
                                 .await?;
                             }

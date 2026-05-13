@@ -36,6 +36,7 @@ pub(crate) const KDE_KWIN_SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
 pub(crate) const DBUS_INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 pub(crate) const KDE_RUNTIME_QUERY_MODE_MAX_ATTEMPTS: usize = 5;
 pub(crate) const KDE_RUNTIME_QUERY_MODE_RETRY_DELAY: Duration = Duration::from_secs(1);
+pub(crate) const KDE_KWIN_SCRIPT_CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Path to GNOME extension source relative to repository root
 pub(crate) const GNOME_EXTENSION_SRC_PATH: &str = "src/gnome-extension";

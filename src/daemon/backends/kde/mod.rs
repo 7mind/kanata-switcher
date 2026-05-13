@@ -54,30 +54,55 @@ impl Drop for KwinScriptGuard {
         let script_interface = self.script_interface.clone();
 
         let cleanup = async move {
-            let stop_result = connection
-                .call_method(
+            match tokio::time::timeout(
+                KDE_KWIN_SCRIPT_CLEANUP_TIMEOUT,
+                connection.call_method(
                     Some("org.kde.KWin"),
                     script_obj_path.clone(),
                     Some(script_interface.as_str()),
                     "stop",
                     &(),
-                )
-                .await;
-            if let Err(error) = stop_result {
-                panic!("[KDE] Failed to stop KWin script: {}", error);
+                ),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    eprintln!("[KDE] Failed to stop KWin script during cleanup: {}", error);
+                }
+                Err(_) => {
+                    eprintln!(
+                        "[KDE] Timed out stopping KWin script during cleanup after {}ms",
+                        KDE_KWIN_SCRIPT_CLEANUP_TIMEOUT.as_millis()
+                    );
+                }
             }
 
-            let unload_result = connection
-                .call_method(
+            match tokio::time::timeout(
+                KDE_KWIN_SCRIPT_CLEANUP_TIMEOUT,
+                connection.call_method(
                     Some("org.kde.KWin"),
                     "/Scripting",
                     Some("org.kde.kwin.Scripting"),
                     "unloadScript",
                     &(&script_path,),
-                )
-                .await;
-            if let Err(error) = unload_result {
-                panic!("[KDE] Failed to unload KWin script: {}", error);
+                ),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    eprintln!(
+                        "[KDE] Failed to unload KWin script during cleanup: {}",
+                        error
+                    );
+                }
+                Err(_) => {
+                    eprintln!(
+                        "[KDE] Timed out unloading KWin script during cleanup after {}ms",
+                        KDE_KWIN_SCRIPT_CLEANUP_TIMEOUT.as_millis()
+                    );
+                }
             }
         };
 
@@ -91,7 +116,10 @@ impl Drop for KwinScriptGuard {
 
         if let Err(error) = fs::remove_file(&self.script_path) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                panic!("[KDE] Failed to remove KWin script file: {}", error);
+                eprintln!(
+                    "[KDE] Failed to remove KWin script file during cleanup: {}",
+                    error
+                );
             }
         }
     }
