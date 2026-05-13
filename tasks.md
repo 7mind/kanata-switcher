@@ -22,7 +22,7 @@ Detail in `./docs/drafts/20260513-1040-test-split-plan.md`.
 - [x] **M2-PR-01** — Convert `tests.rs` → `tests/` directory; extract `tests/common/helpers.rs`.
 - [x] **M2-PR-02** — Split `tests/mod.rs` by section.
 - [x] **M2-PR-03** — Split Runtime Lifecycle into `tests/lifecycle/` subtree.
-- [ ] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/` (polling, mock_kanata, focus_service, dbus_session).
+- [x] **M2-PR-04** — Convert `integration_tests.rs` → `integration_tests/` directory; extract `integration_tests/common/`.
 - [ ] **M2-PR-05** — Split integration tests by backend (gnome/, kde/, wayland, x11, vk_validation, dbus_control, dbus_session_tests, dbus_multiplex, dconf).
 - [ ] **M2-PR-06** — *(optional)* Further-split `dbus_session_tests.rs` if it exceeds the 1500-LOC ceiling.
 
@@ -80,6 +80,17 @@ Detail will live in `./docs/drafts/20260511-2128-mainrs-refactor-plan.md` (the p
 ---
 
 ## Completed
+
+- **M2-PR-04** (2026-05-13) — Converted `src/daemon/integration_tests.rs` (7176 LOC) from flat file to directory module. Extracted test infrastructure (~560 LOC) into `integration_tests/common/`. All 65 tests stay in `integration_tests/mod.rs` for this PR — splitting by backend is M2-PR-05's job.
+  - **`integration_tests/common/polling.rs`** (90 LOC, new): `POLL_INTERVAL`, `POLL_TIMEOUT`, `TEST_TIMEOUT`, `LONG_TEST_TIMEOUT`, 4 env locks, `EnvVarGuard`, `wait_for`, `wait_for_async`, `with_test_timeout`, `with_long_test_timeout`.
+  - **`integration_tests/common/mock_kanata.rs`** (191 LOC, new): `KanataMessage`, `wait_for_kanata_message`, `drain_kanata_messages`, `MockKanataConfig`, `MockKanataServer`.
+  - **`integration_tests/common/focus_service.rs`** (149 LOC, new): `start_wayland_test_server`, `pause_daemon_direct`, `unpause_daemon_direct`, `FocusService` zbus interface, `TEST_DAEMON_DBUS_NAME`, `start_gnome_focus_service`.
+  - **`integration_tests/common/dbus_session.rs`** (119 LOC, new): `dbus_daemon_available`, `DBUS_TEST_COUNTER`, `DbusSessionGuard`.
+  - **`integration_tests/common/mod.rs`** (11 LOC, new): `mod` declarations + `pub(crate) use ...` re-exports.
+  - **`integration_tests/mod.rs`** (6638 LOC, new): all 65 tests + `mod common; pub(super) use common::*;` at top. Old `integration_tests.rs` deleted.
+  - **One zbus visibility fix**: `FocusService::focus_changed` signal method needed `pub` (was implicit-private when interface lived in the same file as callers). No other production source changes.
+  - **`start_wayland_test_server` cycle check**: kept in `common/focus_service.rs`; references `super::super::wayland_mock::WaylandMockServer` (inline child module still in `mod.rs`). No cycle because `wayland_mock` is a descendant of `integration_tests`, not of `common`.
+  - **Verification**: pre/post `grep -cE "^(#\[tokio::test|#\[test\])"` = 65 / 65 ✓. `cargo build` ✓; `cargo test --bin kanata-switcher -- --test-threads=4` → 261 passed / 0 failed.
 
 - **M2-PR-03** (2026-05-13) — Split residual Runtime Lifecycle Tests + misfiled tests from `src/daemon/tests/mod.rs` into `src/daemon/tests/lifecycle/` subtree (10 files, 2493 LOC). Behaviour-preserving. After this PR, `tests/mod.rs` is just 26 LOC of `mod` declarations + re-exports — 0 test bodies remain at the directory root.
   - **`lifecycle/mod.rs`** (14 LOC): `mod` decls + `pub(crate) use fixtures::*;`.
