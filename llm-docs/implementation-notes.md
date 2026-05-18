@@ -54,6 +54,7 @@
 50. **SNI Quit is local-only and in-process** - SNI tray menu's Quit item triggers `ShutdownHandle::request()` directly on the daemon process. Both `SniLocalControl` and `SniDbusControl` carry the daemon's `ShutdownHandle`; no new DBus `Quit` method is exposed since the SNI runs in-process with the daemon for both control modes. Effect is equivalent to SIGTERM/SIGINT.
 51. **Generic Wayland start failure is transient in continuous mode** - if a logind Wayland graphical session resolves to generic Wayland before KDE/GNOME bus ownership is ready and the generic Wayland backend cannot start, supervisor logs the start failure, returns to Idle, and keeps capability rechecks alive so a later KDE/GNOME owner can promote the backend without a systemd restart.
 52. **KWin script cleanup is bounded and non-panicking** - runtime and one-shot KWin script guards bound each cleanup D-Bus call and log cleanup failures instead of panicking from `Drop`. Startup/query failures still fail through normal setup paths; only best-effort external cleanup is non-fatal.
+53. **Inactive graphical logind sessions mean VT activation** - during GNOME/Wayland <-> Linux console switches, the monitored display session can emit `Active=false` while `Type` remains `wayland`. Lifecycle decoding maps inactive graphical session types to `NativeTerminal` so `on_native_terminal` fires; explicit `User.Display=/` display-clear handling still emits `NoSession` for logout/no-display cases.
 
 ## Lifecycle Design Note
 
@@ -175,7 +176,8 @@ When login1 is available, the daemon watches `org.freedesktop.login1.Session.Act
 - active `tty` -> Linux console backend
 - active `wayland` -> GNOME/KDE/generic Wayland backend (owner-probed)
 - active `x11` -> X11 backend
-- inactive -> Idle (no focus backend running)
+- inactive graphical session (`Active=false`, `Type=wayland|x11|gnome|kde`) -> Linux console backend
+- explicit no-display (`User.Display=/`, empty type) -> Idle (no focus backend running)
 
 On Linux console activation it applies `on_native_terminal` focus actions; when returning to graphical sessions, backend startup performs initial focus sync.
 

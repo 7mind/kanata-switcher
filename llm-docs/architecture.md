@@ -40,7 +40,7 @@ Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detect
 Detection order: GNOME → KDE → Wayland → X11 → Unknown
 
 Startup env detection is now a fallback path. Runtime backend ownership is supervised by a lifecycle controller:
-- Provider `logind` (continuous): when `org.freedesktop.login1` is available, session `Active`/`Type` events drive backend transitions (`tty`/`wayland`/`x11` + idle).
+- Provider `logind` (continuous): when `org.freedesktop.login1` is available, session `Active`/`Type` events drive backend transitions (`tty`/`wayland`/`x11` + idle). An inactive graphical session (`Active=false`, `Type=wayland|x11`) represents the active VT case and maps to the Linux console backend; explicit `User.Display=/` display-clear events map to idle.
 - Logind provider selection validates lifecycle-monitor prerequisites (manager/user/session monitor setup) before commit; if those checks fail, daemon does not enter continuous mode.
 - In pre-login startup (no display session yet), logind lifecycle monitor waits on login1 `User.Display` property changes and attaches when the session appears; daemon startup remains non-blocking.
 - During runtime, logind lifecycle monitor also tracks `User.Display` path changes and reattaches to the new display session object after logout/login cycles.

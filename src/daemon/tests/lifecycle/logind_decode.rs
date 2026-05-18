@@ -152,6 +152,10 @@ fn test_session_type_to_session_kind_mappings() {
         SessionKind::GraphicalWayland
     );
     assert_eq!(
+        session_type_to_session_kind(false, "wayland"),
+        SessionKind::NativeTerminal
+    );
+    assert_eq!(
         session_type_to_session_kind(true, "gnome"),
         SessionKind::GraphicalWayland
     );
@@ -164,7 +168,7 @@ fn test_session_type_to_session_kind_mappings() {
         SessionKind::NoSession
     );
     assert_eq!(
-        session_type_to_session_kind(false, "wayland"),
+        session_type_to_session_kind(false, "tty"),
         SessionKind::NoSession
     );
 }
@@ -302,6 +306,21 @@ fn test_decode_logind_change_errors_when_active_snapshot_has_empty_type() {
         result,
         Err("[Lifecycle] logind Type property is empty for an active session".to_string())
     );
+}
+
+#[test]
+fn test_decode_logind_change_maps_inactive_graphical_session_to_native_terminal() {
+    use zbus::zvariant::Value;
+
+    let active_value = Value::from(false);
+    let snapshot =
+        decode_logind_lifecycle_snapshot_change(true, "wayland", Some(&active_value), None)
+            .expect("logind decode should succeed")
+            .expect("active change should emit snapshot");
+
+    assert!(!snapshot.active);
+    assert_eq!(snapshot.session_type, "wayland");
+    assert_eq!(snapshot.session_kind, SessionKind::NativeTerminal);
 }
 
 #[test]

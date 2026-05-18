@@ -64,15 +64,28 @@ pub(crate) struct LifecycleSnapshot {
 }
 
 pub(crate) fn session_type_to_session_kind(active: bool, session_type: &str) -> SessionKind {
-    if !active {
-        return SessionKind::NoSession;
-    }
     if session_type_indicates_native_terminal(session_type) {
-        return SessionKind::NativeTerminal;
+        return if active {
+            SessionKind::NativeTerminal
+        } else {
+            SessionKind::NoSession
+        };
     }
     match session_type {
-        "x11" => SessionKind::GraphicalX11,
-        "wayland" | "gnome" | "kde" => SessionKind::GraphicalWayland,
+        "x11" => {
+            if active {
+                SessionKind::GraphicalX11
+            } else {
+                SessionKind::NativeTerminal
+            }
+        }
+        "wayland" | "gnome" | "kde" => {
+            if active {
+                SessionKind::GraphicalWayland
+            } else {
+                SessionKind::NativeTerminal
+            }
+        }
         _ => SessionKind::NoSession,
     }
 }

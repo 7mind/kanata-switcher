@@ -244,6 +244,77 @@ async fn test_run_lifecycle_supervisor_wakes_on_backend_completion_after_provide
 }
 
 #[tokio::test]
+async fn test_run_lifecycle_supervisor_inactive_graphical_session_enters_linux_console() {
+    with_test_timeout(async {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(LifecycleSnapshot {
+                active: true,
+                session_type: "wayland".to_string(),
+                session_kind: session_type_to_session_kind(true, "wayland"),
+            })
+            .expect("initial graphical snapshot send should succeed");
+        sender
+            .send(LifecycleSnapshot {
+                active: false,
+                session_type: "wayland".to_string(),
+                session_kind: session_type_to_session_kind(false, "wayland"),
+            })
+            .expect("inactive graphical snapshot send should succeed");
+        drop(sender);
+
+        let provider = LifecycleProvider::Logind(LogindLifecycleProvider { receiver });
+        let context = test_backend_context();
+        let restart_handle = RestartHandle::new();
+        let shutdown_handle = ShutdownHandle::new();
+        let started_kinds = Arc::new(Mutex::new(Vec::<BackendKind>::new()));
+        let started_kinds_clone = started_kinds.clone();
+
+        let supervisor = tokio::spawn(run_lifecycle_supervisor_with_starter_and_resolver(
+            provider,
+            context,
+            restart_handle,
+            shutdown_handle.clone(),
+            move |kind, _| {
+                let started_kinds = started_kinds_clone.clone();
+                async move {
+                    started_kinds.lock().unwrap().push(kind);
+                    Ok(test_running_backend_handle(
+                        kind,
+                        Arc::new(AtomicBool::new(false)),
+                    ))
+                }
+            },
+            move |snapshot| async move {
+                Ok(resolve_runtime_target(
+                    snapshot.session_kind,
+                    DesktopCapabilities {
+                        gnome_owner: true,
+                        kde_owner: false,
+                    },
+                ))
+            },
+            std::time::Duration::from_secs(5),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        shutdown_handle.request();
+
+        let outcome = supervisor
+            .await
+            .expect("supervisor task join")
+            .expect("inactive graphical session should not resolve to idle");
+        assert_eq!(outcome, RunOutcome::Exit);
+        assert_eq!(
+            started_kinds.lock().unwrap().as_slice(),
+            &[BackendKind::Gnome, BackendKind::LinuxConsole],
+            "VT switch observed as active=false type=wayland must start linux-console backend"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_run_lifecycle_supervisor_rechecks_wayland_capabilities_without_new_snapshots() {
     with_test_timeout(async {
         let (sender, receiver) = mpsc::unbounded_channel();
