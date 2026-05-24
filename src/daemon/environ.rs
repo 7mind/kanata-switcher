@@ -1,3 +1,6 @@
+// Many environment variants and types are Linux-only.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::env;
 
 // === Environment Detection ===
@@ -8,6 +11,8 @@ pub enum Environment {
     Kde,
     Wayland,
     X11,
+    MacOS,
+    Windows,
     LinuxConsoleWithLogind,
     Unknown,
 }
@@ -41,6 +46,8 @@ pub(crate) enum BackendKind {
     Kde,
     Wayland,
     X11,
+    MacOS,
+    Windows,
     LinuxConsole,
 }
 
@@ -147,7 +154,10 @@ pub(crate) fn target_requires_session_bus(target: RuntimeTarget) -> bool {
         | RuntimeTarget::Backend(BackendKind::Kde)
         | RuntimeTarget::Backend(BackendKind::Wayland)
         | RuntimeTarget::Backend(BackendKind::X11) => true,
-        RuntimeTarget::Backend(BackendKind::LinuxConsole) | RuntimeTarget::Idle => false,
+        RuntimeTarget::Backend(BackendKind::MacOS)
+        | RuntimeTarget::Backend(BackendKind::Windows)
+        | RuntimeTarget::Backend(BackendKind::LinuxConsole)
+        | RuntimeTarget::Idle => false,
     }
 }
 
@@ -157,6 +167,8 @@ pub(crate) fn startup_environment_to_snapshot(env: Environment) -> LifecycleSnap
         Environment::Kde => (true, "kde"),
         Environment::Wayland => (true, "wayland"),
         Environment::X11 => (true, "x11"),
+        Environment::MacOS => (true, "macos"),
+        Environment::Windows => (true, "windows"),
         Environment::LinuxConsoleWithLogind => (true, "tty"),
         Environment::Unknown => (false, ""),
     };
@@ -176,6 +188,8 @@ impl Environment {
             Environment::Kde => "kde",
             Environment::Wayland => "wayland",
             Environment::X11 => "x11",
+            Environment::MacOS => "macos",
+            Environment::Windows => "windows",
             Environment::LinuxConsoleWithLogind => "linux-console-with-logind",
             Environment::Unknown => "unknown",
         }
@@ -183,6 +197,21 @@ impl Environment {
 }
 
 pub(crate) fn detect_environment() -> Environment {
+    detect_environment_impl()
+}
+
+#[cfg(target_os = "macos")]
+fn detect_environment_impl() -> Environment {
+    Environment::MacOS
+}
+
+#[cfg(target_os = "windows")]
+fn detect_environment_impl() -> Environment {
+    Environment::Windows
+}
+
+#[cfg(target_os = "linux")]
+fn detect_environment_impl() -> Environment {
     let desktop = env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()
         .to_lowercase();
@@ -211,5 +240,11 @@ pub(crate) fn detect_environment() -> Environment {
         return Environment::X11;
     }
 
+    Environment::Unknown
+}
+
+// Impl for any platform not covered above
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn detect_environment_impl() -> Environment {
     Environment::Unknown
 }

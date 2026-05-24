@@ -2,31 +2,62 @@
 
 ## Overview
 
-Single Rust daemon (`src/daemon/`) handles all desktop environments. Auto-detects environment via env vars.
+Single Rust daemon (`src/daemon/`) handles all desktop environments across Linux, macOS, and Windows. Auto-detects environment via env vars (Linux) or compile-time OS detection (macOS/Windows).
 
 ```
-                    ┌─────────────────────────────┐
-                    │       Daemon (Rust)         │
-                    │  - Config loading           │
-                    │  - Rule matching            │
-                    │  - Kanata TCP client        │
-                    └─────────────┬───────────────┘
-                                  │
-    ┌─────────────────────┬───────┼───────┬──────────────┐
-    ▼                     ▼       ▼       ▼              ▼
-┌─────────────────┐   ┌───────┐ ┌───────┐ ┌───────┐  ┌───────┐
-│  DBus Backend   │   │Wayland│ │Wayland│ │  X11  │  │       │
-│  (GNOME + KDE)  │   │  wlr  │ │cosmic │ │ x11rb │  │       │
-└────────┬────────┘   └───┬───┘ └───┬───┘ └───┬───┘  │       │
-         │                │         │         │      │       │
-    ┌────┴────┐           ▼         ▼         ▼      │       │
-    ▼         ▼       Sway,etc.  COSMIC   _NET_ACTIVE│       │
-┌───────┐ ┌───────┐                       _WINDOW    │       │
-│ GNOME │ │  KDE  │                                  │       │
-│  Ext  │ │ KWin  │                                  │       │
-│(auto) │ │Script │                                  │       │
-└───────┘ └───────┘                                  └───────┘
+                       ┌────────────────────────────────┐
+                       │       Daemon (Rust)            │
+                       │  - Config loading              │
+                       │  - Rule matching               │
+                       │  - Kanata TCP client           │
+                       └───────┬──────┬──────┬──────────┘
+                               │      │      │
+           ┌───────────────────┼──────┼──────┼──────────────────┐
+           ▼                   ▼      ▼      ▼                  ▼
+   ┌───────────────┐   ┌──────────┐ ┌──────┐ ┌──────┐   ┌───────────┐
+   │ Linux backends│   │  macOS   │ │Windows│ │TBD   │   │(future)   │
+   │ (FocusBackend)│   │FocusBack │ │Focus  │ │      │   │           │
+   └───────┬───────┘   └────┬─────┘ └──┬───┘ └──────┘   └───────────┘
+           │                │          │
+     ┌─────┼─────┬─────┬────┘          └────┐
+     ▼     ▼     ▼     ▼                    ▼
+ ┌──────┐┌────┐┌────┐┌────┐          ┌───────────┐
+ │ GNOME││ KDE││Wlro││COS │          │WinEvent   │
+ │(Ext) ││KWin││ots ││MIC │          │foreground │
+ └──────┘└────┘└────┘└────┘          │hook       │
+                                      └───────────┘
+ ┌──────┐┌──────┐
+ │ X11  ││Linux │
+ │      ││Con   │
+ └──────┘└──────┘
+ ┌───────────────────────────┐
+ │   NSWorkspace notification│
+ └───────────────────────────┘
 ```
+
+## Platform Dispatch
+
+The daemon uses a `platform/` module to dispatch to OS-specific entry points:
+
+- `platform/linux.rs` — Full Linux daemon: supervisor, lifecycle (logind), SNI indicator, GNOME ext setup, DBus control, signal handlers
+- `platform/macos.rs` — macOS daemon: `MacOsBackend` (NSWorkspace notifications) + signal handler
+- `platform/windows.rs` — Windows daemon: `WindowsBackend` (WinEvent hook) + signal handler
+
+Detection is compile-time: `#[cfg(target_os = "macos")]` / `#[cfg(target_os = "windows")]` select the appropriate `detect_environment_impl()` and `platform::run()`.
+
+## Backend Detection
+
+| Environment | Detection | Method |
+|-------------|-----------|--------|
+| GNOME | `XDG_CURRENT_DESKTOP` contains "gnome" | Shared DBus backend, extension pushes |
+| KDE | `KDE_SESSION_VERSION` set | Shared DBus backend, KWin script pushes |
+| Wayland | `WAYLAND_DISPLAY` set | Toplevel protocol events (wlr or cosmic) |
+| X11 | `DISPLAY` set | PropertyNotify events on _NET_ACTIVE_WINDOW |
+| macOS | compile-time: `target_os = "macos"` | NSWorkspace focus notifications |
+| Windows | compile-time: `target_os = "windows"` | WinEvent foreground event hook |
+
+Detection order on Linux: GNOME → KDE → Wayland → X11 → Unknown.
+On macOS/Windows: compile-time detection only (single OS per build).
 
 ## Backend Detection
 

@@ -1,13 +1,16 @@
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::sync::{Arc, Mutex};
 use crate::{
     focus::{FocusHandler, FocusActions, FocusAction},
     kanata::KanataClient,
     broadcasters::{PauseBroadcaster, StatusBroadcaster},
     config::WindowInfo,
-    args::TrayFocusOnly,
 };
-use crate::{SniSettingsStore, SNI_DEFAULT_SHOW_FOCUS_ONLY};
+#[cfg(target_os = "linux")]
+use crate::{SniSettingsStore, SNI_DEFAULT_SHOW_FOCUS_ONLY, args::TrayFocusOnly};
 
+#[cfg(target_os = "linux")]
 pub(crate) fn resolve_sni_focus_only(
     override_value: Option<TrayFocusOnly>,
     settings: &mut SniSettingsStore,

@@ -18,6 +18,10 @@ use crate::backends::gnome::GnomeBackend;
 use crate::backends::kde::KdeBackend;
 use crate::backends::wayland::WaylandBackend;
 use crate::backends::x11::X11Backend;
+#[cfg(target_os = "macos")]
+use crate::backends::macos::MacOsBackend;
+#[cfg(target_os = "windows")]
+use crate::backends::windows::WindowsBackend;
 use crate::backends::linux_console::LinuxConsoleBackend;
 
 pub(crate) const WAYLAND_CAPABILITY_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -111,6 +115,8 @@ pub(crate) fn runtime_target_label(target: RuntimeTarget) -> &'static str {
         RuntimeTarget::Backend(BackendKind::Kde) => "kde",
         RuntimeTarget::Backend(BackendKind::Wayland) => "wayland",
         RuntimeTarget::Backend(BackendKind::X11) => "x11",
+        RuntimeTarget::Backend(BackendKind::MacOS) => "macos",
+        RuntimeTarget::Backend(BackendKind::Windows) => "windows",
         RuntimeTarget::Backend(BackendKind::LinuxConsole) => "linux-console",
     }
 }
@@ -130,6 +136,8 @@ pub(crate) fn runtime_target_to_environment(target: RuntimeTarget) -> Environmen
         RuntimeTarget::Backend(BackendKind::Kde) => Environment::Kde,
         RuntimeTarget::Backend(BackendKind::Wayland) => Environment::Wayland,
         RuntimeTarget::Backend(BackendKind::X11) => Environment::X11,
+        RuntimeTarget::Backend(BackendKind::MacOS) => Environment::MacOS,
+        RuntimeTarget::Backend(BackendKind::Windows) => Environment::Windows,
         RuntimeTarget::Backend(BackendKind::LinuxConsole) => Environment::LinuxConsoleWithLogind,
         RuntimeTarget::Idle => Environment::Unknown,
     }
@@ -171,6 +179,10 @@ pub(crate) async fn start_backend(
         BackendKind::Kde => Box::new(KdeBackend),
         BackendKind::Wayland => Box::new(WaylandBackend),
         BackendKind::X11 => Box::new(X11Backend),
+        #[cfg(target_os = "macos")]
+        BackendKind::MacOS => Box::new(MacOsBackend),
+        #[cfg(target_os = "windows")]
+        BackendKind::Windows => Box::new(WindowsBackend),
         BackendKind::LinuxConsole => Box::new(LinuxConsoleBackend),
     };
 

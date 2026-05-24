@@ -1,20 +1,35 @@
+// Many backend types are Linux-only.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
+#[cfg(target_os = "linux")]
 pub(crate) mod gnome;
+#[cfg(target_os = "linux")]
 pub(crate) mod kde;
+#[cfg(target_os = "linux")]
 pub(crate) mod wayland;
+#[cfg(target_os = "linux")]
 pub(crate) mod x11;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows;
+#[cfg(target_os = "linux")]
 pub(crate) mod linux_console;
 
+#[cfg(target_os = "linux")]
 pub(crate) use wayland::*;
+#[cfg(target_os = "linux")]
 pub(crate) use x11::*;
 
 use std::future::Future;
+#[cfg(not(target_os = "windows"))]
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use zbus::Connection;
 use crate::broadcasters::{PauseBroadcaster, RestartHandle, ShutdownHandle, StatusBroadcaster};
 use crate::config::WindowInfo;
-use crate::display_override::resolve_display_override_for_environment;
 use crate::environ::{Environment, RunOutcome};
 use crate::errors::DynError;
 use crate::focus::FocusHandler;
@@ -52,23 +67,27 @@ pub(crate) trait FocusBackend: Send + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>>;
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RawFdWatcher {
     fd: RawFd,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl RawFdWatcher {
     pub(crate) fn new(fd: RawFd) -> Self {
         Self { fd }
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl AsRawFd for RawFdWatcher {
     fn as_raw_fd(&self) -> RawFd {
         self.fd
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) async fn query_focus_for_env(
     env: Environment,
     connection: Option<&Connection>,
@@ -84,22 +103,23 @@ pub(crate) async fn query_focus_for_env(
             kde::probe::query_kde_focus(conn, is_kde6).await
         }
         Environment::Wayland => {
-            let display_override = resolve_display_override_for_environment(env, "Focus").await;
+            let display_override = crate::display_override::resolve_display_override_for_environment(env, "Focus").await;
             tokio::task::block_in_place(move || {
                 query_wayland_active_window(display_override.as_deref())
             })
         }
         Environment::X11 => {
-            let display_override = resolve_display_override_for_environment(env, "Focus").await;
+            let display_override = crate::display_override::resolve_display_override_for_environment(env, "Focus").await;
             tokio::task::block_in_place(move || {
                 query_x11_active_window(display_override.as_deref())
             })
         }
         Environment::LinuxConsoleWithLogind => Ok(native_terminal_window()),
-        Environment::Unknown => Ok(WindowInfo::default()),
+        _ => Ok(WindowInfo::default()),
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) async fn apply_focus_for_env(
     env: Environment,
     connection: Option<&Connection>,
