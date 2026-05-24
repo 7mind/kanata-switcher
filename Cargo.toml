@@ -31,6 +31,7 @@ wayland-scanner = "=0.31.8"
 x11rb = "=0.13.2"
 ksni = "=0.2.2"
 noto-sans-mono-bitmap = { version = "=0.3.2", default-features = false, features = ["regular", "size_32", "unicode-basic-latin"] }
+uuid = { version = "=1.20.0", features = ["v4"] }
 
 [dev-dependencies]
 proptest = "=1.9.0"

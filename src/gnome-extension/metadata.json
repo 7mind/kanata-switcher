@@ -2,7 +2,7 @@
   "uuid": "kanata-switcher@7mind.io",
   "name": "Kanata Switcher",
   "description": "Focus-based Kanata layer switching and status",
-  "shell-version": ["45", "46", "47", "48", "49"],
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
   "settings-schema": "org.gnome.shell.extensions.kanata-switcher",
   "version": 2
 }

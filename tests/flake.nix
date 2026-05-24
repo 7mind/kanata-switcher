@@ -11,11 +11,20 @@
     kanata-switcher.url = "path:..";
   };
 
-  outputs = { self, nixpkgs, flake-utils, home-manager, kanata-switcher }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      home-manager,
+      kanata-switcher,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs { inherit system; };
-      in {
+      in
+      {
         checks = {
           home-module-build =
             (home-manager.lib.homeManagerConfiguration {
@@ -35,6 +44,204 @@
                 }
               ];
             }).activationPackage;
+
+          home-module-build-keyboards =
+            (home-manager.lib.homeManagerConfiguration {
+              inherit pkgs;
+              modules = [
+                kanata-switcher.homeModules.default
+                {
+                  services.kanata-switcher = {
+                    enable = true;
+                    keyboards = {
+                      kinesis = {
+                        kanataPort = 22334;
+                        settings = [
+                          { default = "default"; }
+                          {
+                            class = "code|codium|jetbrains";
+                            layer = "terminal";
+                          }
+                        ];
+                      };
+                      framework13 = {
+                        kanataPort = 22335;
+                        logging = "none";
+                        settings = [
+                          { default = "default"; }
+                          {
+                            class = "kitty|alacritty|wezterm";
+                            layer = "terminal";
+                          }
+                        ];
+                      };
+                    };
+                  };
+                  home.username = "kanata-switcher-ci";
+                  home.homeDirectory = "/home/kanata-switcher-ci";
+                  home.stateVersion = "23.11";
+                  manual = {
+                    html.enable = false;
+                    manpages.enable = false;
+                    json.enable = false;
+                  };
+                }
+              ];
+            }).activationPackage;
+
+          nixos-module-build =
+            (nixpkgs.lib.nixosSystem {
+              inherit system;
+              modules = [
+                kanata-switcher.nixosModules.default
+                {
+                  services.kanata-switcher.enable = true;
+                  fileSystems."/".device = "/dev/disk/by-label/ci-root";
+                  fileSystems."/".fsType = "ext4";
+                  boot.loader.grub.devices = [ "/dev/sda" ];
+                  system.stateVersion = "23.11";
+                }
+              ];
+            }).config.system.build.toplevel;
+
+          nixos-module-build-keyboards =
+            (nixpkgs.lib.nixosSystem {
+              inherit system;
+              modules = [
+                kanata-switcher.nixosModules.default
+                {
+                  services.kanata-switcher = {
+                    enable = true;
+                    keyboards = {
+                      kinesis = {
+                        kanataPort = 22334;
+                        settings = [
+                          { default = "default"; }
+                          {
+                            class = "code|codium|jetbrains";
+                            layer = "terminal";
+                          }
+                        ];
+                      };
+                      framework13 = {
+                        kanataPort = 22335;
+                        logging = "none";
+                        settings = [
+                          { default = "default"; }
+                          {
+                            class = "kitty|alacritty|wezterm";
+                            layer = "terminal";
+                          }
+                        ];
+                      };
+                    };
+                  };
+                  fileSystems."/".device = "/dev/disk/by-label/ci-root";
+                  fileSystems."/".fsType = "ext4";
+                  boot.loader.grub.devices = [ "/dev/sda" ];
+                  system.stateVersion = "23.11";
+                }
+              ];
+            }).config.system.build.toplevel;
+
+          nixos-module-keyboards-unit-names =
+            let
+              services = (
+                nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    kanata-switcher.nixosModules.default
+                    {
+                      services.kanata-switcher = {
+                        enable = true;
+                        keyboards = {
+                          kinesis = {
+                            kanataPort = 22334;
+                            settings = [ { default = "default"; } ];
+                          };
+                          framework13 = {
+                            kanataPort = 22335;
+                            settings = [ { default = "default"; } ];
+                          };
+                        };
+                      };
+                      fileSystems."/".device = "/dev/disk/by-label/ci-root";
+                      fileSystems."/".fsType = "ext4";
+                      boot.loader.grub.devices = [ "/dev/sda" ];
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }
+              ).config.systemd.user.services;
+            in
+            assert (builtins.hasAttr "kanata-switcher-kinesis" services);
+            assert (builtins.hasAttr "kanata-switcher-framework13" services);
+            assert (!(builtins.hasAttr "kinesis" services));
+            assert (!(builtins.hasAttr "framework13" services));
+            pkgs.runCommand "nixos-module-keyboards-unit-names" { } ''
+              touch "$out"
+            '';
+
+          nixos-module-keyboards-invalid-mixed =
+            let
+              evalResult = builtins.tryEval (
+                (nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    kanata-switcher.nixosModules.default
+                    {
+                      services.kanata-switcher = {
+                        enable = true;
+                        kanataPort = 22334;
+                        keyboards.kinesis = {
+                          kanataPort = 22334;
+                          settings = [ { default = "default"; } ];
+                        };
+                      };
+                      fileSystems."/".device = "/dev/disk/by-label/ci-root";
+                      fileSystems."/".fsType = "ext4";
+                      boot.loader.grub.devices = [ "/dev/sda" ];
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }).config.system.build.toplevel
+              );
+            in
+            assert (!evalResult.success);
+            pkgs.runCommand "nixos-module-keyboards-invalid-mixed" { } ''
+              touch "$out"
+            '';
+
+          nixos-module-keyboards-invalid-config-and-settings =
+            let
+              evalResult = builtins.tryEval (
+                (nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    kanata-switcher.nixosModules.default
+                    {
+                      services.kanata-switcher = {
+                        enable = true;
+                        keyboards.kinesis = {
+                          kanataPort = 22334;
+                          configFile = "${pkgs.writeText "kanata-switcher-test-config.json" "[]"}";
+                          settings = [ { default = "default"; } ];
+                        };
+                      };
+                      fileSystems."/".device = "/dev/disk/by-label/ci-root";
+                      fileSystems."/".fsType = "ext4";
+                      boot.loader.grub.devices = [ "/dev/sda" ];
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }).config.system.build.toplevel
+              );
+            in
+            assert (!evalResult.success);
+            pkgs.runCommand "nixos-module-keyboards-invalid-config-and-settings" { } ''
+              touch "$out"
+            '';
         };
-      });
+      }
+    );
 }

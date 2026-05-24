@@ -36,7 +36,12 @@ async function main() {
   const modulePath = GLib.build_filenamev([srcRoot, 'src/gnome-extension/daemon-state.js']);
   const moduleUrl = GLib.filename_to_uri(modulePath, null);
   const module = await import(moduleUrl);
-  const { disconnectedState, isDaemonOwnerAvailable } = module;
+  const {
+    disconnectedState,
+    initialFocusStatusState,
+    initialStatusState,
+    isDaemonOwnerAvailable
+  } = module;
 
   assertEqual(isDaemonOwnerAvailable(':1.23'), true, 'owner should be valid');
   assertEqual(isDaemonOwnerAvailable(''), false, 'empty owner should be invalid');
@@ -47,15 +52,34 @@ async function main() {
     'string'
   );
 
-  const state = disconnectedState();
-  assertEqual(state.status.layer, '', 'disconnected layer should be empty');
-  assertEqual(state.status.source, 'external', 'disconnected source should be external');
-  assertEqual(state.status.virtualKeys.length, 0, 'disconnected virtual keys should be empty');
-  assertEqual(state.focusStatus.layer, '', 'focus layer should be empty');
-  assertEqual(state.focusStatus.source, 'focus', 'focus source should be focus');
-  assertEqual(state.focusStatus.virtualKeys.length, 0, 'focus virtual keys should be empty');
-  assertTrue(state.lastStatus === state.status, 'lastStatus should mirror status');
+  const lastStatus = initialStatusState();
+  lastStatus.layer = 'terminal';
+  lastStatus.virtualKeys = ['v-terminal-ctl'];
+
+  const focusStatus = initialFocusStatusState();
+  focusStatus.layer = 'terminal';
+  focusStatus.virtualKeys = ['v-terminal-met'];
+
+  const state = disconnectedState(lastStatus, focusStatus);
+  assertEqual(state.status.layer, 'terminal', 'disconnected layer should preserve last status');
+  assertEqual(state.status.source, 'external', 'disconnected source should preserve last source');
+  assertEqual(state.status.virtualKeys.length, 1, 'disconnected virtual keys should be preserved');
+  assertEqual(state.focusStatus.layer, 'terminal', 'focus layer should preserve focus status');
+  assertEqual(state.focusStatus.source, 'focus', 'focus source should preserve focus source');
+  assertEqual(state.focusStatus.virtualKeys.length, 1, 'focus virtual keys should be preserved');
+  assertTrue(state.lastStatus === state.status, 'lastStatus should mirror disconnected status');
+  assertTrue(state.status !== lastStatus, 'disconnected status should be a clone');
+  assertTrue(state.focusStatus !== focusStatus, 'focus status should be a clone');
   assertEqual(state.paused, false, 'paused should be false');
+
+  assertThrows(
+    () => disconnectedState(null, focusStatus),
+    'lastStatus must be an object'
+  );
+  assertThrows(
+    () => disconnectedState(lastStatus, null),
+    'focusStatus must be an object'
+  );
 }
 
 main();
