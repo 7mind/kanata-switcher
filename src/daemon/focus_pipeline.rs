@@ -66,7 +66,7 @@ pub(crate) async fn update_status_for_focus(
         let virtual_keys = handler.current_virtual_keys();
         let focus_layer = actions
             .as_ref()
-            .and_then(|focus_actions| extract_focus_layer(focus_actions));
+            .and_then(extract_focus_layer);
         (actions, virtual_keys, focus_layer)
     };
 
@@ -74,10 +74,10 @@ pub(crate) async fn update_status_for_focus(
     let known_vks = kanata.known_virtual_keys().await;
     let valid_virtual_keys = KanataClient::filter_valid_virtual_keys(&known_vks, virtual_keys);
     status_broadcaster.update_virtual_keys(valid_virtual_keys);
-    if let Some(layer) = focus_layer {
-        if let Some(resolved_layer) = kanata.resolve_layer_name(&layer, false).await {
-            status_broadcaster.update_focus_layer(resolved_layer);
-        }
+    if let Some(layer) = focus_layer
+        && let Some(resolved_layer) = kanata.resolve_layer_name(&layer, false).await
+    {
+        status_broadcaster.update_focus_layer(resolved_layer);
     }
 
     actions
