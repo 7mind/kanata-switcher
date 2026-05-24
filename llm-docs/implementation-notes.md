@@ -13,6 +13,8 @@
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 
+Release workflow: `devops/release.sh` must only bump `kanata-switcher` in `Cargo.toml` and its own `Cargo.lock` package entry (`cargo update -p kanata-switcher --precise`). Dependency lockfile updates belong in `devops/update-libraries.sh` (`cargo update`) as a separate commit.
+
 ## Rust Dependencies
 
 Key crates:

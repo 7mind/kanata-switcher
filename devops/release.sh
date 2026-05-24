@@ -55,8 +55,8 @@ if not updated:
 path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 PY
 
-if ! nix develop "${REPO_ROOT}" --command cargo generate-lockfile; then
-  echo "Failed to regenerate Cargo.lock" >&2
+if ! nix develop "${REPO_ROOT}" --command cargo update -p kanata-switcher --precise "${NEW_VERSION}"; then
+  echo "Failed to update kanata-switcher in Cargo.lock" >&2
   exit 1
 fi
 
