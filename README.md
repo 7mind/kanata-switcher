@@ -31,11 +31,11 @@ This project features comprehensive automated test suite and supports an unusual
 
 ---
 
-## LLM section
+ ## LLM section
 
 ### Supported Environments
 
-All environments use the unified daemon (`src/daemon/`). Backends are event-driven, with one-shot focus queries on startup and unpause.
+All environments use the unified daemon (`src/daemon/`). Backends are event-driven, with one-shot focus queries on startup and unpause. Architecture is cross-platform: Linux (full supervisor, logind, SNI), macOS (NSWorkspace notifications), Windows (WinEvent foreground hook).
 
 | Environment                          | How it works                                                      |
 |--------------------------------------|-------------------------------------------------------------------|
@@ -45,6 +45,8 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 | wlroots (Sway, Hyprland, Niri, etc.) | Daemon receives `wlr-foreign-toplevel-management` protocol events |
 | X11                                  | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
 | Linux console (VT switch)            | Daemon monitors session state via systemd-logind DBus interface   |
+| macOS                                | NSWorkspace `didActivateApplicationNotification`                  |
+| Windows                              | `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND`                   |
 
 ### Lifecycle Behavior
 

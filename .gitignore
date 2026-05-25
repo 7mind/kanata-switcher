@@ -16,3 +16,7 @@ result-*
 
 # GNOME extension build artifacts
 *.shell-extension.zip
+
+# Development tools (third-party utilities for testing)
+kanata-vk-agent/
+window_tools/

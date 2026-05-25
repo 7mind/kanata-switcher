@@ -96,6 +96,9 @@ impl MockKanataServer {
                     }
                     Err(_) => break,
                 };
+                // On macOS, accepted sockets inherit O_NONBLOCK from the listener.
+                // Explicitly set blocking mode so BufReader reads work correctly.
+                stream.set_nonblocking(false).ok();
                 stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
 
                 // Send initial LayerChange message

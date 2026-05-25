@@ -9,6 +9,11 @@ const GNOME_EXTENSION_SCHEMA_FILES: &[&str] =
     &["schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml"];
 
 fn main() {
+    // GNOME extension is Linux-only
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
+
     for file in GNOME_EXTENSION_FILES {
         println!("cargo:rerun-if-changed={}/{}", GNOME_EXTENSION_SRC, file);
     }

@@ -1,6 +1,10 @@
+#[cfg(target_os = "linux")]
 pub(crate) mod client;
+#[cfg(target_os = "linux")]
 pub(crate) mod server;
+#[cfg(target_os = "linux")]
 pub(crate) mod persistent;
+#[cfg(target_os = "linux")]
 pub(crate) use persistent::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
