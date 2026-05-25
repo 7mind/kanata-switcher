@@ -28,7 +28,9 @@ The project daemon is located at `src/daemon/` (Rust). The repo now tracks upstr
 
 # Testing & Polish
 - [x] macOS `cargo check` passes (0 errors, 0 warnings)
-- [ ] Add macOS tests (normalize_process_name tests exist for windows)
+- [x] macOS integration tests: `integration_tests/macos.rs` — 8 tests covering bundle ID rule matching, regex, title matching, full async pipeline with MockKanataServer, pause/unpause cycle, and `current_window_info()` smoke test
+- [x] Windows integration tests: `integration_tests/windows.rs` — 7 tests covering process name rule matching, multiple focus changes, title matching, normalize pipeline, full async pipeline, and pause/unpause cycle
+- [x] `integration_tests` module enabled on macOS/Windows (was Linux-only); common module Linux-only submodules gated; mock server `set_nonblocking(false)` fix for macOS accept() inheritance
 - [ ] Config file watching for hot-reload
 
 # Notes

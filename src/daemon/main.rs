@@ -115,5 +115,4 @@ async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Syn
 mod tests;
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
 mod integration_tests;
