@@ -441,6 +441,14 @@ passed on the command line. To update the entry, rerun the install command with 
 
 Systemd units use `--quiet-focus` by default to reduce log noise.
 
+## Development
+
+Despite CLAUDE.md, most of the project was generated with `gpt-5.3-codex`, with the following option in `~/.codex/config.toml` to read CLAUDE.md:
+
+```
+project_doc_fallback_filenames = ["CLAUDE.md"]
+```
+
 ## Related Projects
 
 - [hyprkan](https://github.com/haithium/hyprkan) - Similar tool for wlroots (Hyprland/Sway/Niri) + X11
