@@ -512,6 +512,14 @@ On GNOME, the extension enumerates these owners and shows one top-bar
 indicator per daemon (panel label stays layer/VK only; the keyboard name
 appears in the per-indicator tooltip).
 
+## Development
+
+Despite CLAUDE.md, most of the project was generated with `gpt-5.3-codex`, with the following option in `~/.codex/config.toml` to read CLAUDE.md:
+
+```
+project_doc_fallback_filenames = ["CLAUDE.md"]
+```
+
 ## Related Projects
 
 - [hyprkan](https://github.com/haithium/hyprkan) - Similar tool for wlroots (Hyprland/Sway/Niri) + X11

@@ -73,6 +73,10 @@ Status: implemented for login1-backed lifecycle via `User.Display` properties-ch
 
 QA state: human testing status is tracked in `qa/`. Update those checklists after manual validation; they are part of the project state for LLM context.
 
+Release workflow: `devops/release.sh` must only bump `kanata-switcher` in `Cargo.toml` and its own `Cargo.lock` package entry (`cargo update -p kanata-switcher --precise`). Dependency lockfile updates belong in `devops/update-libraries.sh` (`cargo update`) as a separate commit.
+
+Source layout after the persistent-daemon refactor: runtime code is split into `src/daemon/{supervisor,lifecycle,backends,control}/` and other subsystem modules; automated tests are under `src/daemon/tests/` and `src/daemon/integration_tests/`. Historical references below to monolithic `main.rs`, `tests.rs`, and `integration_tests.rs` predate that split.
+
 ## Rust Dependencies
 
 Key crates:
