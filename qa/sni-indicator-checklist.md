@@ -22,6 +22,7 @@ Environment: Hyprland, No Panel, Wayland
 - [x] Unpause resumes focus processing
 - [x] "Show app layer only" toggles focus-only view
 - [x] Restart restarts daemon
+- [ ] Quit shuts the daemon down (process exits, indicator disappears, same observable effect as SIGTERM); no auto-restart unless an external supervisor is in place
 
 ## Persistence
 - [x] "Show app layer only" persists across daemon restarts when GSettings is available

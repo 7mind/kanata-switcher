@@ -43,6 +43,10 @@ nix build && ./result/bin/kanata-switcher -p 10000
 | Function | Purpose |
 |----------|---------|
 | `detect_environment()` | Checks env vars to pick backend |
+| `run_lifecycle_supervisor()` | Supervises runtime target transitions and backend start/stop |
+| `LifecycleProvider` | Selects `logind` continuous events or startup-only snapshot |
+| `session_type_to_session_kind()` | Maps logind session type + active state to lifecycle domain |
+| `resolve_runtime_target()` | Maps lifecycle state + desktop capabilities to concrete backend |
 | `run_gnome()` | GNOME backend (DBus poll) |
 | `run_kde()` | KDE backend (KWin script) |
 | `run_wayland()` | Unified Wayland backend (wlr/cosmic) |
@@ -67,3 +71,4 @@ Both protocols expose `title`, `app_id`, and `activated` state. The daemon tries
 - Kanata must be running with `-p PORT` before daemon starts
 - Default layer: auto-detected from Kanata unless `{"default": "layer"}` entry in config
 - GNOME extension auto-install is default; use `--no-install-gnome-extension` to disable
+- Continuous lifecycle transitions require login1 (`org.freedesktop.login1`); otherwise backend selection is startup-only

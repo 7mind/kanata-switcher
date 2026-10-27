@@ -4,6 +4,9 @@
 local
 worktrees
 
+# Git
+worktrees
+
 # Nix
 .direnv/
 result
@@ -14,3 +17,4 @@ result-*
 
 # GNOME extension build artifacts
 *.shell-extension.zip
+.codegraph/

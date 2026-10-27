@@ -11,10 +11,18 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane, rust-overlay }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      crane,
+      rust-overlay,
+    }:
     let
       # Packages per system
-      perSystem = flake-utils.lib.eachDefaultSystem (system:
+      perSystem = flake-utils.lib.eachDefaultSystem (
+        system:
         let
           pkgs = import nixpkgs {
             inherit system;
@@ -55,60 +63,70 @@
           # Rust daemon - include src/protocols/*.xml for wayland-scanner and src/gnome-extension/* for build.rs
           rustDaemonSrc = pkgs.lib.cleanSourceWith {
             src = ./.;
-            filter = path: type:
-              (craneLib.filterCargoSources path type) ||
-              (builtins.match ".*/src/protocols/.*\\.xml$" path != null) ||
-              (builtins.match ".*/src/gnome-extension/.*" path != null);
+            filter =
+              path: type:
+              (craneLib.filterCargoSources path type)
+              || (builtins.match ".*/src/protocols/.*\\.xml$" path != null)
+              || (builtins.match ".*/src/gnome-extension/.*" path != null);
           };
 
           rustDaemonCommonArgs = {
             src = rustDaemonSrc;
             strictDeps = true;
             buildInputs = [ pkgs.dbus ];
-            nativeBuildInputs = [ pkgs.pkg-config pkgs.buildPackages.glib.dev ];
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.buildPackages.glib.dev
+            ];
           };
 
           rustDaemonCargoArtifacts = craneLib.buildDepsOnly rustDaemonCommonArgs;
 
-          kanata-switcher-daemon = craneLib.buildPackage (rustDaemonCommonArgs // {
-            cargoArtifacts = rustDaemonCargoArtifacts;
+          kanata-switcher-daemon = craneLib.buildPackage (
+            rustDaemonCommonArgs
+            // {
+              cargoArtifacts = rustDaemonCargoArtifacts;
 
-            doCheck = false;
+              doCheck = false;
 
-            # Disable embedded extension since we bundle files alongside binary
-            cargoExtraArgs = "--no-default-features";
+              # Disable embedded extension since we bundle files alongside binary
+              cargoExtraArgs = "--no-default-features";
 
-            postInstall = ''
-              mkdir -p $out/bin/gnome
-              mkdir -p $out/bin/gnome/schemas
-              cp ${./src/gnome-extension}/*.js $out/bin/gnome/
-              cp ${./src/gnome-extension}/metadata.json $out/bin/gnome/
-              cp ${./src/gnome-extension}/schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml $out/bin/gnome/schemas/
-              ${pkgs.buildPackages.glib.dev}/bin/glib-compile-schemas $out/bin/gnome/schemas
-            '';
+              postInstall = ''
+                mkdir -p $out/bin/gnome
+                mkdir -p $out/bin/gnome/schemas
+                cp ${./src/gnome-extension}/*.js $out/bin/gnome/
+                cp ${./src/gnome-extension}/metadata.json $out/bin/gnome/
+                cp ${./src/gnome-extension}/schemas/org.gnome.shell.extensions.kanata-switcher.gschema.xml $out/bin/gnome/schemas/
+                ${pkgs.buildPackages.glib.dev}/bin/glib-compile-schemas $out/bin/gnome/schemas
+              '';
 
-            meta = with pkgs.lib; {
-              description = "Daemon for switching kanata layers based on focused window";
-              license = licenses.mit;
-              mainProgram = "kanata-switcher";
-            };
-          });
+              meta = with pkgs.lib; {
+                description = "Daemon for switching kanata layers based on focused window";
+                license = licenses.mit;
+                mainProgram = "kanata-switcher";
+              };
+            }
+          );
 
           # Test archive - compile tests into nextest archive (cached)
-          kanata-switcher-test-archive = craneLib.mkCargoDerivation (rustDaemonCommonArgs // {
-            pname = "kanata-switcher-test-archive";
-            cargoArtifacts = rustDaemonCargoArtifacts;
-            nativeBuildInputs = rustDaemonCommonArgs.nativeBuildInputs ++ [ pkgs.cargo-nextest ];
+          kanata-switcher-test-archive = craneLib.mkCargoDerivation (
+            rustDaemonCommonArgs
+            // {
+              pname = "kanata-switcher-test-archive";
+              cargoArtifacts = rustDaemonCargoArtifacts;
+              nativeBuildInputs = rustDaemonCommonArgs.nativeBuildInputs ++ [ pkgs.cargo-nextest ];
 
-            # Build test archive without running
-            buildPhaseCargoCommand = ''
-              mkdir -p $out
-              cargo nextest archive --release --archive-file $out/archive.tar.zst
-            '';
+              # Build test archive without running
+              buildPhaseCargoCommand = ''
+                mkdir -p $out
+                cargo nextest archive --release --archive-file $out/archive.tar.zst
+              '';
 
-            installPhaseCommand = "true";  # Archive created in build phase
-            doInstallCargoArtifacts = false;
-          });
+              installPhaseCommand = "true"; # Archive created in build phase
+              doInstallCargoArtifacts = false;
+            }
+          );
 
           # Script to run tests from nextest archive
           # Runs from temp directory with minimal Cargo.toml so nextest can write output files
@@ -126,14 +144,18 @@
 
           # Check derivation that runs tests (reuses run-tests script)
           # Adds dbus-daemon to PATH for DBus integration tests
-          kanata-switcher-tests = pkgs.runCommand "kanata-switcher-tests" {
-            nativeBuildInputs = [ pkgs.dbus ];
-          } ''
-            ${run-tests}/bin/run-tests
-            touch $out
-          '';
+          kanata-switcher-tests =
+            pkgs.runCommand "kanata-switcher-tests"
+              {
+                nativeBuildInputs = [ pkgs.dbus ];
+              }
+              ''
+                ${run-tests}/bin/run-tests
+                touch $out
+              '';
 
-        in {
+        in
+        {
           packages = {
             daemon = kanata-switcher-daemon;
             gnome-extension = kanata-switcher-gnome-extension;
@@ -158,11 +180,83 @@
                   }
                 ];
               }).config.system.build.toplevel;
-            gnome-schema = pkgs.runCommand "kanata-switcher-gnome-schema-check" {} ''
+            nixos-module-keyboard-suffix-check =
+              let
+                multiplexConfig = (nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.default
+                    {
+                      services.kanata-switcher = {
+                        enable = true;
+                        keyboards = {
+                          kinesis = {
+                            kanataPort = 22334;
+                            settings = [ { default = "default"; } ];
+                          };
+                          framework13 = {
+                            kanataPort = 22335;
+                            settings = [ { default = "default"; } ];
+                          };
+                        };
+                      };
+                      boot.isContainer = true;
+                      fileSystems."/" = {
+                        device = "tmpfs";
+                        fsType = "tmpfs";
+                      };
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }).config;
+                singleConfig = (nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.default
+                    {
+                      services.kanata-switcher.enable = true;
+                      boot.isContainer = true;
+                      fileSystems."/" = {
+                        device = "tmpfs";
+                        fsType = "tmpfs";
+                      };
+                      system.stateVersion = "23.11";
+                    }
+                  ];
+                }).config;
+                kinesisUnit = multiplexConfig.systemd.user.services."kanata-switcher-kinesis";
+                fwUnit = multiplexConfig.systemd.user.services."kanata-switcher-framework13";
+                singleUnit = singleConfig.systemd.user.services."kanata-switcher";
+              in
+              pkgs.runCommand "kanata-switcher-keyboard-suffix-check" { } ''
+                set -euo pipefail
+                kinesis_exec=${pkgs.lib.escapeShellArg kinesisUnit.serviceConfig.ExecStart}
+                fw_exec=${pkgs.lib.escapeShellArg fwUnit.serviceConfig.ExecStart}
+                single_exec=${pkgs.lib.escapeShellArg singleUnit.serviceConfig.ExecStart}
+                echo "kinesis ExecStart: $kinesis_exec"
+                echo "framework13 ExecStart: $fw_exec"
+                echo "single-instance ExecStart: $single_exec"
+                case "$kinesis_exec" in
+                  *"--dbus-suffix kinesis"*) : ;;
+                  *) echo "kanata-switcher-kinesis is missing --dbus-suffix kinesis"; exit 1 ;;
+                esac
+                case "$fw_exec" in
+                  *"--dbus-suffix framework13"*) : ;;
+                  *) echo "kanata-switcher-framework13 is missing --dbus-suffix framework13"; exit 1 ;;
+                esac
+                case "$single_exec" in
+                  *"--dbus-suffix"*)
+                    echo "single-instance unit must not include --dbus-suffix (suffix is auto-derived)"
+                    exit 1
+                    ;;
+                esac
+                touch $out
+              '';
+            gnome-schema = pkgs.runCommand "kanata-switcher-gnome-schema-check" { } ''
               test -f ${kanata-switcher-gnome-extension}/share/gnome-shell/extensions/kanata-switcher@7mind.io/schemas/gschemas.compiled
               touch $out
             '';
-            gnome-extension-files = pkgs.runCommand "kanata-switcher-gnome-extension-files-check" {} ''
+            gnome-extension-files = pkgs.runCommand "kanata-switcher-gnome-extension-files-check" { } ''
               set -euo pipefail
 
               expected_js=$(
@@ -202,15 +296,19 @@
               test -f "$daemon_gnome_dir/metadata.json"
               touch $out
             '';
-            gnome-format = pkgs.runCommand "kanata-switcher-gnome-format-check" {
-              nativeBuildInputs = [ pkgs.gjs ];
-            } ''
-              KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-format.js}
-              KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-dbus.js}
-              KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-daemon-state.js}
-              KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-focus.js}
-              touch $out
-            '';
+            gnome-format =
+              pkgs.runCommand "kanata-switcher-gnome-format-check"
+                {
+                  nativeBuildInputs = [ pkgs.gjs ];
+                }
+                ''
+                  KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-format.js}
+                  KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-dbus.js}
+                  KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-daemon-state.js}
+                  KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-focus.js}
+                  KANATA_SWITCHER_SRC=${./.} ${pkgs.gjs}/bin/gjs -m ${./tests/gnome-extension-multiplex.js}
+                  touch $out
+                '';
           };
 
           apps.test = {
@@ -227,7 +325,7 @@
               rust-analyzer
               pkg-config
               # For X11 integration tests
-              xorg.xorgserver  # provides Xvfb
+              xorg.xorgserver # provides Xvfb
               xvfb-run
             ];
 
@@ -242,168 +340,353 @@
         }
       );
 
-    in perSystem // (let
-      moduleOptions = lib: packages: {
-        enable = lib.mkEnableOption "kanata-switcher daemon";
-
-        package = lib.mkOption {
-          type = lib.types.package;
-          default = packages.daemon;
-          description = "kanata-switcher daemon package";
-        };
-
-        kanataPort = lib.mkOption {
-          type = lib.types.port;
-          default = 10000;
-          description = "Kanata TCP port";
-        };
-
-        kanataHost = lib.mkOption {
-          type = lib.types.str;
-          default = "127.0.0.1";
-          description = "Kanata host address";
-        };
-
-        configFile = lib.mkOption {
-          type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-          default = null;
-          example = "~/.config/kanata/kanata-switcher.json";
-          description = "Path to config file. Mutually exclusive with 'settings'. Defaults to ~/.config/kanata/kanata-switcher.json when neither is set.";
-        };
-
-        settings = lib.mkOption {
-          type = lib.types.nullOr (lib.types.listOf lib.types.attrs);
-          default = null;
-          example = lib.literalExpression ''
-            [
-              { default = "default"; }
-              { class = "^firefox$"; layer = "browser"; }
-              { class = "jetbrains|codium|code"; layer = "code"; }
-              { class = "kitty|alacritty"; layer = "terminal"; }
-            ]
-          '';
-          description = "Config as a list of rule attrsets, serialized to JSON. Mutually exclusive with 'configFile'.";
-        };
-
-        logging = lib.mkOption {
-          type = lib.types.enum [ "quiet" "quiet-focus" "none" ];
-          default = "quiet-focus";
-          description = "Log verbosity for systemd units. quiet = suppress focus + layer logs, quiet-focus = suppress focus logs only, none = no suppression.";
-        };
-
-        gnomeExtension = {
-          enable = lib.mkEnableOption "GNOME Shell extension for kanata-switcher (Nix-managed)";
-
-          autoInstall = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Auto-install GNOME extension at runtime (for mutable config). When false, use gnomeExtension.enable for Nix-managed installation.";
-          };
-
-          manageDconf = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Whether to manage dconf/GNOME Shell enabled-extensions. Set to false when using external extension management (e.g., a centralized gnome-extensions module with locked dconf settings).";
-          };
+    in
+    perSystem
+    // (
+      let
+        moduleOptions = lib: packages: {
+          enable = lib.mkEnableOption "kanata-switcher daemon";
 
           package = lib.mkOption {
             type = lib.types.package;
-            default = packages.gnome-extension;
-            description = "kanata-switcher GNOME extension package";
+            default = packages.daemon;
+            description = "kanata-switcher daemon package";
           };
-        };
-      };
 
-      mkModule = mkConfig: { config, lib, pkgs, ... }:
-        let
-          cfg = config.services.kanata-switcher;
-          packages = self.packages.${pkgs.stdenv.hostPlatform.system};
-          configFile =
-            if cfg.configFile != null then cfg.configFile
-            else if cfg.settings != null then pkgs.writeText "kanata-switcher.json" (builtins.toJSON cfg.settings)
-            else null;
-          loggingArg =
-            if cfg.logging == "quiet" then "--quiet"
-            else if cfg.logging == "quiet-focus" then "--quiet-focus"
-            else null;
-          execArgs = [
-            "${cfg.package}/bin/kanata-switcher"
-            "-p" (toString cfg.kanataPort)
-            "-H" cfg.kanataHost
-          ] ++ lib.optionals (loggingArg != null) [ loggingArg ]
-            ++ lib.optionals (configFile != null) [ "-c" (toString configFile) ]
-            ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [ "--no-install-gnome-extension" ];
-        in {
-          options.services.kanata-switcher = moduleOptions lib packages;
-          config = lib.mkIf cfg.enable ({
-            assertions = [{
-              assertion = cfg.configFile == null || cfg.settings == null;
-              message = "services.kanata-switcher: 'configFile' and 'settings' are mutually exclusive";
-            }];
-          } // mkConfig cfg lib execArgs);
-        };
-
-    in {
-      lib.moduleOptions = moduleOptions;
-
-      nixosModules.default = mkModule (cfg: lib: execArgs: {
-        environment.systemPackages = [ cfg.package ]
-          ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
-
-        systemd.user.services.kanata-switcher = {
-          description = "Kanata layer switcher daemon";
-          after = [ "graphical-session.target" ];
-          partOf = [ "graphical-session.target" ];
-          wantedBy = [ "graphical-session.target" ];
-          serviceConfig = {
-            Type = "simple";
-            ExecStart = lib.concatStringsSep " " execArgs;
-            Restart = "on-failure";
-            RestartSec = 5;
+          kanataPort = lib.mkOption {
+            type = lib.types.port;
+            default = 10000;
+            description = "Kanata TCP port";
           };
-          environment.XDG_DATA_DIRS = "/run/current-system/sw/share";
-          # restartTriggers adds X-Restart-Triggers to unit file, but NixOS doesn't
-          # process it for user services - only system services are handled.
-          # See: https://github.com/NixOS/nixpkgs/issues/246611
-          restartTriggers = [
-            (builtins.toJSON { settings = cfg.settings; configFile = cfg.configFile; })
-          ];
-        };
 
-        programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
-          enable = true;
-          profiles.user.databases = [{
-            settings."org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
-          }];
-        };
-      });
+          kanataHost = lib.mkOption {
+            type = lib.types.str;
+            default = "127.0.0.1";
+            description = "Kanata host address";
+          };
 
-      homeModules.default = mkModule (cfg: lib: execArgs: {
-        home.packages = [ cfg.package ]
-          ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
+          configFile = lib.mkOption {
+            type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+            default = null;
+            example = "~/.config/kanata/kanata-switcher.json";
+            description = "Path to config file. Mutually exclusive with 'settings'. Defaults to ~/.config/kanata/kanata-switcher.json when neither is set.";
+          };
 
-        systemd.user.services.kanata-switcher = {
-          Unit = {
-            Description = "Kanata layer switcher daemon";
-            After = [ "graphical-session.target" ];
-            PartOf = [ "graphical-session.target" ];
-            X-Restart-Triggers = [
-              (toString (builtins.toJSON { settings = cfg.settings; configFile = cfg.configFile; }))
+          settings = lib.mkOption {
+            type = lib.types.nullOr (lib.types.listOf lib.types.attrs);
+            default = null;
+            example = lib.literalExpression ''
+              [
+                { default = "default"; }
+                { class = "^firefox$"; layer = "browser"; }
+                { class = "jetbrains|codium|code"; layer = "code"; }
+                { class = "kitty|alacritty"; layer = "terminal"; }
+              ]
+            '';
+            description = "Config as a list of rule attrsets, serialized to JSON. Mutually exclusive with 'configFile'.";
+          };
+
+          logging = lib.mkOption {
+            type = lib.types.enum [
+              "quiet"
+              "quiet-focus"
+              "none"
             ];
+            default = "quiet-focus";
+            description = "Log verbosity for systemd units. quiet = suppress focus + layer logs, quiet-focus = suppress focus logs only, none = no suppression.";
           };
-          Service = {
-            Type = "simple";
-            ExecStart = lib.concatStringsSep " " execArgs;
-            Restart = "on-failure";
-            RestartSec = 5;
-            Environment = [ "XDG_DATA_DIRS=%h/.nix-profile/share:/run/current-system/sw/share" ];
+
+          keyboards = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule (
+                { name, ... }:
+                {
+                  options = {
+                    kanataPort = lib.mkOption {
+                      type = lib.types.port;
+                      default = 10000;
+                      description = "Kanata TCP port for this keyboard instance";
+                    };
+
+                    kanataHost = lib.mkOption {
+                      type = lib.types.str;
+                      default = "127.0.0.1";
+                      description = "Kanata host address for this keyboard instance";
+                    };
+
+                    configFile = lib.mkOption {
+                      type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+                      default = null;
+                      example = "~/.config/kanata/kanata-switcher-${name}.json";
+                      description = "Path to config file for this keyboard instance. Mutually exclusive with 'settings'. Defaults to ~/.config/kanata/kanata-switcher.json when neither is set.";
+                    };
+
+                    settings = lib.mkOption {
+                      type = lib.types.nullOr (lib.types.listOf lib.types.attrs);
+                      default = null;
+                      example = lib.literalExpression ''
+                        [
+                          { default = "default"; }
+                          { class = "^firefox$"; layer = "browser"; }
+                          { class = "jetbrains|codium|code"; layer = "code"; }
+                          { class = "kitty|alacritty"; layer = "terminal"; }
+                        ]
+                      '';
+                      description = "Config as a list of rule attrsets, serialized to JSON, for this keyboard instance. Mutually exclusive with 'configFile'.";
+                    };
+
+                    logging = lib.mkOption {
+                      type = lib.types.enum [
+                        "quiet"
+                        "quiet-focus"
+                        "none"
+                      ];
+                      default = "quiet-focus";
+                      description = "Log verbosity for this keyboard instance. quiet = suppress focus + layer logs, quiet-focus = suppress focus logs only, none = no suppression.";
+                    };
+                  };
+                }
+              )
+            );
+            default = { };
+            description = "Optional multiplex mode. When non-empty, create one service instance per keyboard as kanata-switcher-<name>. In this mode top-level kanataPort/kanataHost/configFile/settings/logging must stay at defaults.";
           };
-          Install.WantedBy = [ "graphical-session.target" ];
+
+          gnomeExtension = {
+            enable = lib.mkEnableOption "GNOME Shell extension for kanata-switcher (Nix-managed)";
+
+            autoInstall = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Auto-install GNOME extension at runtime (for mutable config). When false, use gnomeExtension.enable for Nix-managed installation.";
+            };
+
+            manageDconf = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Whether to manage dconf/GNOME Shell enabled-extensions. Set to false when using external extension management (e.g., a centralized gnome-extensions module with locked dconf settings).";
+            };
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = packages.gnome-extension;
+              description = "kanata-switcher GNOME extension package";
+            };
+          };
         };
 
-        dconf.settings = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
-          "org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
-        };
-      });
-    });
+        mkModule =
+          mkConfig:
+          {
+            config,
+            lib,
+            pkgs,
+            ...
+          }:
+          let
+            cfg = config.services.kanata-switcher;
+            packages = self.packages.${pkgs.stdenv.hostPlatform.system};
+            keyboardMode = cfg.keyboards != { };
+            defaultTopLevelValues = {
+              kanataPort = 10000;
+              kanataHost = "127.0.0.1";
+              configFile = null;
+              settings = null;
+              logging = "quiet-focus";
+            };
+            ensureConfigFile =
+              name: instanceCfg:
+              if instanceCfg.configFile != null then
+                instanceCfg.configFile
+              else if instanceCfg.settings != null then
+                pkgs.writeText "kanata-switcher-${name}.json" (builtins.toJSON instanceCfg.settings)
+              else
+                null;
+            loggingArg =
+              logging:
+              if logging == "quiet" then
+                "--quiet"
+              else if logging == "quiet-focus" then
+                "--quiet-focus"
+              else
+                null;
+            buildExecArgs =
+              name: instanceCfg:
+              let
+                configFile = ensureConfigFile name instanceCfg;
+                logArg = loggingArg instanceCfg.logging;
+              in
+              [
+                "${cfg.package}/bin/kanata-switcher"
+                "-p"
+                (toString instanceCfg.kanataPort)
+                "-H"
+                instanceCfg.kanataHost
+              ]
+              ++ lib.optionals (logArg != null) [ logArg ]
+              ++ lib.optionals (configFile != null) [
+                "-c"
+                (toString configFile)
+              ]
+              ++ lib.optionals keyboardMode [
+                "--dbus-suffix"
+                name
+              ]
+              ++ lib.optionals (!cfg.gnomeExtension.autoInstall) [ "--no-install-gnome-extension" ];
+            singleServiceName = "kanata-switcher";
+            singleInstanceConfig = {
+              inherit (cfg)
+                kanataPort
+                kanataHost
+                configFile
+                settings
+                logging
+                ;
+            };
+            serviceToKeyboard =
+              if keyboardMode then
+                lib.mapAttrs' (
+                  keyboardName: _:
+                  lib.nameValuePair "kanata-switcher-${keyboardName}" keyboardName
+                ) cfg.keyboards
+              else
+                { ${singleServiceName} = null; };
+            instances = lib.mapAttrs (
+              _: keyboardName:
+              if keyboardName == null then singleInstanceConfig else cfg.keyboards.${keyboardName}
+            ) serviceToKeyboard;
+            execArgsByInstance = lib.mapAttrs (
+              serviceName: keyboardName:
+              let
+                instanceCfg = instances.${serviceName};
+                configName = if keyboardName == null then serviceName else keyboardName;
+              in
+              buildExecArgs configName instanceCfg
+            ) serviceToKeyboard;
+            restartTriggersByInstance = lib.mapAttrs (
+              serviceName: keyboardName:
+              let
+                instanceCfg = instances.${serviceName};
+              in
+              builtins.toJSON {
+                settings = instanceCfg.settings;
+                configFile = instanceCfg.configFile;
+                kanataPort = instanceCfg.kanataPort;
+                kanataHost = instanceCfg.kanataHost;
+                logging = instanceCfg.logging;
+                keyboard = keyboardName;
+              }
+            ) serviceToKeyboard;
+          in
+          {
+            options.services.kanata-switcher = moduleOptions lib packages;
+            config = lib.mkIf cfg.enable (
+              {
+                assertions = [
+                  {
+                    assertion =
+                      (!keyboardMode)
+                      || (
+                        cfg.kanataPort == defaultTopLevelValues.kanataPort
+                        && cfg.kanataHost == defaultTopLevelValues.kanataHost
+                        && cfg.configFile == defaultTopLevelValues.configFile
+                        && cfg.settings == defaultTopLevelValues.settings
+                        && cfg.logging == defaultTopLevelValues.logging
+                      );
+                    message = "services.kanata-switcher: when 'keyboards' is non-empty, top-level kanataPort/kanataHost/configFile/settings/logging must not be set";
+                  }
+                ]
+                ++ lib.optionals (!keyboardMode) [
+                  {
+                    assertion = cfg.configFile == null || cfg.settings == null;
+                    message = "services.kanata-switcher: 'configFile' and 'settings' are mutually exclusive";
+                  }
+                ]
+                ++ lib.mapAttrsToList (name: instanceCfg: {
+                  assertion = instanceCfg.configFile == null || instanceCfg.settings == null;
+                  message = "services.kanata-switcher: keyboards.${name}.configFile and keyboards.${name}.settings are mutually exclusive";
+                }) cfg.keyboards;
+              }
+              // mkConfig cfg lib pkgs {
+                inherit keyboardMode;
+                inherit instances;
+                inherit execArgsByInstance;
+                inherit restartTriggersByInstance;
+              }
+            );
+          };
+
+      in
+      {
+        lib.moduleOptions = moduleOptions;
+
+        nixosModules.default = mkModule (
+          cfg: lib: pkgs: runtimeCfg: {
+            environment.systemPackages = [
+              cfg.package
+            ]
+            ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
+
+            systemd.user.services = lib.mapAttrs' (
+              name: _:
+              lib.nameValuePair name {
+                description = "Kanata layer switcher daemon (${name})";
+                wantedBy = [ "default.target" ];
+                serviceConfig = {
+                  Type = "simple";
+                  ExecStart = lib.concatStringsSep " " runtimeCfg.execArgsByInstance.${name};
+                  Restart = "on-failure";
+                  RestartSec = 5;
+                };
+                environment.XDG_DATA_DIRS = "/run/current-system/sw/share";
+                # restartTriggers adds X-Restart-Triggers to unit file, but NixOS doesn't
+                # process it for user services - only system services are handled.
+                # See: https://github.com/NixOS/nixpkgs/issues/246611
+                restartTriggers = [ runtimeCfg.restartTriggersByInstance.${name} ];
+              }
+            ) runtimeCfg.instances;
+
+            programs.dconf = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
+              enable = true;
+              profiles.user.databases = [
+                {
+                  settings."org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
+                }
+              ];
+            };
+          }
+        );
+
+        homeModules.default = mkModule (
+          cfg: lib: pkgs: runtimeCfg: {
+            home.packages = [
+              cfg.package
+            ]
+            ++ lib.optionals cfg.gnomeExtension.enable [ cfg.gnomeExtension.package ];
+
+            systemd.user.services = lib.mapAttrs' (
+              name: _:
+              lib.nameValuePair name {
+                Unit = {
+                  Description = "Kanata layer switcher daemon (${name})";
+                  X-Restart-Triggers = [ (toString runtimeCfg.restartTriggersByInstance.${name}) ];
+                };
+                Service = {
+                  Type = "simple";
+                  ExecStart = lib.concatStringsSep " " runtimeCfg.execArgsByInstance.${name};
+                  Restart = "on-failure";
+                  RestartSec = 5;
+                  Environment = [ "XDG_DATA_DIRS=%h/.nix-profile/share:/run/current-system/sw/share" ];
+                };
+                Install.WantedBy = [ "default.target" ];
+              }
+            ) runtimeCfg.instances;
+
+            dconf.settings = lib.mkIf (cfg.gnomeExtension.enable && cfg.gnomeExtension.manageDconf) {
+              "org/gnome/shell".enabled-extensions = [ "kanata-switcher@7mind.io" ];
+            };
+          }
+        );
+      }
+    );
 }
