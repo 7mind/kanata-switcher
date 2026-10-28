@@ -50,6 +50,19 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 
 Linux control (`--pause`, `--unpause`, `--restart`) and autostart install/uninstall commands work without a config file or a running Kanata TCP server. These commands require Linux; other platforms report an explicit error.
 
+### Native platform tests
+
+See [tests/native/README.md](tests/native/README.md) for desktop integration tests
+that launch real macOS/Windows applications and assert the daemon's TCP output.
+CI runs Cargo tests, release builds and native tests on both operating systems,
+as well as Linux and existing Nix/module checks. The TCP peer substitutes for
+Kanata; tests do not exercise keyboard drivers. Logs are retained as CI artifacts.
+
+On macOS, `class` is the bundle identifier and titles are unavailable through
+NSWorkspace. On Windows, `class` is the executable stem in lowercase with spaces
+replaced by underscores; foreground window-title changes are also observed.
+Graceful shutdown releases managed virtual keys and restores the default layer.
+
 ### Lifecycle Behavior
 
 - With `org.freedesktop.login1` available (systemd-logind/elogind), the daemon continuously tracks session lifecycle (`tty`/`wayland`/`x11` + active/inactive) and transitions backends internally without systemd restart helper services.

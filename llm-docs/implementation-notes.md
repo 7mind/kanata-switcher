@@ -327,3 +327,18 @@ GNOME and KDE backends share a unified DBus service:
 - Flow tests: verify rule matching produces expected `FocusActions`
 - Property tests (proptest): verify invariants like "release before press"
 - Tests cover fallthrough, VK lifecycle, action ordering, edge cases
+
+
+## Native backend integration
+
+Native listeners are ready before the initial focus query. They coalesce invalidations
+in a one-slot channel and query current focus on consumption, avoiding stale startup
+snapshots. Windows uses per-thread callback storage and registers FOREGROUND and
+NAMECHANGE hooks after creating the message queue; failed hooks surface as errors.
+macOS owns the notification observer on a dedicated, bounded-turn run-loop thread.
+RAII guards stop and join listeners on normal return or future cancellation.
+The shared native loop releases held keys on pause/exit and refreshes focus on
+unpause. Platform signal tasks are aborted when the backend returns.
+
+`tests/native/README.md` defines the real desktop suite and its TCP-peer boundary.
+Synthetic platform pipeline tests remain useful but do not prove native event delivery.

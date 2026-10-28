@@ -14,10 +14,12 @@ pub(crate) async fn run(
     pause_broadcaster: PauseBroadcaster,
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
+    // Register before spawning so an early SIGTERM cannot bypass cleanup.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let shutdown_handle_for_signal = shutdown_handle.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
-        eprintln!("[Signal] Received Ctrl+C");
+    let signal_task = tokio::spawn(async move {
+        tokio::select! { _ = terminate.recv() => {}, _ = interrupt.recv() => {} }
         shutdown_handle_for_signal.request();
     });
 
@@ -32,6 +34,8 @@ pub(crate) async fn run(
         effective_bus_name: String::new(),
         display_override: None,
     };
-    backend.run(ctx).await?;
+    let result = backend.run(ctx).await;
+    signal_task.abort();
+    result?;
     Ok(RunOutcome::Exit)
 }

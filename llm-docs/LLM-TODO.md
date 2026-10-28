@@ -27,14 +27,17 @@ The project daemon is located at `src/daemon/` (Rust). The repo now tracks upstr
 - [ ] Package for distribution (mac: .app bundle, win: installer)
 
 # Testing & Polish
+- [x] Native desktop suite (`tests/native/run.py`): real fixture apps → OS notifications/hooks → release daemon → TCP peer; strict action order and graceful shutdown. CI matrix covers macOS, Windows and Linux. Native desktop results must be read from CI; cross-compilation alone is insufficient.
+- [x] Shared native loop tests cover pause/unpause resync, key release, pre-requested shutdown and source failure; platform watcher tests exercise repeated immediate stop/start.
 - [x] macOS `cargo check` passes (0 errors, 0 warnings)
-- [x] macOS integration tests: `integration_tests/macos.rs` — 8 tests covering bundle ID rule matching, regex, title matching, full async pipeline with MockKanataServer, pause/unpause cycle, and `current_window_info()` smoke test
-- [x] Windows integration tests: `integration_tests/windows.rs` — 7 tests covering process name rule matching, multiple focus changes, title matching, normalize pipeline, full async pipeline, and pause/unpause cycle
+- [x] macOS synthetic pipeline tests: `integration_tests/macos.rs` — 8 tests covering bundle ID rule matching, regex, title matching, full async pipeline with MockKanataServer, pause/unpause cycle, and `current_window_info()` smoke test
+- [x] Windows synthetic pipeline tests: `integration_tests/windows.rs` — 7 tests covering process name rule matching, multiple focus changes, title matching, normalize pipeline, full async pipeline, and pause/unpause cycle
 - [x] `integration_tests` module enabled on macOS/Windows (was Linux-only); common module Linux-only submodules gated; mock server `set_nonblocking(false)` fix for macOS accept() inheritance
 - [ ] Config file watching for hot-reload
 
 # Notes
-- 2026-10-27: Restored Linux compilation/lifecycle factory tests after platform extraction; Linux control/autostart dispatch runs before config/connection, covered by subprocess + private DBus tests. Xvfb fixtures disable reset between readiness probe and clients. Cargo tests/release and all five GJS suites pass; local Nix execution unavailable (cache policy and missing sandbox shell).
+- 2026-10-27: Native watchers now register before querying focus, coalesce fresh queries, own/join listener threads, and release managed keys on shutdown. Windows watches foreground titles; macOS handles SIGTERM; Windows handles Ctrl+Break. Verified 271 local Cargo tests, release build, five GJS suites and cross-target macOS/Windows Clippy. Native runtime assertions are wired into CI and await their platform runs. Luna reviewed original bugs and changes.
+- 2026-10-27: Restored Linux compilation and lifecycle factory tests after platform extraction; Linux control/autostart dispatch runs before config/connection, covered by subprocess + private DBus tests. Xvfb fixtures disable reset between readiness probe and test clients. Cargo tests/release and all five GJS suites pass; local Nix execution remains unavailable (cache policy and missing sandbox shell).
 - 2026-10-27: Merged current upstream persistent-daemon; preserved both ignore lists and release notes. Baseline Cargo tests/build expose pre-existing PR compile failures; repairs and native integration coverage follow. Nix validation attempted but cache.nixos.org is denied by this execution environment.
 - 2026-05-23: Cross-platform support landed. macOS/Windows backends implement `FocusBackend` via NSWorkspace notifications (macOS) and WinEvent foreground hooks (Windows). Platform dispatch at `src/daemon/platform/`. All Linux-specific code gated behind `#[cfg(target_os = "linux")]`.
 - 2026-05-24: Release automation split package-version bumps from dependency updates. `devops/release.sh` updates only the root `kanata-switcher` lock entry; `devops/update-libraries.sh` updates dependency lock entries separately.

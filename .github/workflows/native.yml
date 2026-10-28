@@ -1,0 +1,61 @@
+name: Rust and native desktop integration
+
+on:
+  push:
+    branches: [main, persistent-daemon, but-mac-and-win]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux test dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libglib2.0-bin xvfb gjs
+      - name: Clippy
+        run: cargo clippy --locked --all-targets
+      - name: Cargo tests
+        run: cargo test --locked
+      - name: Build release binary
+        run: cargo build --locked --release
+      - name: GNOME extension tests
+        if: runner.os == 'Linux'
+        run: |
+          for test in tests/gnome-extension-*.js; do
+            KANATA_SWITCHER_SRC="$PWD" gjs -m "$test"
+          done
+      - name: Set up MSVC for native window fixture
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Native macOS desktop integration
+        if: runner.os == 'macOS'
+        run: python3 tests/native/run.py --binary target/release/kanata-switcher
+      - name: Native Windows desktop integration
+        if: runner.os == 'Windows'
+        run: python tests/native/run.py --binary target/release/kanata-switcher.exe
+      - name: Upload native integration logs
+        if: always() && runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-logs-${{ matrix.os }}
+          path: target/native-test-logs/
+          if-no-files-found: warn

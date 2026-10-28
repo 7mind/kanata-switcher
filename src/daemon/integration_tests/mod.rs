@@ -26,7 +26,7 @@ use std::thread;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
-mod common;
+pub(crate) mod common;
 pub(super) use common::*;
 
 #[cfg(target_os = "linux")]

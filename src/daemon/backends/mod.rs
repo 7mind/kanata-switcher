@@ -13,6 +13,8 @@ pub(crate) mod x11;
 pub(crate) mod macos;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+mod native;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_console;
 
