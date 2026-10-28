@@ -1,4 +1,4 @@
-//! Shared native backend loop. Event sources send invalidations, not stale snapshots.
+//! Shared native backend loop. Event sources coalesce wakeups and expose latest focus.
 use tokio::sync::mpsc::Receiver;
 
 use crate::backends::{BackendExit, BackendRunContext};
@@ -28,7 +28,7 @@ pub(super) async fn run(
     query: impl Fn() -> WindowInfo,
 ) -> Result<BackendExit, DynError> {
     // The caller registers the native listener before entering this function.
-    // A fresh query also makes queued startup events and coalescing harmless.
+    // Reading the source's latest state also handles queued startup wakeups.
     let mut shutdown = ctx.shutdown_handle.subscribe();
     let mut restart = ctx.restart_handle.subscribe();
     let mut pause = ctx.pause_broadcaster.subscribe();

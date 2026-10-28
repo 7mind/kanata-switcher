@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
@@ -11,8 +11,11 @@ use std::time::Duration;
 
 use block2::StackBlock;
 use core_foundation_sys::runloop::{CFRunLoopRunInMode, kCFRunLoopDefaultMode};
-use objc2::rc::autoreleasepool;
-use objc2_app_kit::{NSWorkspace, NSWorkspaceDidActivateApplicationNotification};
+use objc2::rc::{Retained, autoreleasepool};
+use objc2_app_kit::{
+    NSRunningApplication, NSWorkspace, NSWorkspaceApplicationKey,
+    NSWorkspaceDidActivateApplicationNotification,
+};
 use objc2_foundation::NSNotification;
 use tokio::sync::mpsc::{Receiver, channel};
 
@@ -35,7 +38,27 @@ pub(crate) fn current_window_info() -> WindowInfo {
     })
 }
 
+fn window_info_from_notification(notification: NonNull<NSNotification>) -> WindowInfo {
+    unsafe {
+        let class = notification
+            .as_ref()
+            .userInfo()
+            .and_then(|info| info.objectForKey(NSWorkspaceApplicationKey))
+            .and_then(|value| Retained::cast::<NSRunningApplication>(value).bundleIdentifier())
+            .map(|id| id.to_string());
+        match class {
+            Some(class) => WindowInfo {
+                class,
+                title: String::new(),
+                is_native_terminal: false,
+            },
+            None => current_window_info(),
+        }
+    }
+}
+
 struct AppObserver {
+    latest: Arc<Mutex<Option<WindowInfo>>>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -45,6 +68,8 @@ impl AppObserver {
         let (ready, initialized) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let latest = Arc::new(Mutex::new(None));
+        let observed = latest.clone();
         let thread = thread::Builder::new()
             .name("macos-focus".into())
             .spawn(move || {
@@ -54,7 +79,12 @@ impl AppObserver {
                         Some(NSWorkspaceDidActivateApplicationNotification),
                         None,
                         None,
-                        &StackBlock::new(move |_: NonNull<NSNotification>| {
+                        &StackBlock::new(move |notification: NonNull<NSNotification>| {
+                            // NSWorkspace's cached frontmostApplication may still name
+                            // the previous app during this notification. Its payload is
+                            // authoritative. Store the newest snapshot before waking.
+                            *observed.lock().unwrap() =
+                                Some(window_info_from_notification(notification));
                             let _ = events.try_send(());
                         }),
                     );
@@ -63,7 +93,7 @@ impl AppObserver {
                             // Bounded turns avoid a stop-before-run race and a dangling CFRunLoopRef.
                             // Some headless run loops have no sources: prevent a busy spin there.
                             autoreleasepool(|_| {
-                                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false as u8);
+                                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 0);
                             });
                             thread::park_timeout(Duration::from_millis(10));
                         }
@@ -72,6 +102,7 @@ impl AppObserver {
                 });
             })?;
         let guard = Self {
+            latest,
             stop,
             thread: Some(thread),
         };
@@ -79,6 +110,11 @@ impl AppObserver {
             .recv_timeout(Duration::from_secs(5))
             .map_err(|error| format!("macOS observer initialization failed: {error}"))?;
         Ok((receiver, guard))
+    }
+
+    fn current(&self) -> WindowInfo {
+        let latest = self.latest.lock().unwrap().clone();
+        latest.unwrap_or_else(current_window_info)
     }
 }
 impl Drop for AppObserver {
@@ -98,9 +134,9 @@ impl FocusBackend for MacOsBackend {
         ctx: BackendRunContext,
     ) -> Pin<Box<dyn Future<Output = Result<BackendExit, DynError>> + Send + 'static>> {
         Box::pin(async move {
-            let (events, _observer) = AppObserver::start()?;
+            let (events, observer) = AppObserver::start()?;
             println!("[macOS] Listening for frontmost-app activation events");
-            super::native::run(ctx, events, current_window_info).await
+            super::native::run(ctx, events, || observer.current()).await
         })
     }
 }

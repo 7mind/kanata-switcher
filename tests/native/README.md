@@ -10,7 +10,7 @@ complement this suite; they do not establish native event delivery.
 The suite checks initial focus before daemon startup, A → B → A activation,
 virtual-key release/layer/press order, unmatched-app default fallback, quiet
 steady state, and service-style shutdown while a virtual key is held. Windows
-also checks title changes on the same foreground HWND. The scenario runs twice.
+also checks title changes on the same foreground HWND. The scenario runs five times.
 Rust tests additionally exercise watcher start/stop in the same process,
 pre-requested shutdown, event-source failure and pause/unpause focus refresh.
 

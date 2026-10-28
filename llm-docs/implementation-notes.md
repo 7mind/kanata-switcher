@@ -331,9 +331,10 @@ GNOME and KDE backends share a unified DBus service:
 
 ## Native backend integration
 
-Native listeners are ready before the initial focus query. They coalesce invalidations
-in a one-slot channel and query current focus on consumption, avoiding stale startup
-snapshots. Windows uses per-thread callback storage and registers FOREGROUND and
+Native listeners are ready before the initial focus query. They coalesce wakeups
+in a one-slot channel. Windows queries current focus on consumption; macOS stores
+the latest notification payload before waking, since frontmostApplication may still
+cache the previous app while the activation notification is delivered. Windows uses per-thread callback storage and registers FOREGROUND and
 NAMECHANGE hooks after creating the message queue; failed hooks surface as errors.
 macOS pumps the process main CFRunLoop (required for workspace delivery), with Tokio
 running the daemon task on workers. The observer is owned by a dedicated thread.

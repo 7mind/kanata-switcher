@@ -279,7 +279,7 @@ class NativeFocus(unittest.TestCase):
                 raise
 
     def test_native_focus_wire_protocol_and_shutdown(self):
-        for iteration in range(2):
+        for iteration in range(5):
             with self.subTest(iteration=iteration):
                 self.run_scenario()
 
