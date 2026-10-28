@@ -182,8 +182,13 @@ class NativeFocus(unittest.TestCase):
                 executable = contents / "MacOS/window"
                 shutil.copy2(fixture, executable)
                 with (contents / "Info.plist").open("wb") as file:
-                    plistlib.dump({"CFBundleIdentifier": bundle_id, "CFBundleExecutable": "window",
-                                   "CFBundleName": f"Native Fixture {index}", "CFBundlePackageType": "APPL"}, file)
+                    metadata = {"CFBundleExecutable": "window", "CFBundleName": f"Native Fixture {index}",
+                                "CFBundlePackageType": "APPL"}
+                    if index < 2:
+                        metadata["CFBundleIdentifier"] = bundle_id
+                    # Third app has no bundle ID: activation must clear the old
+                    # layer/virtual key rather than fall back to stale app identity.
+                    plistlib.dump(metadata, file)
                 cls.executables.append(executable)
         elif sys.platform == "win32":
             fixture = cls.work / "window.exe"

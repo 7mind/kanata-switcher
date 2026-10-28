@@ -27,7 +27,8 @@ python3 tests/native/run.py --binary target/release/kanata-switcher
 python tests/native/run.py --binary target/release/kanata-switcher.exe
 ```
 
-macOS fixtures are temporary `.app` bundles with distinct bundle identifiers.
+macOS fixtures are temporary `.app` bundles. Two have distinct bundle identifiers;
+the third has no bundle ID and exercises default fallback for unbundled apps.
 Windows fixtures are separate native Win32 processes with executable names that
 also exercise case/space normalization. No downloaded desktop apps, AppleScript,
 Accessibility permission grants, fabricated focus notifications, or skip-on-CI

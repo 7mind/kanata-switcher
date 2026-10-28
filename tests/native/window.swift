@@ -15,7 +15,7 @@ DispatchQueue.global().async {
                 window.makeKeyAndOrderFront(nil)
                 app.activate(ignoringOtherApps: true)
                 func confirmFocus(attempts: Int) {
-                    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier {
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier {
                         print("FOCUSED")
                         fflush(stdout)
                     } else if attempts > 0 {

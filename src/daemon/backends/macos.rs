@@ -52,7 +52,9 @@ fn window_info_from_notification(notification: NonNull<NSNotification>) -> Windo
                 title: String::new(),
                 is_native_terminal: false,
             },
-            None => current_window_info(),
+            // An unbundled app still activated; do not reuse the previous app's
+            // cached identity. Empty focus releases its keys and selects default.
+            None => WindowInfo::default(),
         }
     }
 }

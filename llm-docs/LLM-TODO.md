@@ -36,6 +36,7 @@ The project daemon is located at `src/daemon/` (Rust). The repo now tracks upstr
 - [ ] Config file watching for hot-reload
 
 # Notes
+- 2026-10-27: Luna identified unbundled-app activation as a remaining stale-cache fallback: missing bundle IDs now produce empty focus/default, and the third macOS fixture deliberately omits its bundle ID to exercise this case. Fixture activation acknowledgement uses PID.
 - 2026-10-27: Native macOS CI exposed cached frontmostApplication lag inside activation delivery. The observer now stores the NSWorkspace notification payload before waking the shared loop, retaining the latest snapshot while coalescing. Windows native tests pass on windows-2022. Native scenarios now repeat five times to exercise activation timing.
 - 2026-10-27: First true macOS CI run exposed missing notification delivery with only a background CFRunLoop. macOS now pumps the actual process main run loop while Tokio runs the daemon task; native fixture focus acknowledgements distinguish activation failure from missing backend events.
 - 2026-10-27: Native watchers now register before querying focus, coalesce fresh queries, own/join listener threads, and release managed keys on shutdown. Windows watches foreground titles; macOS handles SIGTERM; Windows handles Ctrl+Break. Verified 271 local Cargo tests, release build, five GJS suites and cross-target macOS/Windows Clippy. Native runtime assertions are wired into CI and await their platform runs. Luna reviewed original bugs and changes.
