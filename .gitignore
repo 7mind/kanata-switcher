@@ -2,6 +2,7 @@
 .vscode
 .DS_Store
 local
+worktrees
 
 # Git
 worktrees
@@ -20,3 +21,4 @@ result-*
 # Development tools (third-party utilities for testing)
 kanata-vk-agent/
 window_tools/
+.codegraph/
