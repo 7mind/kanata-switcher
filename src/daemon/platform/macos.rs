@@ -39,3 +39,29 @@ pub(crate) async fn run(
     result?;
     Ok(RunOutcome::Exit)
 }
+
+/// AppKit/NSWorkspace delivers workspace notifications through the process main
+/// run loop. Tokio's async entry point alone never pumps that loop.
+pub(super) fn run_main(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    use core_foundation_sys::runloop::{CFRunLoopRunInMode, kCFRunLoopDefaultMode};
+    use objc2::rc::autoreleasepool;
+    use objc2_app_kit::NSWorkspace;
+    use std::time::Duration;
+
+    // Initialize workspace services on the actual OS main thread.
+    autoreleasepool(|_| unsafe {
+        let _ = NSWorkspace::sharedWorkspace();
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build Tokio runtime");
+    let task = runtime.spawn(future);
+    while !task.is_finished() {
+        autoreleasepool(|_| unsafe {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 0);
+        });
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+    runtime.block_on(task).expect("daemon task panicked");
+}

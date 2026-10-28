@@ -63,3 +63,8 @@ pub(crate) async fn run_command(matches: &clap::ArgMatches, args: &Args) -> Resu
         Ok(false)
     }
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) fn run_macos_main(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    macos::run_main(future);
+}

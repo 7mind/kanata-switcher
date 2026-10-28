@@ -68,8 +68,18 @@ pub(crate) use crate::backends::macos::*;
 #[cfg(target_os = "windows")]
 pub(crate) use crate::backends::windows::*;
 
+#[cfg(not(target_os = "macos"))]
 #[tokio::main]
 async fn main() {
+    run_main().await;
+}
+
+#[cfg(target_os = "macos")]
+fn main() {
+    platform::run_macos_main(run_main());
+}
+
+async fn run_main() {
     loop {
         match run_once().await {
             Ok(RunOutcome::Restart) => {

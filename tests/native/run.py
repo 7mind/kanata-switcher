@@ -138,7 +138,7 @@ class App:
                 raise ctypes.WinError()
         self.process.stdin.write(command + "\n")
         self.process.stdin.flush()
-        if sys.platform == "win32" and command == "focus":
+        if command == "focus":
             self.expect_reply("FOCUSED")
             App.foreground = self
 
@@ -174,7 +174,7 @@ class NativeFocus(unittest.TestCase):
         cls.executables = []
         if sys.platform == "darwin":
             fixture = cls.work / "window"
-            subprocess.run(["swiftc", str(ROOT / "tests/native/window.swift"), "-o", str(fixture)], check=True)
+            subprocess.run(["swiftc", str(ROOT / "tests/native/window.swift"), "-o", str(fixture)], check=True, timeout=120)
             cls.classes = ["org.kanata.native.a", "org.kanata.native.b", "org.kanata.native.c"]
             for index, bundle_id in enumerate(cls.classes):
                 contents = cls.work / f"Fixture{index}.app/Contents"
@@ -188,7 +188,7 @@ class NativeFocus(unittest.TestCase):
         elif sys.platform == "win32":
             fixture = cls.work / "window.exe"
             subprocess.run(["cl", "/nologo", "/EHsc", str(ROOT / "tests/native/window.cpp"),
-                            f"/Fe:{fixture}", f"/Fo:{cls.work / 'window.obj'}", "user32.lib"], check=True)
+                            f"/Fe:{fixture}", f"/Fo:{cls.work / 'window.obj'}", "user32.lib"], check=True, timeout=120)
             cls.classes = ["native_focus_a", "native_focus_b", "native_focus_c"]
             for letter in "ABC":
                 executable = cls.work / f"Native Focus {letter}.exe"
@@ -200,8 +200,8 @@ class NativeFocus(unittest.TestCase):
     def run_scenario(self):
         # Run twice in the same desktop session to check repeatable process startup.
         with contextlib.ExitStack() as cleanup:
-            logs = self.work / f"run-{time.time_ns()}"
-            logs.mkdir()
+            logs = ROOT / "target/native-test-logs" / f"run-{time.time_ns()}"
+            logs.mkdir(parents=True)
             peer = KanataPeer()
             cleanup.callback(peer.close)
             apps = []
@@ -277,11 +277,6 @@ class NativeFocus(unittest.TestCase):
                 output.flush()
                 print(f"Daemon log:\n{(logs / 'daemon.log').read_text()}", file=sys.stderr)
                 raise
-            finally:
-                destination = ROOT / "target/native-test-logs" / logs.name
-                destination.mkdir(parents=True, exist_ok=True)
-                for file in logs.iterdir():
-                    shutil.copy2(file, destination / file.name)
 
     def test_native_focus_wire_protocol_and_shutdown(self):
         for iteration in range(2):

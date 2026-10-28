@@ -335,7 +335,8 @@ Native listeners are ready before the initial focus query. They coalesce invalid
 in a one-slot channel and query current focus on consumption, avoiding stale startup
 snapshots. Windows uses per-thread callback storage and registers FOREGROUND and
 NAMECHANGE hooks after creating the message queue; failed hooks surface as errors.
-macOS owns the notification observer on a dedicated, bounded-turn run-loop thread.
+macOS pumps the process main CFRunLoop (required for workspace delivery), with Tokio
+running the daemon task on workers. The observer is owned by a dedicated thread.
 RAII guards stop and join listeners on normal return or future cancellation.
 The shared native loop releases held keys on pause/exit and refreshes focus on
 unpause. Platform signal tasks are aborted when the backend returns.
