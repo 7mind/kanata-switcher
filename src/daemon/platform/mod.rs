@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::args::Args;
 use crate::broadcasters::{PauseBroadcaster, ShutdownHandle, StatusBroadcaster};
 use crate::config::Config;
-use crate::environ::{Environment, RunOutcome};
+use crate::environ::RunOutcome;
 use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::kanata::{KanataClient, ShutdownGuard};
@@ -49,4 +49,17 @@ pub(crate) async fn run(
 
     #[allow(unreachable_code)]
     Ok(RunOutcome::Exit)
+}
+
+pub(crate) async fn run_command(matches: &clap::ArgMatches, args: &Args) -> Result<bool, DynError> {
+    #[cfg(target_os = "linux")]
+    return linux::run_command(matches, args).await;
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if args.install_autostart || args.uninstall_autostart || crate::args::resolve_control_command(args).is_some() {
+            return Err("DBus control and desktop autostart commands require Linux".into());
+        }
+        Ok(false)
+    }
 }

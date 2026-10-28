@@ -1,23 +1,21 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool};
 use std::sync::{Arc, Mutex};
 
-use clap::ArgMatches;
+use clap::{ArgMatches, CommandFactory};
+use crate::control::persistent::start_persistent_dbus_service;
 
 use crate::args::{Args, resolve_control_command, resolve_install_gnome_extension};
 use crate::autostart::*;
-use crate::backends::*;
 use crate::broadcasters::{PauseBroadcaster, RuntimeEnvironmentBroadcaster, ShutdownHandle, StatusBroadcaster};
 use crate::control::client::send_control_command;
 use crate::control::ControlDispatch;
 use crate::dbus_naming::*;
-use crate::display_override::*;
 use crate::environ::*;
 use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::gnome_ext::*;
 use crate::kanata::KanataClient;
 use crate::lifecycle::*;
-use crate::lifecycle::startup::*;
 use crate::sni::*;
 use crate::supervisor::*;
 
@@ -30,25 +28,6 @@ pub(crate) async fn run(
     shutdown_handle: ShutdownHandle,
 ) -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let matches = Args::command().get_matches();
-
-    if args.install_autostart {
-        install_autostart_desktop(&matches, &args)?;
-        return Ok(RunOutcome::Exit);
-    }
-    if args.uninstall_autostart {
-        uninstall_autostart_desktop()?;
-        return Ok(RunOutcome::Exit);
-    }
-    if let Some(command) = resolve_control_command(&args) {
-        let dispatch = match args.dbus_suffix.as_deref() {
-            Some(suffix) => ControlDispatch::Unicast {
-                bus_name: effective_dbus_name(suffix),
-            },
-            None => ControlDispatch::Broadcast,
-        };
-        send_control_command(command, dispatch).await?;
-        return Ok(RunOutcome::Exit);
-    }
 
     let effective_name = effective_dbus_name(&resolve_dbus_suffix(
         args.dbus_suffix.as_deref(),
@@ -143,4 +122,28 @@ pub(crate) async fn run(
         shutdown_handle,
     )
     .await
+}
+
+/// One-shot commands must run before config validation or a Kanata connection.
+pub(super) async fn run_command(matches: &ArgMatches, args: &Args) -> Result<bool, DynError> {
+    if args.install_autostart {
+        install_autostart_desktop(matches, args)?;
+        return Ok(true);
+    }
+    if args.uninstall_autostart {
+        uninstall_autostart_desktop()?;
+        return Ok(true);
+    }
+    if let Some(command) = resolve_control_command(args) {
+        let dispatch = match args.dbus_suffix.as_deref() {
+            Some(suffix) => ControlDispatch::Unicast {
+                bus_name: effective_dbus_name(suffix),
+            },
+            None => ControlDispatch::Broadcast,
+        };
+        send_control_command(command, dispatch).await?;
+        return Ok(true);
+    }
+
+    Ok(false)
 }

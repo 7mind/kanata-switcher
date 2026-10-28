@@ -8,7 +8,7 @@ use crate::{
     config::WindowInfo,
 };
 #[cfg(target_os = "linux")]
-use crate::{SniSettingsStore, SNI_DEFAULT_SHOW_FOCUS_ONLY, args::TrayFocusOnly};
+use crate::{sni::{SniSettingsStore, SNI_DEFAULT_SHOW_FOCUS_ONLY}, args::TrayFocusOnly};
 
 #[cfg(target_os = "linux")]
 pub(crate) fn resolve_sni_focus_only(

@@ -4,6 +4,19 @@
 
 use clap::{CommandFactory, FromArgMatches};
 
+// Existing Linux tests share these fixtures through `super::*`.
+#[cfg(all(test, target_os = "linux"))]
+#[allow(unused_imports)]
+use {
+    futures_util::StreamExt,
+    std::{collections::HashMap, env, fs, os::{fd::AsFd, unix::net::UnixStream},
+          path::{Path, PathBuf}, process::Command,
+          sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::Duration},
+    tokio::sync::{Mutex as TokioMutex, mpsc, oneshot, watch},
+    uuid::Uuid,
+    zbus::{Connection, zvariant::{OwnedObjectPath, OwnedValue, Str, Structure, Value}},
+};
+
 mod constants;
 mod errors;
 mod environ;
@@ -32,20 +45,9 @@ mod sni;
 #[cfg(target_os = "linux")]
 mod gnome_ext;
 
-use constants::*;
-use errors::DynError;
-use environ::*;
-use dbus_naming::*;
-use config::*;
-use focus::*;
-use args::*;
-use broadcasters::*;
-use kanata::*;
-use control::*;
-#[cfg(target_os = "linux")]
-use pause::*;
-use focus_pipeline::*;
-use backends::*;
+use args::Args;
+use config::load_config;
+use environ::{detect_environment, RunOutcome};
 
 mod platform;
 
@@ -58,7 +60,7 @@ pub(crate) use crate::pause::*;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 #[allow(unused_imports)]
-pub(crate) use crate::{autostart::*, lifecycle::*, lifecycle::logind::*, lifecycle::startup::*, display_override::*, supervisor::*, supervisor::capabilities::*, backends::gnome::*, backends::kde::*, backends::kde::script::*, backends::kde::probe::*, backends::wayland::*, sni::*, sni::settings::*, sni::state::*, sni::indicator::*, sni::control_local::*, sni::control_dbus::*, sni::control_ops::*, sni::guard::*, gnome_ext::*, gnome_ext::detection::*, gnome_ext::install::*};
+pub(crate) use crate::{control::client::*, control::server::*, control::persistent::*, autostart::*, lifecycle::*, lifecycle::logind::*, lifecycle::startup::*, display_override::*, supervisor::*, supervisor::capabilities::*, backends::gnome::*, backends::kde::*, backends::kde::script::*, backends::kde::probe::*, backends::wayland::*, sni::*, sni::settings::*, sni::state::*, sni::indicator::*, sni::control_local::*, sni::control_dbus::*, sni::control_ops::*, sni::guard::*, gnome_ext::*, gnome_ext::detection::*, gnome_ext::install::*};
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 pub(crate) use crate::backends::macos::*;
@@ -83,8 +85,11 @@ async fn main() {
 }
 
 async fn run_once() -> Result<RunOutcome, Box<dyn std::error::Error + Send + Sync>> {
-    let _matches = Args::command().get_matches();
-    let args = Args::from_arg_matches(&_matches)?;
+    let matches = Args::command().get_matches();
+    let args = Args::from_arg_matches(&matches)?;
+    if platform::run_command(&matches, &args).await? {
+        return Ok(RunOutcome::Exit);
+    }
 
     let detected_env = detect_environment();
     println!("[Init] Detected environment: {}", detected_env.as_str());

@@ -16,7 +16,7 @@ use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::focus_pipeline::{execute_focus_actions, handle_focus_event};
 use crate::kanata::KanataClient;
-use crate::ShutdownHandle;
+use crate::broadcasters::ShutdownHandle;
 use crate::backends::{BackendExit, BackendRunContext, FocusBackend, RawFdWatcher};
 
 x11rb::atom_manager! {

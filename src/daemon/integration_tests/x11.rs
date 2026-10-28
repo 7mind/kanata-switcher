@@ -27,8 +27,8 @@ impl XvfbGuard {
         }
 
         let display = format!(":{}", display_num);
-        let child = std::process::Command::new("Xvfb")
-            .args([&display, "-screen", "0", "800x600x24"])
+        let mut child = std::process::Command::new("Xvfb")
+            .args([&display, "-screen", "0", "800x600x24", "-noreset", "-nolisten", "tcp"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -36,7 +36,11 @@ impl XvfbGuard {
 
         // Wait for Xvfb to accept connections
         let display_clone = display.clone();
-        wait_for(|| x11rb::connect(Some(&display_clone)).ok()).ok()?;
+        if wait_for(|| x11rb::connect(Some(&display_clone)).ok()).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
 
         Some(Self { child, display })
     }

@@ -34,6 +34,7 @@ The project daemon is located at `src/daemon/` (Rust). The repo now tracks upstr
 - [ ] Config file watching for hot-reload
 
 # Notes
+- 2026-10-27: Restored Linux compilation/lifecycle factory tests after platform extraction; Linux control/autostart dispatch runs before config/connection, covered by subprocess + private DBus tests. Xvfb fixtures disable reset between readiness probe and clients. Cargo tests/release and all five GJS suites pass; local Nix execution unavailable (cache policy and missing sandbox shell).
 - 2026-10-27: Merged current upstream persistent-daemon; preserved both ignore lists and release notes. Baseline Cargo tests/build expose pre-existing PR compile failures; repairs and native integration coverage follow. Nix validation attempted but cache.nixos.org is denied by this execution environment.
 - 2026-05-23: Cross-platform support landed. macOS/Windows backends implement `FocusBackend` via NSWorkspace notifications (macOS) and WinEvent foreground hooks (Windows). Platform dispatch at `src/daemon/platform/`. All Linux-specific code gated behind `#[cfg(target_os = "linux")]`.
 - 2026-05-24: Release automation split package-version bumps from dependency updates. `devops/release.sh` updates only the root `kanata-switcher` lock entry; `devops/update-libraries.sh` updates dependency lock entries separately.

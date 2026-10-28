@@ -48,6 +48,8 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 | macOS                                | NSWorkspace `didActivateApplicationNotification`                  |
 | Windows                              | `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND`                   |
 
+Linux control (`--pause`, `--unpause`, `--restart`) and autostart install/uninstall commands work without a config file or a running Kanata TCP server. These commands require Linux; other platforms report an explicit error.
+
 ### Lifecycle Behavior
 
 - With `org.freedesktop.login1` available (systemd-logind/elogind), the daemon continuously tracks session lifecycle (`tty`/`wayland`/`x11` + active/inactive) and transitions backends internally without systemd restart helper services.

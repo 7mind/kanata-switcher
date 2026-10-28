@@ -11,7 +11,9 @@ pub enum Environment {
     Kde,
     Wayland,
     X11,
+    #[cfg(target_os = "macos")]
     MacOS,
+    #[cfg(target_os = "windows")]
     Windows,
     LinuxConsoleWithLogind,
     Unknown,
@@ -46,8 +48,6 @@ pub(crate) enum BackendKind {
     Kde,
     Wayland,
     X11,
-    MacOS,
-    Windows,
     LinuxConsole,
 }
 
@@ -154,9 +154,7 @@ pub(crate) fn target_requires_session_bus(target: RuntimeTarget) -> bool {
         | RuntimeTarget::Backend(BackendKind::Kde)
         | RuntimeTarget::Backend(BackendKind::Wayland)
         | RuntimeTarget::Backend(BackendKind::X11) => true,
-        RuntimeTarget::Backend(BackendKind::MacOS)
-        | RuntimeTarget::Backend(BackendKind::Windows)
-        | RuntimeTarget::Backend(BackendKind::LinuxConsole)
+        RuntimeTarget::Backend(BackendKind::LinuxConsole)
         | RuntimeTarget::Idle => false,
     }
 }
@@ -167,7 +165,9 @@ pub(crate) fn startup_environment_to_snapshot(env: Environment) -> LifecycleSnap
         Environment::Kde => (true, "kde"),
         Environment::Wayland => (true, "wayland"),
         Environment::X11 => (true, "x11"),
+        #[cfg(target_os = "macos")]
         Environment::MacOS => (true, "macos"),
+        #[cfg(target_os = "windows")]
         Environment::Windows => (true, "windows"),
         Environment::LinuxConsoleWithLogind => (true, "tty"),
         Environment::Unknown => (false, ""),
@@ -188,8 +188,10 @@ impl Environment {
             Environment::Kde => "kde",
             Environment::Wayland => "wayland",
             Environment::X11 => "x11",
-            Environment::MacOS => "macos",
-            Environment::Windows => "windows",
+            #[cfg(target_os = "macos")]
+        Environment::MacOS => "macos",
+            #[cfg(target_os = "windows")]
+        Environment::Windows => "windows",
             Environment::LinuxConsoleWithLogind => "linux-console-with-logind",
             Environment::Unknown => "unknown",
         }
