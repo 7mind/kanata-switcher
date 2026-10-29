@@ -30,3 +30,17 @@ Environment: NixOS, COSMIC, Wayland
 
 ## Unknown/unsupported
 - [x] Daemon exits with clear error if no display env detected
+
+## Native macOS and Windows
+
+Automated setup and scope: `tests/native/README.md`.
+
+- [ ] Run native desktop integration on an unlocked macOS session.
+- [ ] Run native desktop integration from a Windows MSVC developer shell.
+- [ ] With real Kanata, verify bundle-ID rules on macOS and executable/title rules on Windows.
+- [ ] While holding a managed virtual key, terminate the daemon (SIGTERM on macOS, Ctrl+C/Break on Windows); verify key release and default-layer reset.
+- [ ] Confirm no focus actions fire after shutdown; restart and switch apps again.
+- [ ] Verify Windows title rules update without switching away from the foreground window.
+
+macOS window titles are unavailable through NSWorkspace; title-based macOS
+rules cannot be exercised by native focus notifications.

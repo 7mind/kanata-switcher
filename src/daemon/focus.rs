@@ -158,10 +158,10 @@ impl FocusHandler {
                     }
 
                     // Virtual key: press if not already held
-                    if let Some(ref vk) = matched.virtual_key {
-                        if !self.current_virtual_keys.contains(vk) {
-                            result.actions.push(FocusAction::PressVk(vk.clone()));
-                        }
+                    if let Some(ref vk) = matched.virtual_key
+                        && !self.current_virtual_keys.contains(vk)
+                    {
+                        result.actions.push(FocusAction::PressVk(vk.clone()));
                     }
 
                     // Raw VK actions
@@ -171,24 +171,23 @@ impl FocusHandler {
                 }
             }
 
-            if matched_changed {
-                if let Some(new_layer) = matched_layers.last().cloned() {
-                    if self.last_effective_layer != new_layer {
-                        let has_new_layer = result.actions.iter().rev().find_map(|action| {
-                            if let FocusAction::ChangeLayer(layer) = action {
-                                Some(layer == &new_layer)
-                            } else {
-                                None
-                            }
-                        });
-                        if has_new_layer != Some(true) {
-                            result
-                                .actions
-                                .push(FocusAction::ChangeLayer(new_layer.clone()));
-                        }
+            if matched_changed
+                && let Some(new_layer) = matched_layers.last().cloned()
+                && self.last_effective_layer != new_layer
+            {
+                let has_new_layer = result.actions.iter().rev().find_map(|action| {
+                    if let FocusAction::ChangeLayer(layer) = action {
+                        Some(layer == &new_layer)
+                    } else {
+                        None
                     }
-                    self.last_effective_layer = new_layer;
+                });
+                if has_new_layer != Some(true) {
+                    result
+                        .actions
+                        .push(FocusAction::ChangeLayer(new_layer.clone()));
                 }
+                self.last_effective_layer = new_layer;
             }
 
             result.new_managed_vks = new_vks;
@@ -278,10 +277,10 @@ impl FocusHandler {
                     .actions
                     .push(FocusAction::ChangeLayer(rule.layer.clone()));
             }
-            if let Some(vk) = rule.virtual_key {
-                if !self.current_virtual_keys.contains(&vk) {
-                    result.actions.push(FocusAction::PressVk(vk));
-                }
+            if let Some(vk) = rule.virtual_key
+                && !self.current_virtual_keys.contains(&vk)
+            {
+                result.actions.push(FocusAction::PressVk(vk));
             }
             for (name, action) in rule.raw_vk_action {
                 result.actions.push(FocusAction::RawVkAction(name, action));

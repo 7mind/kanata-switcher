@@ -222,11 +222,11 @@ impl KanataClient {
         reader.read_line(&mut line).await?;
 
         let mut current_layer = None;
-        if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line) {
-            if let Some(lc) = msg.layer_change {
-                println!("[Kanata] Current layer: \"{}\"", lc.new);
-                current_layer = Some(lc.new);
-            }
+        if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line)
+            && let Some(lc) = msg.layer_change
+        {
+            println!("[Kanata] Current layer: \"{}\"", lc.new);
+            current_layer = Some(lc.new);
         }
 
         // Request layer names
@@ -243,12 +243,12 @@ impl KanataClient {
         let mut known_layers = Vec::new();
         // Auto-detect default layer from the first layer in the list (layers are in definition order)
         let mut auto_default_layer = None;
-        if let Ok(msg) = serde_json::from_str::<LayerNamesMsg>(&line) {
-            if let Some(ln) = msg.layer_names {
-                println!("[Kanata] Available layers: {:?}", ln.names);
-                auto_default_layer = ln.names.first().cloned();
-                known_layers = ln.names;
-            }
+        if let Ok(msg) = serde_json::from_str::<LayerNamesMsg>(&line)
+            && let Some(ln) = msg.layer_names
+        {
+            println!("[Kanata] Available layers: {:?}", ln.names);
+            auto_default_layer = ln.names.first().cloned();
+            known_layers = ln.names;
         }
 
         // Request virtual key names (skip if we know this is older kanata)
@@ -351,26 +351,26 @@ impl KanataClient {
                         return;
                     }
                     Ok(_) => {
-                        if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line) {
-                            if let Some(lc) = msg.layer_change {
-                                let mut inner = self.inner.lock().await;
-                                if inner.paused {
-                                    continue;
-                                }
-                                let old_layer = inner.current_layer.clone();
-                                inner.current_layer = Some(lc.new.clone());
-                                let status_broadcaster = inner.status_broadcaster.clone();
-                                let quiet = inner.quiet;
-                                if old_layer.as_ref() != Some(&lc.new) {
-                                    status_broadcaster
-                                        .update_layer(lc.new.clone(), LayerSource::External);
-                                    if !quiet {
-                                        println!(
-                                            "[Kanata] Layer changed (external): {} -> {}",
-                                            old_layer.as_deref().unwrap_or("(none)"),
-                                            lc.new
-                                        );
-                                    }
+                        if let Ok(msg) = serde_json::from_str::<LayerChangeMsg>(&line)
+                            && let Some(lc) = msg.layer_change
+                        {
+                            let mut inner = self.inner.lock().await;
+                            if inner.paused {
+                                continue;
+                            }
+                            let old_layer = inner.current_layer.clone();
+                            inner.current_layer = Some(lc.new.clone());
+                            let status_broadcaster = inner.status_broadcaster.clone();
+                            let quiet = inner.quiet;
+                            if old_layer.as_ref() != Some(&lc.new) {
+                                status_broadcaster
+                                    .update_layer(lc.new.clone(), LayerSource::External);
+                                if !quiet {
+                                    println!(
+                                        "[Kanata] Layer changed (external): {} -> {}",
+                                        old_layer.as_deref().unwrap_or("(none)"),
+                                        lc.new
+                                    );
                                 }
                             }
                         }

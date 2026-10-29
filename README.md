@@ -31,11 +31,11 @@ This project features comprehensive automated test suite and supports an unusual
 
 ---
 
-## LLM section
+ ## LLM section
 
 ### Supported Environments
 
-All environments use the unified daemon (`src/daemon/`). Backends are event-driven, with one-shot focus queries on startup and unpause.
+All environments use the unified daemon (`src/daemon/`). Backends are event-driven, with one-shot focus queries on startup and unpause. Architecture is cross-platform: Linux (full supervisor, logind, SNI), macOS (NSWorkspace notifications), Windows (WinEvent foreground hook).
 
 | Environment                          | How it works                                                      |
 |--------------------------------------|-------------------------------------------------------------------|
@@ -45,6 +45,23 @@ All environments use the unified daemon (`src/daemon/`). Backends are event-driv
 | wlroots (Sway, Hyprland, Niri, etc.) | Daemon receives `wlr-foreign-toplevel-management` protocol events |
 | X11                                  | Daemon listens to `PropertyNotify` events on `_NET_ACTIVE_WINDOW` |
 | Linux console (VT switch)            | Daemon monitors session state via systemd-logind DBus interface   |
+| macOS                                | NSWorkspace `didActivateApplicationNotification`                  |
+| Windows                              | `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND`                   |
+
+Linux control (`--pause`, `--unpause`, `--restart`) and autostart install/uninstall commands work without a config file or a running Kanata TCP server. These commands require Linux; other platforms report an explicit error.
+
+### Native platform tests
+
+See [tests/native/README.md](tests/native/README.md) for desktop integration tests
+that launch real macOS/Windows applications and assert the daemon's TCP output.
+CI runs Cargo tests, release builds and native tests on both operating systems,
+as well as Linux and existing Nix/module checks. The TCP peer substitutes for
+Kanata; tests do not exercise keyboard drivers. Logs are retained as CI artifacts.
+
+On macOS, `class` is the bundle identifier and titles are unavailable through
+NSWorkspace. On Windows, `class` is the executable stem in lowercase with spaces
+replaced by underscores; foreground window-title changes are also observed.
+Graceful shutdown releases managed virtual keys and restores the default layer.
 
 ### Lifecycle Behavior
 

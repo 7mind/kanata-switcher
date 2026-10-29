@@ -33,7 +33,7 @@ use crate::errors::DynError;
 use crate::focus::FocusHandler;
 use crate::focus_pipeline::{execute_focus_actions, handle_focus_event};
 use crate::kanata::KanataClient;
-use crate::ShutdownHandle;
+use crate::broadcasters::ShutdownHandle;
 use protocols::cosmic_toplevel::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1;
 
 #[cfg(test)]

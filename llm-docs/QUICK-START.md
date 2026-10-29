@@ -4,15 +4,21 @@
 
 ## Project Summary
 
-Kanata layer switcher daemon - switches keyboard layers based on focused window. Single Rust daemon supports GNOME, KDE, and Wayland compositors (Sway, Hyprland, Niri, COSMIC, etc.) via standard protocols.
+Kanata layer switcher daemon - switches keyboard layers based on focused window. Single Rust daemon supports Linux (GNOME, KDE, Wayland, X11), macOS (NSWorkspace), and Windows (WinEvent hook).
 
 ## Key Files
 
 - `src/daemon/main.rs` - Rust daemon (all backends)
+- `src/daemon/backends/macos.rs` - macOS FocusBackend (NSWorkspace notifications)
+- `src/daemon/backends/windows.rs` - Windows FocusBackend (WinEvent foreground hook)
+- `src/daemon/platform/linux.rs` - Linux platform entry (supervisor, logind, SNI, DBus)
+- `src/daemon/platform/macos.rs` - macOS platform entry (signal + MacOsBackend)
+- `src/daemon/platform/windows.rs` - Windows platform entry (signal + WindowsBackend)
+- `src/daemon/platform/mod.rs` - Platform dispatch
 - `src/gnome-extension/` - GNOME Shell extension (bundled, auto-installed)
 - `src/protocols/` - Wayland protocol XMLs (cosmic-toplevel-info, cosmic-workspace)
-- `build.rs` - Copies GNOME extension to target dir during build
-- `flake.nix` - Nix packages + Home Manager module
+- `build.rs` - Copies GNOME extension to target dir during build (skipped on non-Linux)
+- `flake.nix` - Nix packages + Home Manager module (Linux-only)
 
 ## Cargo Features
 
@@ -25,7 +31,9 @@ Kanata layer switcher daemon - switches keyboard layers based on focused window.
 - [x] Wayland backend via `wlr-foreign-toplevel-management` (Sway, Hyprland, Niri)
 - [x] Wayland backend via `cosmic-toplevel-info` (COSMIC)
 - [x] Kanata reconnection on disconnect
-- [ ] Testing on real environments
+- [x] macOS backend (NSWorkspace)
+- [x] Windows backend (WinEvent hook)
+- [ ] Testing on real environments (macOS, Windows)
 - [ ] Config hot-reload
 
 ## Quick Test
@@ -38,22 +46,26 @@ cargo run -- -p 10000
 nix build && ./result/bin/kanata-switcher -p 10000
 ```
 
-## Key Functions in main.rs
+## Key Functions
 
-| Function | Purpose |
-|----------|---------|
-| `detect_environment()` | Checks env vars to pick backend |
-| `run_lifecycle_supervisor()` | Supervises runtime target transitions and backend start/stop |
-| `LifecycleProvider` | Selects `logind` continuous events or startup-only snapshot |
-| `session_type_to_session_kind()` | Maps logind session type + active state to lifecycle domain |
-| `resolve_runtime_target()` | Maps lifecycle state + desktop capabilities to concrete backend |
-| `run_gnome()` | GNOME backend (DBus poll) |
-| `run_kde()` | KDE backend (KWin script) |
-| `run_wayland()` | Unified Wayland backend (wlr/cosmic) |
-| `KanataClient` | TCP client struct with reconnection |
-| `match_rule()` | Rule matching logic |
-| `resolve_install_gnome_extension()` | CLI flag resolution (last wins) |
-| `install_gnome_extension()` | Tries filesystem, falls back to embedded |
+| Function | File | Purpose |
+|----------|------|---------|
+| `detect_environment()` | `environ.rs` | Checks env vars to pick backend (Linux), compile-time for macOS/Windows |
+| `platform::run()` | `platform/mod.rs` | Platform dispatch — calls linux/macos/windows entry point |
+| `run_lifecycle_supervisor()` | `platform/linux.rs` | Supervises runtime target transitions and backend start/stop |
+| `LifecycleProvider` | `lifecycle/mod.rs` | Selects `logind` continuous events or startup-only snapshot |
+| `session_type_to_session_kind()` | `lifecycle/mod.rs` | Maps logind session type + active state to lifecycle domain |
+| `resolve_runtime_target()` | `lifecycle/mod.rs` | Maps lifecycle state + desktop capabilities to concrete backend |
+| `run_gnome()` | `backends/gnome.rs` | GNOME backend (DBus poll) |
+| `run_kde()` | `backends/kde.rs` | KDE backend (KWin script) |
+| `run_wayland()` | `backends/wayland.rs` | Unified Wayland backend (wlr/cosmic) |
+| `run_x11()` | `backends/x11.rs` | X11 backend |
+| `MacOsBackend::run()` | `backends/macos.rs` | macOS backend (NSWorkspace) |
+| `WindowsBackend::run()` | `backends/windows.rs` | Windows backend (WinEvent hook) |
+| `KanataClient` | `kanata.rs` | TCP client struct with reconnection |
+| `match_rule()` | `focus_pipeline.rs` | Rule matching logic |
+| `resolve_install_gnome_extension()` | `lifecycle/mod.rs` | CLI flag resolution (last wins) |
+| `install_gnome_extension()` | `lifecycle/mod.rs` | Tries filesystem, falls back to embedded |
 
 ## Wayland Protocol Support
 
@@ -63,6 +75,12 @@ The daemon uses standard Wayland protocols instead of compositor-specific IPC:
 2. **cosmic-toplevel-info** - works on COSMIC (requires cosmic-workspace protocol as dependency)
 
 Both protocols expose `title`, `app_id`, and `activated` state. The daemon tries wlr first, falls back to cosmic.
+
+## Platform-specific Backend Notes
+
+- **macOS**: Uses `NSWorkspaceDidActivateApplicationNotification` via a CFRunLoop thread. The `CFRunLoopRef` is stored as `usize` to satisfy `Send`. `current_window_info()` calls `query_focus_for_env` directly (no DBus like Linux). Signal handler catches Ctrl+C (`SIGINT`).
+- **Windows**: Uses `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` on a message-pump thread. Process info extracted with `GetWindowModuleFileName` + `GetWindowTextW`. Signal handler catches Ctrl+C (`SIGINT`).
+- **Linux**: Full supervisor lifecycle with logind, SNI indicator, GNOME ext setup, DBus control. Signal handlers for `SIGTERM/SIGINT/SIGHUP`.
 
 ## Gotchas
 
